@@ -1,0 +1,63 @@
+import { LLM_PLUGIN_ID } from './core.js';
+import type { EventContract } from './events.js';
+import type { PlainData } from './plain-data.js';
+import type { ServiceContract } from './services.js';
+
+export interface LlmMessage { readonly role: 'system' | 'user' | 'assistant'; readonly content: string; }
+export interface LlmUsage { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number; }
+export interface LlmRouteMetadata { readonly route: string; readonly provider?: string; readonly model?: string; readonly fallback?: boolean; }
+export interface LlmCompletionRequest { readonly messages: readonly LlmMessage[]; readonly route?: string; readonly maxTokens?: number; readonly temperature?: number; }
+export interface LlmCompletionResponse { readonly text: string; readonly route: string; readonly model: string; readonly provider?: string; readonly finishReason?: string; readonly usage?: LlmUsage; }
+export interface LlmStructuredTaskRequest { readonly task: string; readonly input: PlainData; readonly outputSchema?: Readonly<Record<string, PlainData>>; readonly route?: string; readonly timeoutMs?: number; }
+export interface LlmStructuredTaskResponse { readonly output: PlainData; readonly route: LlmRouteMetadata; readonly usage?: LlmUsage; }
+export interface LlmEmbeddingRequest { readonly input: string | readonly string[]; readonly model?: string; readonly route?: string; readonly dimensions?: number; readonly timeoutMs?: number; }
+export interface LlmEmbeddingResponse { readonly embeddings: readonly (readonly number[])[]; readonly route: LlmRouteMetadata; readonly usage?: LlmUsage; }
+export interface LlmRerankDocument { readonly id: string; readonly text: string; readonly metadata?: Readonly<Record<string, PlainData>>; }
+export interface LlmRerankRequest { readonly query: string; readonly documents: readonly LlmRerankDocument[]; readonly topN?: number; readonly model?: string; readonly route?: string; readonly timeoutMs?: number; }
+export interface LlmRerankResult { readonly id: string; readonly score: number; readonly index: number; }
+export interface LlmRerankResponse { readonly results: readonly LlmRerankResult[]; readonly route: LlmRouteMetadata; readonly usage?: LlmUsage; }
+export interface LlmRouteDiagnosticsRequest { readonly requestId?: string; }
+export interface LlmRouteDiagnostic { readonly requestId: string; readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'aborted'; readonly route?: LlmRouteMetadata; readonly durationMs?: number; readonly errorCode?: string; }
+export interface LlmRouteDiagnosticsResponse { readonly entries: readonly LlmRouteDiagnostic[]; }
+export interface LlmRouteChangedPayload { readonly previousRoute?: string; readonly route: string; readonly reason: 'configured' | 'fallback' | 'availability'; }
+
+const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const exact = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean => required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+const positiveInteger = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+const nonNegativeInteger = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const plainData = (value: unknown, seen = new Set<object>()): value is PlainData => {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.every((item) => plainData(item, seen));
+  if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) return false;
+  return Object.values(value as Record<string, unknown>).every((item) => plainData(item, seen));
+};
+const optionalNonEmpty = (value: unknown): boolean => value === undefined || nonEmpty(value);
+const optionalTimeout = (value: unknown): boolean => value === undefined || positiveInteger(value);
+const route = (value: unknown): value is LlmRouteMetadata => record(value) && exact(value, ['route'], ['provider', 'model', 'fallback']) && nonEmpty(value.route) && optionalNonEmpty(value.provider) && optionalNonEmpty(value.model) && (value.fallback === undefined || typeof value.fallback === 'boolean');
+const usage = (value: unknown): value is LlmUsage => value === undefined || (record(value) && exact(value, [], ['inputTokens', 'outputTokens', 'totalTokens']) && ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => value[key] === undefined || nonNegativeInteger(value[key])));
+const message = (value: unknown): value is LlmMessage => record(value) && exact(value, ['role', 'content']) && (value.role === 'system' || value.role === 'user' || value.role === 'assistant') && typeof value.content === 'string';
+export const isLlmCompletionRequest = (value: unknown): value is LlmCompletionRequest => record(value) && exact(value, ['messages'], ['route', 'maxTokens', 'temperature']) && Array.isArray(value.messages) && value.messages.length > 0 && value.messages.every(message) && optionalNonEmpty(value.route) && (value.maxTokens === undefined || positiveInteger(value.maxTokens)) && (value.temperature === undefined || (finite(value.temperature) && value.temperature >= 0 && value.temperature <= 2));
+export const isLlmCompletionResponse = (value: unknown): value is LlmCompletionResponse => record(value) && exact(value, ['text', 'route', 'model'], ['provider', 'finishReason', 'usage']) && typeof value.text === 'string' && nonEmpty(value.route) && nonEmpty(value.model) && optionalNonEmpty(value.provider) && optionalNonEmpty(value.finishReason) && usage(value.usage);
+export const isLlmStructuredTaskRequest = (value: unknown): value is LlmStructuredTaskRequest => record(value) && exact(value, ['task', 'input'], ['outputSchema', 'route', 'timeoutMs']) && nonEmpty(value.task) && plainData(value.input) && (value.outputSchema === undefined || (record(value.outputSchema) && plainData(value.outputSchema))) && optionalNonEmpty(value.route) && optionalTimeout(value.timeoutMs);
+export const isLlmStructuredTaskResponse = (value: unknown): value is LlmStructuredTaskResponse => record(value) && exact(value, ['output', 'route'], ['usage']) && plainData(value.output) && route(value.route) && usage(value.usage);
+export const isLlmEmbeddingRequest = (value: unknown): value is LlmEmbeddingRequest => record(value) && exact(value, ['input'], ['model', 'route', 'dimensions', 'timeoutMs']) && (nonEmpty(value.input) || (Array.isArray(value.input) && value.input.length > 0 && value.input.every(nonEmpty))) && optionalNonEmpty(value.model) && optionalNonEmpty(value.route) && (value.dimensions === undefined || positiveInteger(value.dimensions)) && optionalTimeout(value.timeoutMs);
+export const isLlmEmbeddingResponse = (value: unknown): value is LlmEmbeddingResponse => record(value) && exact(value, ['embeddings', 'route'], ['usage']) && Array.isArray(value.embeddings) && value.embeddings.length > 0 && value.embeddings.every((vector) => Array.isArray(vector) && vector.length > 0 && vector.every(finite)) && route(value.route) && usage(value.usage);
+const rerankDocument = (value: unknown): value is LlmRerankDocument => record(value) && exact(value, ['id', 'text'], ['metadata']) && nonEmpty(value.id) && nonEmpty(value.text) && (value.metadata === undefined || (record(value.metadata) && plainData(value.metadata)));
+export const isLlmRerankRequest = (value: unknown): value is LlmRerankRequest => record(value) && exact(value, ['query', 'documents'], ['topN', 'model', 'route', 'timeoutMs']) && nonEmpty(value.query) && Array.isArray(value.documents) && value.documents.length > 0 && value.documents.every(rerankDocument) && (value.topN === undefined || (positiveInteger(value.topN) && value.topN <= value.documents.length)) && optionalNonEmpty(value.model) && optionalNonEmpty(value.route) && optionalTimeout(value.timeoutMs);
+export const isLlmRerankResponse = (value: unknown): value is LlmRerankResponse => record(value) && exact(value, ['results', 'route'], ['usage']) && Array.isArray(value.results) && value.results.every((item) => record(item) && exact(item, ['id', 'score', 'index']) && nonEmpty(item.id) && finite(item.score) && nonNegativeInteger(item.index)) && route(value.route) && usage(value.usage);
+export const isLlmRouteDiagnosticsRequest = (value: unknown): value is LlmRouteDiagnosticsRequest => record(value) && exact(value, [], ['requestId']) && optionalNonEmpty(value.requestId);
+export const isLlmRouteDiagnosticsResponse = (value: unknown): value is LlmRouteDiagnosticsResponse => record(value) && exact(value, ['entries']) && Array.isArray(value.entries) && value.entries.every((item) => record(item) && exact(item, ['requestId', 'state'], ['route', 'durationMs', 'errorCode']) && nonEmpty(item.requestId) && ['queued', 'running', 'completed', 'failed', 'aborted'].includes(String(item.state)) && (item.route === undefined || route(item.route)) && (item.durationMs === undefined || (finite(item.durationMs) && item.durationMs >= 0)) && optionalNonEmpty(item.errorCode));
+export const isLlmRouteChangedPayload = (value: unknown): value is LlmRouteChangedPayload => record(value) && exact(value, ['route', 'reason'], ['previousRoute']) && nonEmpty(value.route) && optionalNonEmpty(value.previousRoute) && ['configured', 'fallback', 'availability'].includes(String(value.reason));
+
+const service = <N extends string, Q, S>(name: N, validateRequest: (value: unknown) => value is Q, validateResponse: (value: unknown) => value is S): ServiceContract<typeof LLM_PLUGIN_ID, N, 1, Q, S> => Object.freeze({ kind: 'service', provider: LLM_PLUGIN_ID, name, version: 1, schemaId: `ss-helper.llm.${name}.v1`, validateRequest, validateResponse });
+export const LLM_COMPLETION_V1 = service('completion', isLlmCompletionRequest, isLlmCompletionResponse);
+export const LLM_STRUCTURED_TASK_V1 = service('structured-task', isLlmStructuredTaskRequest, isLlmStructuredTaskResponse);
+export const LLM_EMBEDDING_V1 = service('embedding', isLlmEmbeddingRequest, isLlmEmbeddingResponse);
+export const LLM_RERANK_V1 = service('rerank', isLlmRerankRequest, isLlmRerankResponse);
+export const LLM_ROUTE_DIAGNOSTICS_V1 = service('route-diagnostics', isLlmRouteDiagnosticsRequest, isLlmRouteDiagnosticsResponse);
+export const LLM_ROUTE_CHANGED_V1: EventContract<typeof LLM_PLUGIN_ID, 'route-changed', 1, LlmRouteChangedPayload> = Object.freeze({ kind: 'event', provider: LLM_PLUGIN_ID, name: 'route-changed', version: 1, schemaId: 'ss-helper.llm.route-changed.v1', validatePayload: isLlmRouteChangedPayload });

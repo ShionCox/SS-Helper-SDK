@@ -1,0 +1,11 @@
+#ss-helper-settings-root {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+#ss-helper-settings-root section {
+  border: 1px solid var(--SmartThemeBorderColor, #666);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}

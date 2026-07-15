@@ -1,0 +1,10 @@
+{
+  "display_name": "SS-Helper Core",
+  "loading_order": -1000,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "author": "SS-Helper",
+  "version": "1.0.0",
+  "auto_update": false
+}
