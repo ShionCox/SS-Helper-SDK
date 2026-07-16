@@ -11,8 +11,19 @@ export class FakeElement {
     this.disabled = false;
     this.value = '';
     this.checked = false;
+    this.selected = false;
+    this.multiple = false;
     this.type = '';
     this.tabIndex = 0;
+    this.hidden = false;
+    this.className = '';
+    this.placeholder = '';
+    this.name = '';
+    this.min = '';
+    this.max = '';
+    this.step = '';
+    this.style = { overflow: '' };
+    this.classList = { contains: (name) => this.className.split(/\s+/u).includes(name) };
   }
   append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
   prepend(...nodes) { for (const node of [...nodes].reverse()) { node.parentElement = this; this.children.unshift(node); } }
@@ -26,10 +37,12 @@ export class FakeElement {
   removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
   dispatchEvent(event) { event.target ??= this; for (const listener of this.listeners.get(event.type) ?? []) listener(event); }
   focus() { this.ownerDocument.activeElement = this; }
+  contains(node) { if (node === this) return true; return this.children.some((child) => child.contains(node)); }
   querySelectorAll(selector) {
     const candidates = [];
     const visit = (node) => { for (const child of node.children) { candidates.push(child); visit(child); } };
     visit(this);
+    if (selector === 'span:last-child') return candidates.filter((node) => node.tagName === 'SPAN' && node.parentElement?.children.at(-1) === node);
     if (selector.includes('button')) return candidates.filter((node) => ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A'].includes(node.tagName) || node.attributes.has('tabindex'));
     if (selector.startsWith('[data-')) return candidates.filter((node) => Object.keys(node.dataset).length > 0);
     return candidates;
@@ -38,8 +51,10 @@ export class FakeElement {
 }
 
 export class FakeDocument {
-  constructor() { this.body = new FakeElement('body', this); this.activeElement = this.body; }
+  constructor() { this.body = new FakeElement('body', this); this.activeElement = this.body; this.defaultView = { confirm: () => true }; }
   createElement(tagName) { return new FakeElement(tagName, this); }
+  querySelectorAll(selector) { return this.body.querySelectorAll(selector); }
+  querySelector(selector) { return this.body.querySelector(selector); }
   getElementById(id) {
     let found = null;
     const visit = (node) => { if (node.id === id) found = node; for (const child of node.children) visit(child); };

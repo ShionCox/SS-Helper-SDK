@@ -8,6 +8,8 @@ export * from './contracts/plugin.js';
 export * from './contracts/services.js';
 export * from './contracts/settings.js';
 export * from './contracts/ui.js';
+export * from './contracts/workspace.js';
 export * from './errors.js';
 export * from './client/connect-core.js';
 export * from './client/reconnect.js';
+export * from './client/hosted-core.js';

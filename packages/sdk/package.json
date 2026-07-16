@@ -20,6 +20,7 @@
     "./contracts/host": { "types": "./dist/contracts/host.d.ts", "import": "./dist/contracts/host.js", "default": "./dist/contracts/host.js" },
     "./contracts/llm": { "types": "./dist/contracts/llm.d.ts", "import": "./dist/contracts/llm.js", "default": "./dist/contracts/llm.js" },
     "./contracts/memory": { "types": "./dist/contracts/memory.d.ts", "import": "./dist/contracts/memory.js", "default": "./dist/contracts/memory.js" },
+    "./contracts/workspace": { "types": "./dist/contracts/workspace.d.ts", "import": "./dist/contracts/workspace.js", "default": "./dist/contracts/workspace.js" },
     "./errors": { "types": "./dist/errors.d.ts", "import": "./dist/errors.js", "default": "./dist/errors.js" }
   },
   "scripts": {

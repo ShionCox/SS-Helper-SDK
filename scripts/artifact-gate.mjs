@@ -229,8 +229,8 @@ function buildCoreArtifact() {
     coreVersion: extensionManifest.version,
     sdkPackageVersion: packageJson.version,
     apiMajor: 1,
-    apiMinor: 1,
-    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-1.1`,
+    apiMinor: 2,
+    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-1.2`,
     contentDigest: contentDigest(files),
     toolchain,
     files,
@@ -267,7 +267,8 @@ function makeConsumerBundle(name, installedSdk, source) {
   writeFileSync(path.join(bundle, 'index.js'), source);
   for (const file of walkFiles(bundle)) {
     const contents = readFileSync(path.join(bundle, ...file.split('/')), 'utf8');
-    if (/core-extension|apps\/core|node_modules|workspace:|link:/u.test(`${file}\n${contents}`)) {
+    if (/core-extension|apps\/core|node_modules/u.test(file)
+      || /(?:workspace:(?:\*|\^|~|\d)|link:(?:\.|\/))/u.test(contents)) {
       throw new Error(`${name} embeds Core or uses a workspace/sibling dependency`);
     }
   }
@@ -315,14 +316,8 @@ function artifactSmoke(core, sdk) {
     "  const binaryBody = { encoding:'base64', contentType:'application/vnd.sqlite3', data:'U1FMaXRlIGZvcm1hdCAzAEcwMTEgYmluYXJ5IGdhdGU=', byteLength:32, sha256:'0c05ece4802d8aba9072dcd878fcf3ba519e67c66c82ff0754e6749ca87216c1' };",
     "  const binaryExport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/export', method:'POST', responseMode:'binary' });",
     "  const binaryImport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/import', method:'POST', responseMode:'json', body:binaryBody });",
-    '  let memoryTransport = { available:false };',
-    '  try {',
-    "    const memoryJson = await session.host.request.send({ path:'/api/plugins/ss-helper-memory/v1/health', method:'GET' });",
-    "    const memoryExport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-memory/v1/backup/export', method:'POST', responseMode:'binary' });",
-    "    const memoryImport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-memory/v1/backup/import', method:'POST', responseMode:'json', body:{ encoding:'base64', contentType:memoryExport.contentType, data:memoryExport.data, byteLength:memoryExport.byteLength, sha256:memoryExport.sha256 } });",
-    '    memoryTransport = { available:true, json:{ status:memoryJson.status, ok:memoryJson.ok, body:memoryJson.body }, binary:{ export:{ status:memoryExport.status, ok:memoryExport.ok, contentType:memoryExport.contentType, data:memoryExport.data, byteLength:memoryExport.byteLength, sha256:memoryExport.sha256, filename:memoryExport.filename }, import:{ status:memoryImport.status, ok:memoryImport.ok, body:memoryImport.body } } };',
-    '  } catch { memoryTransport = { available:false }; }',
-    '  state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } }, memoryTransport };',
+    "  const legacyMemoryRoute = await session.host.request.send({ path:'/api/plugins/ss-helper-sdk/v1/memory/health', method:'GET' });",
+    '  state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } }, legacyMemoryRoute:{ status:legacyMemoryRoute.status, ok:legacyMemoryRoute.ok } };',
     "  const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
     "  session.registerSettings({ id:'fixture.consumer-a', title:'A', fields:[{ kind:'text', id:'value', label:'Value' }] }, { load:()=>({value:'a'}), save:()=>{}, reset:()=>({value:'a'}) });",
     '  session.services.expose(contract, (request) => ({ value:request.value }));',

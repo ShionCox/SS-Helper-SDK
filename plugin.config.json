@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "kind": "server-plugin",
+  "directoryName": "SS-Helper-SDK",
+  "displayName": "SS-Helper Core",
+  "server": {
+    "id": "ss-helper-sdk",
+    "name": "SS-Helper SDK",
+    "description": "SS-Helper Core runtime and shared workspace storage",
+    "version": "1.0.0"
+  },
+  "browser": {
+    "coreVersion": "1.0.0",
+    "sdkPackageVersion": "1.0.0",
+    "apiMajor": 1,
+    "apiMinor": 2,
+    "modulePath": "/api/plugins/ss-helper-sdk/browser/core.js",
+    "stylePath": "/api/plugins/ss-helper-sdk/browser/core.css"
+  }
+}

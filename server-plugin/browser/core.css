@@ -1,0 +1,4 @@
+#ss-helper-settings-root { box-sizing: border-box; margin: 0.75rem 0; padding: 0.75rem; border: 1px solid var(--SmartThemeBorderColor, #666); border-radius: 0.5rem; }
+#ss-helper-settings-root h2, #ss-helper-settings-root h3 { margin: 0.4rem 0; }
+#ss-helper-settings-root section { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--SmartThemeBorderColor, #666); }
+#ss-helper-settings-root button, #ss-helper-settings-root input, #ss-helper-settings-root select, #ss-helper-settings-root textarea { max-width: 100%; }

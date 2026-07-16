@@ -23,7 +23,7 @@ test('artifact evidence sanitizer redacts Windows roots without obscuring comman
     profilePath: 'c:/users/LYY/.cache/gate',
     unknownFileUrl: 'file:///D:/unmapped/gate-evidence.json',
     uncPath: '\\\\server\\share\\gate-evidence.json',
-    nested: [{ 'I:\\VUE\\SS-Helper-Memory\\server\\index.js': 'I:\\VUE\\SS-Helper-LLM2\\not-the-llm-root.js' }],
+    nested: [{ 'I:\\VUE\\SS-Helper-Memory\\dist\\index.js': 'I:\\VUE\\SS-Helper-LLM2\\not-the-llm-root.js' }],
   });
   const serialized = JSON.stringify(sanitized);
 
@@ -39,7 +39,7 @@ test('artifact evidence sanitizer redacts Windows roots without obscuring comman
   assert.equal(sanitized.profilePath, '<user-profile>/.cache/gate');
   assert.equal(sanitized.unknownFileUrl, '<file-reference>');
   assert.equal(sanitized.uncPath, '<absolute-path>');
-  assert.deepEqual(sanitized.nested, [{ '<memory-root>/server/index.js': '<absolute-path>' }]);
+  assert.deepEqual(sanitized.nested, [{ '<memory-root>/dist/index.js': '<absolute-path>' }]);
 });
 
 test('artifact inventory is canonical and rejects payload drift', () => {

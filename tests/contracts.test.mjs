@@ -98,7 +98,7 @@ test('LLM service validators reject malformed requests and provider responses ex
 test('version axes are not conflated by exported metadata', () => {
   assert.equal(SDK_PACKAGE_VERSION, '1.0.0');
   assert.equal(API_MAJOR, 1);
-  assert.equal(API_MINOR, 1);
+  assert.equal(API_MINOR, 2);
   assert.notEqual('2.4.0', SDK_PACKAGE_VERSION);
 });
 

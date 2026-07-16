@@ -43,20 +43,10 @@ test('architecture evidence link targets the current artifact-gate heading', () 
   assert.match(artifactGate, /^## Historical artifact\/runtime evidence — G008 fresh rerun required$/m);
 });
 
-test('Memory current evidence is ab55ec7 and b84d8a1 stays historical', () => {
-  const memoryEvidenceDocs = [
-    'docs/CURRENT_PROJECT_STATUS.md',
-    'docs/acceptance-matrix.md',
-    'docs/architecture-invariants.md',
-    'docs/artifact-gate.md',
-  ];
-
-  for (const file of memoryEvidenceDocs) {
-    const content = readFileSync(resolve(root, file), 'utf8');
-    assert.match(content, /(?:current|当前|最终)[^\n]{0,40}ab55ec7|ab55ec7[^\n]{0,40}(?:current|当前|最终)/i, `${file} must identify ab55ec7 as the current/final Memory baseline`);
-    for (const line of content.split(/\r?\n/).filter((entry) => entry.includes('b84d8a1'))) {
-      assert.match(line, /historical|pre-transcoding|历史|转码前/i, `${file} must describe b84d8a1 as historical`);
-      assert.doesNotMatch(line, /(?:Memory\s+)?(?:current|final|当前|最终)(?:\s+(?:baseline|HEAD|基线))?\s*(?:is|为|:|：)?\s*`?b84d8a1/i, `${file} must not label b84d8a1 current or final`);
-    }
-  }
+test('architecture documents SDK storage and Memory business ownership as separate boundaries', () => {
+  const architecture = readFileSync(resolve(root, 'docs/architecture-invariants.md'), 'utf8');
+  assert.match(architecture, /SDK owns generic workspace storage; Memory owns every memory rule/);
+  assert.match(architecture, /frontend-only consumer of `session\.workspace`/);
+  assert.match(architecture, /SDK contains no Memory schema, worker, dynamic import, route, fact conflict or recall implementation/);
+  assert.doesNotMatch(architecture, /semantic worker is mounted beneath the SDK route/);
 });

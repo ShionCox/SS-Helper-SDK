@@ -25,6 +25,7 @@ import { ResourceScope } from './session-scope.js';
 import { createTavernHostPort, type TavernHostAdapter } from '../host/tavern-host-port.js';
 import type { SettingsHost } from '../settings/settings-host.js';
 import type { PopupHost } from '../popup/popup-host.js';
+import { createWorkspacePort } from '../workspace/workspace-port.js';
 
 export interface PluginSnapshot {
   readonly id: string;
@@ -46,6 +47,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   readonly events: EventPort;
   readonly host: HostPort<Capabilities>;
   readonly ui: UiPort;
+  readonly workspace: import('@ss-helper/sdk').WorkspacePort;
   #closed = false;
 
   constructor(
@@ -74,6 +76,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
       subscribe: (contract: AnyEventContract, listener: (payload: unknown) => void) => events.subscribe(this.#scope, contract, listener),
     }) as EventPort;
     this.host = createTavernHostPort(this.#scope, granted, hostAdapter);
+    this.workspace = createWorkspacePort(this.#scope, descriptor.id);
     this.ui = Object.freeze({ openPopup: <Input extends PlainData>(token: PopupToken<Input>, input: Input) => this.popupHost.open(this.#scope, token, input) });
   }
 

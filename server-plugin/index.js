@@ -1,0 +1,636 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+
+const PLUGIN_ID = 'ss-helper-sdk';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+function resolveDatabasePath({ stRoot = process.env.SS_HELPER_ST_ROOT, dataRoot = globalThis.DATA_ROOT } = {}) {
+  const resolvedDataRoot = stRoot
+    ? path.join(path.resolve(stRoot), 'data')
+    : typeof dataRoot === 'string' && dataRoot.trim()
+      ? path.resolve(dataRoot)
+      : path.join(ROOT, 'data');
+  return path.join(resolvedDataRoot, '_ss-helper', 'ss-helper.sqlite3');
+}
+const DB_PATH = resolveDatabasePath();
+const SECRET_KEY_PATH = path.join(path.dirname(DB_PATH), 'ss-helper-secrets.key');
+const BROWSER_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'browser');
+const MAX_VALUE_BYTES = 1024 * 1024;
+const MAX_PAGE_SIZE = 1000;
+const MAX_TRANSACTION_OPERATIONS = 5000;
+const SCHEMA_VERSION = 3;
+const SECRET_KEY_VERSION = 1;
+
+export const info = Object.freeze({
+  id: PLUGIN_ID,
+  name: 'SS-Helper SDK',
+  description: 'SS-Helper Core runtime and shared workspace storage',
+});
+
+let database;
+let initialized = false;
+let initError;
+let secretKey;
+let secretKeyError;
+
+function now() { return Date.now(); }
+function json(value) { return JSON.stringify(value ?? null); }
+function parse(value) { return value === null || value === undefined ? null : JSON.parse(value); }
+function failure(code, message = code) { const error = new Error(message); error.code = code; return error; }
+function invalidPayload(message) { throw failure('PAYLOAD_INVALID', message); }
+function text(value, name) {
+  if (typeof value !== 'string' || value.trim() === '') invalidPayload(`${name} is required`);
+  if (value.length > 128 || !/^[\w.:-]+$/u.test(value)) invalidPayload(`${name} is invalid`);
+  return value;
+}
+function workspaceText(value, name = 'workspaceId') {
+  if (typeof value !== 'string' || value.trim() === '') invalidPayload(`${name} is required`);
+  const normalized = value.trim();
+  if (normalized.length > 256 || /[\u0000-\u001f\u007f]/u.test(normalized)) invalidPayload(`${name} is invalid`);
+  return normalized;
+}
+function fieldText(value, name = 'field') {
+  if (typeof value !== 'string' || !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u.test(value) || value.length > 128) invalidPayload(`${name} is invalid`);
+  return value;
+}
+function bodyOf(req) { return req.body && typeof req.body === 'object' ? req.body : {}; }
+function callerOf(req) { return text(req.headers['x-ss-helper-plugin'] ?? '', 'callerPluginId'); }
+function sizeOf(value) { return Buffer.byteLength(json(value), 'utf8'); }
+function clampLimit(value, fallback = 100) { return Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(value ?? fallback) || fallback))); }
+function encodeCursor(value) { return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url'); }
+function decodeCursor(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try { const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')); return parsed && typeof parsed === 'object' ? parsed : null; }
+  catch { invalidPayload('cursor is invalid'); }
+}
+function readField(value, field) { return field.split('.').reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, value); }
+function scalar(value, name = 'indexed value') {
+  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  invalidPayload(`${name} must be a scalar`);
+}
+function sqliteScalar(value) { return typeof value === 'boolean' ? (value ? 1 : 0) : value; }
+
+function ensureSecretKey() {
+  if (secretKey) return secretKey;
+  if (secretKeyError) throw secretKeyError;
+  try {
+    fs.mkdirSync(path.dirname(SECRET_KEY_PATH), { recursive: true });
+    let bytes;
+    if (fs.existsSync(SECRET_KEY_PATH)) {
+      bytes = fs.readFileSync(SECRET_KEY_PATH);
+      if (bytes.length !== 32) throw failure('WORKSPACE_SECRET_UNAVAILABLE', 'Secret key has invalid length');
+    } else {
+      bytes = crypto.randomBytes(32);
+      const temp = `${SECRET_KEY_PATH}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(temp, bytes, { mode: 0o600, flag: 'wx' });
+      try { fs.renameSync(temp, SECRET_KEY_PATH); } catch (error) { try { fs.unlinkSync(temp); } catch {} ; if (!fs.existsSync(SECRET_KEY_PATH)) throw error; }
+    }
+    try { fs.chmodSync(SECRET_KEY_PATH, 0o600); } catch {}
+    secretKey = bytes;
+    return secretKey;
+  } catch (error) {
+    secretKeyError = error?.code === 'WORKSPACE_SECRET_UNAVAILABLE' ? error : failure('WORKSPACE_SECRET_UNAVAILABLE', error instanceof Error ? error.message : String(error));
+    throw secretKeyError;
+  }
+}
+
+function maskSecret(value) {
+  const textValue = String(value);
+  if (textValue.length <= 8) return `${textValue.slice(0, 2)}***${textValue.slice(-2)}`;
+  return `${textValue.slice(0, 4)}***${textValue.slice(-4)}`;
+}
+
+function encryptSecret(owner, workspace, secretId, value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ensureSecretKey(), iv);
+  cipher.setAAD(Buffer.from(`${owner}\0${workspace}\0${secretId}\0${SECRET_KEY_VERSION}`, 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  return { ciphertext: ciphertext.toString('base64'), iv: iv.toString('base64'), authTag: cipher.getAuthTag().toString('base64') };
+}
+
+function decryptSecret(owner, workspace, secretId, row) {
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', ensureSecretKey(), Buffer.from(row.iv, 'base64'));
+    decipher.setAAD(Buffer.from(`${owner}\0${workspace}\0${secretId}\0${Number(row.key_version)}`, 'utf8'));
+    decipher.setAuthTag(Buffer.from(row.auth_tag, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(row.ciphertext, 'base64')), decipher.final()]).toString('utf8');
+  } catch (error) {
+    throw failure('WORKSPACE_SECRET_UNAVAILABLE', error instanceof Error ? error.message : String(error));
+  }
+}
+
+function addColumnIfMissing(db, table, column, declaration) {
+  const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name));
+  if (!columns.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
+}
+
+function createSchema(db) {
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    PRAGMA busy_timeout = 5000;
+    CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
+    CREATE TABLE IF NOT EXISTS workspaces(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, metadata_json TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(owner_plugin_id, workspace_id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS workspace_collections(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, name TEXT NOT NULL, indexes_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(owner_plugin_id, workspace_id, name),
+      FOREIGN KEY(owner_plugin_id, workspace_id) REFERENCES workspaces(owner_plugin_id, workspace_id) ON DELETE CASCADE
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS workspace_records(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, collection TEXT NOT NULL, record_id TEXT NOT NULL,
+      value_json TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(owner_plugin_id, workspace_id, collection, record_id),
+      FOREIGN KEY(owner_plugin_id, workspace_id, collection) REFERENCES workspace_collections(owner_plugin_id, workspace_id, name) ON DELETE CASCADE
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS workspace_record_indexes(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, collection TEXT NOT NULL, field_name TEXT NOT NULL,
+      field_value TEXT NOT NULL, record_id TEXT NOT NULL,
+      PRIMARY KEY(owner_plugin_id, workspace_id, collection, field_name, field_value, record_id),
+      FOREIGN KEY(owner_plugin_id, workspace_id, collection, record_id) REFERENCES workspace_records(owner_plugin_id, workspace_id, collection, record_id) ON DELETE CASCADE
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS workspace_record_indexes_lookup ON workspace_record_indexes(owner_plugin_id, workspace_id, collection, field_name, record_id);
+    CREATE TABLE IF NOT EXISTS workspace_grants(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, grantee_plugin_id TEXT NOT NULL,
+      actions_json TEXT NOT NULL, expires_at INTEGER,
+      PRIMARY KEY(owner_plugin_id, workspace_id, grantee_plugin_id),
+      FOREIGN KEY(owner_plugin_id, workspace_id) REFERENCES workspaces(owner_plugin_id, workspace_id) ON DELETE CASCADE
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS workspace_request_dedup_v2(
+      caller_plugin_id TEXT NOT NULL, owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+      request_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY(caller_plugin_id, owner_plugin_id, workspace_id, request_id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS workspace_vectors(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, collection TEXT NOT NULL, record_id TEXT NOT NULL,
+      vector_json TEXT NOT NULL, model TEXT, metadata_json TEXT NOT NULL DEFAULT 'null',
+      created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(owner_plugin_id, workspace_id, collection, record_id),
+      FOREIGN KEY(owner_plugin_id, workspace_id, collection, record_id) REFERENCES workspace_records(owner_plugin_id, workspace_id, collection, record_id) ON DELETE CASCADE
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS workspace_secrets(
+      owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL, secret_id TEXT NOT NULL,
+      ciphertext TEXT NOT NULL, iv TEXT NOT NULL, auth_tag TEXT NOT NULL,
+      key_version INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT 'null', updated_at INTEGER NOT NULL,
+      PRIMARY KEY(owner_plugin_id, workspace_id, secret_id),
+      FOREIGN KEY(owner_plugin_id, workspace_id) REFERENCES workspaces(owner_plugin_id, workspace_id) ON DELETE CASCADE
+    ) STRICT;
+  `);
+  addColumnIfMissing(db, 'workspace_vectors', 'metadata_json', "TEXT NOT NULL DEFAULT 'null'");
+  addColumnIfMissing(db, 'workspace_vectors', 'created_at', 'INTEGER NOT NULL DEFAULT 0');
+  db.prepare('UPDATE workspace_vectors SET created_at = updated_at WHERE created_at = 0').run();
+  db.prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)').run(SCHEMA_VERSION, now());
+}
+
+function ensureDatabase() {
+  if (initialized) return;
+  if (initError) throw initError;
+  try {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    database = new DatabaseSync(DB_PATH);
+    createSchema(database);
+    initialized = true;
+  } catch (error) {
+    initError = error instanceof Error ? error : new Error(String(error));
+    throw initError;
+  }
+}
+
+function hasAccess(owner, workspace, caller, action) {
+  if (owner === caller) return true;
+  const grant = database.prepare('SELECT actions_json, expires_at FROM workspace_grants WHERE owner_plugin_id = ? AND workspace_id = ? AND grantee_plugin_id = ?').get(owner, workspace, caller);
+  if (!grant || (grant.expires_at !== null && Number(grant.expires_at) < now())) return false;
+  return parse(grant.actions_json)?.includes(action) === true;
+}
+
+function requireWorkspace(input, caller, action = 'read') {
+  const owner = text(input.ownerPluginId ?? caller, 'ownerPluginId');
+  const workspace = workspaceText(input.workspaceId);
+  const row = database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').get(owner, workspace);
+  if (!row) throw failure('WORKSPACE_NOT_FOUND');
+  if (!hasAccess(owner, workspace, caller, action)) throw failure('WORKSPACE_ACCESS_DENIED');
+  return { owner, workspace, row };
+}
+
+function routeError(res, error) {
+  const code = error?.code || 'WORKSPACE_UNAVAILABLE';
+  const status = code === 'WORKSPACE_ACCESS_DENIED' ? 403 : code === 'WORKSPACE_NOT_FOUND' ? 404 : code === 'WORKSPACE_CONFLICT' ? 409 : (code === 'WORKSPACE_UNAVAILABLE' || code === 'WORKSPACE_SECRET_UNAVAILABLE') ? 503 : 400;
+  res.status(status).json({ ok: false, error: code, message: error?.message ?? String(error) });
+}
+
+function archiveDigest(archive) { return crypto.createHash('sha256').update(JSON.stringify(archive)).digest('hex'); }
+
+function collectionDefinition(owner, workspace, collection) {
+  const row = database.prepare('SELECT indexes_json FROM workspace_collections WHERE owner_plugin_id = ? AND workspace_id = ? AND name = ?').get(owner, workspace, collection);
+  if (!row) throw failure('WORKSPACE_NOT_FOUND', `Collection ${collection} does not exist`);
+  return parse(row.indexes_json) ?? [];
+}
+
+function assertExpectedVersion(current, expectedVersion) {
+  if (expectedVersion === undefined || expectedVersion === null) return;
+  const expected = Number(expectedVersion);
+  if (!Number.isInteger(expected) || expected < 0 || Number(current?.version ?? 0) !== expected) throw failure('WORKSPACE_CONFLICT');
+}
+
+function updateRecordIndexes(owner, workspace, collection, recordId, value) {
+  const indexes = collectionDefinition(owner, workspace, collection);
+  database.prepare('DELETE FROM workspace_record_indexes WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').run(owner, workspace, collection, recordId);
+  const insert = database.prepare('INSERT INTO workspace_record_indexes(owner_plugin_id, workspace_id, collection, field_name, field_value, record_id) VALUES (?, ?, ?, ?, ?, ?)');
+  for (const field of indexes) {
+    const fieldValue = readField(value, field);
+    if (fieldValue !== undefined) insert.run(owner, workspace, collection, field, json(scalar(fieldValue, field)), recordId);
+  }
+}
+
+function writeRecord(owner, workspace, input) {
+  const collection = text(input.collection ?? 'default', 'collection');
+  const recordId = text(input.recordId, 'recordId');
+  if (sizeOf(input.value) > MAX_VALUE_BYTES) invalidPayload('record value is too large');
+  collectionDefinition(owner, workspace, collection);
+  const current = database.prepare('SELECT version, created_at FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId);
+  assertExpectedVersion(current, input.expectedVersion);
+  const t = now(); const version = Number(current?.version ?? 0) + 1;
+  database.prepare('INSERT INTO workspace_records(owner_plugin_id, workspace_id, collection, record_id, value_json, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, collection, record_id) DO UPDATE SET value_json = excluded.value_json, version = excluded.version, updated_at = excluded.updated_at').run(owner, workspace, collection, recordId, json(input.value), version, Number(current?.created_at ?? t), t);
+  updateRecordIndexes(owner, workspace, collection, recordId, input.value);
+  return { collection, recordId, value: input.value, version, updatedAt: t };
+}
+
+function removeRecord(owner, workspace, input) {
+  const collection = text(input.collection ?? 'default', 'collection'); const recordId = text(input.recordId, 'recordId');
+  collectionDefinition(owner, workspace, collection);
+  const current = database.prepare('SELECT version FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId);
+  assertExpectedVersion(current, input.expectedVersion);
+  if (!current) return false;
+  database.prepare('DELETE FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').run(owner, workspace, collection, recordId);
+  database.prepare('DELETE FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').run(owner, workspace, collection, recordId);
+  return true;
+}
+
+function rebuildCollectionIndexes(owner, workspace, collection) {
+  database.prepare('DELETE FROM workspace_record_indexes WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ?').run(owner, workspace, collection);
+  const records = database.prepare('SELECT record_id, value_json FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ?').all(owner, workspace, collection);
+  for (const record of records) updateRecordIndexes(owner, workspace, collection, record.record_id, parse(record.value_json));
+}
+
+function queryRecords(owner, workspace, input) {
+  const collection = text(input.collection ?? 'default', 'collection');
+  const declared = new Set(collectionDefinition(owner, workspace, collection));
+  const filter = input.filter && typeof input.filter === 'object' && !Array.isArray(input.filter) ? input.filter : {};
+  const predicates = Array.isArray(input.where) ? input.where : [];
+  const order = input.orderBy && typeof input.orderBy === 'object' ? input.orderBy : { field: 'updatedAt', direction: 'desc' };
+  const orderField = String(order.field ?? 'updatedAt'); const direction = order.direction === 'asc' ? 'ASC' : 'DESC';
+  const builtInOrder = orderField === 'updatedAt' || orderField === 'recordId';
+  for (const field of [...Object.keys(filter), ...predicates.map((item) => item?.field), ...(builtInOrder ? [] : [orderField])]) {
+    fieldText(field);
+    if (!declared.has(field)) throw failure('WORKSPACE_INDEX_REQUIRED', `Index ${field} must be declared first`);
+  }
+  const joins = []; const joinParams = []; const where = ['r.owner_plugin_id = ?', 'r.workspace_id = ?', 'r.collection = ?']; const params = [owner, workspace, collection];
+  let sortExpression = orderField === 'recordId' ? 'r.record_id' : 'r.updated_at';
+  if (!builtInOrder) {
+    joins.push('JOIN workspace_record_indexes ord ON ord.owner_plugin_id = r.owner_plugin_id AND ord.workspace_id = r.workspace_id AND ord.collection = r.collection AND ord.record_id = r.record_id AND ord.field_name = ?');
+    joinParams.push(orderField); sortExpression = "json_extract(ord.field_value, '$')";
+  }
+  const addPredicate = (field, op, rawValue, index) => {
+    fieldText(field); const alias = `i${index}`; let condition;
+    if (op === 'in') {
+      if (!Array.isArray(rawValue) || rawValue.length === 0) invalidPayload(`${field} in requires values`);
+      const values = rawValue.map((value) => sqliteScalar(scalar(value, field)));
+      condition = `json_extract(${alias}.field_value, '$') IN (${values.map(() => '?').join(',')})`; params.push(field, ...values);
+    } else {
+      const value = sqliteScalar(scalar(rawValue, field));
+      const operator = op === 'eq' ? 'IS' : op === 'neq' ? 'IS NOT' : op === 'gt' ? '>' : op === 'gte' ? '>=' : op === 'lt' ? '<' : op === 'lte' ? '<=' : null;
+      if (!operator) invalidPayload(`Unsupported query operator ${op}`);
+      condition = `json_extract(${alias}.field_value, '$') ${operator} ?`; params.push(field, value);
+    }
+    where.push(`EXISTS (SELECT 1 FROM workspace_record_indexes ${alias} WHERE ${alias}.owner_plugin_id = r.owner_plugin_id AND ${alias}.workspace_id = r.workspace_id AND ${alias}.collection = r.collection AND ${alias}.record_id = r.record_id AND ${alias}.field_name = ? AND ${condition})`);
+  };
+  let predicateIndex = 0;
+  for (const [field, value] of Object.entries(filter)) addPredicate(field, 'eq', value, predicateIndex++);
+  for (const predicate of predicates) {
+    if (!predicate || typeof predicate.field !== 'string' || !['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in'].includes(predicate.op)) invalidPayload('query predicate is invalid');
+    addPredicate(predicate.field, predicate.op, predicate.value, predicateIndex++);
+  }
+  const cursor = decodeCursor(input.cursor);
+  if (cursor) {
+    const comparison = direction === 'ASC' ? '>' : '<';
+    where.push(`(${sortExpression} ${comparison} ? OR (${sortExpression} IS ? AND r.record_id ${comparison} ?))`);
+    params.push(sqliteScalar(cursor.sort), sqliteScalar(cursor.sort), String(cursor.recordId ?? ''));
+  }
+  const limit = clampLimit(input.limit);
+  const sql = `SELECT r.record_id, r.value_json, r.version, r.updated_at, ${sortExpression} AS sort_value FROM workspace_records r ${joins.join(' ')} WHERE ${where.join(' AND ')} ORDER BY ${sortExpression} ${direction}, r.record_id ${direction} LIMIT ?`;
+  const rows = database.prepare(sql).all(...joinParams, ...params, limit + 1);
+  const page = rows.slice(0, limit);
+  return {
+    records: page.map((row) => ({ recordId: row.record_id, value: parse(row.value_json), version: row.version, updatedAt: row.updated_at })),
+    nextCursor: rows.length > limit && page.length ? encodeCursor({ sort: page.at(-1).sort_value, recordId: page.at(-1).record_id }) : null,
+  };
+}
+
+function vectorMatches(row, input) {
+  if (input.collection && row.collection !== input.collection) return false;
+  if (input.model && row.model !== input.model) return false;
+  const metadata = parse(row.metadata_json);
+  if (input.metadata && Object.entries(input.metadata).some(([field, value]) => readField(metadata, field) !== value)) return false;
+  return true;
+}
+
+function snapshotWorkspace(owner, workspace, row) {
+  const collections = database.prepare('SELECT name, indexes_json FROM workspace_collections WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY name').all(owner, workspace);
+  const records = database.prepare('SELECT collection, record_id, value_json, version, created_at, updated_at FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY collection, record_id').all(owner, workspace);
+  const vectors = database.prepare('SELECT collection, record_id, vector_json, model, metadata_json, created_at, updated_at FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY collection, record_id').all(owner, workspace);
+  return {
+    format: 'ss-helper-workspace', version: 1, ownerPluginId: owner, workspaceId: workspace,
+    metadata: parse(row.metadata_json), workspaceVersion: row.version,
+    collections: collections.map((item) => ({ name: item.name, indexes: parse(item.indexes_json) ?? [] })),
+    records: records.map((item) => ({ collection: item.collection, recordId: item.record_id, value: parse(item.value_json), version: item.version, createdAt: item.created_at, updatedAt: item.updated_at })),
+    vectors: vectors.map((item) => ({ collection: item.collection, recordId: item.record_id, vector: parse(item.vector_json), model: item.model, metadata: parse(item.metadata_json), createdAt: item.created_at, updatedAt: item.updated_at })),
+  };
+}
+
+function captureWorkspaceSecrets(owner, workspaceIds) {
+  if (!workspaceIds.length) return [];
+  const placeholders = workspaceIds.map(() => '?').join(',');
+  return database.prepare(`SELECT * FROM workspace_secrets WHERE owner_plugin_id = ? AND workspace_id IN (${placeholders})`).all(owner, ...workspaceIds);
+}
+
+function restoreWorkspaceSecrets(rows) {
+  const insert = database.prepare('INSERT INTO workspace_secrets(owner_plugin_id, workspace_id, secret_id, ciphertext, iv, auth_tag, key_version, metadata_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const row of rows) insert.run(row.owner_plugin_id, row.workspace_id, row.secret_id, row.ciphertext, row.iv, row.auth_tag, row.key_version, row.metadata_json, row.updated_at);
+}
+
+function restoreWorkspace(owner, workspaceId, archive) {
+  const workspace = workspaceText(workspaceId); const t = now();
+  database.prepare('INSERT INTO workspaces(owner_plugin_id, workspace_id, metadata_json, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(owner, workspace, json(archive.metadata ?? {}), Number(archive.workspaceVersion) || 1, t, t);
+  const collections = Array.isArray(archive.collections) ? archive.collections : [];
+  for (const collection of collections) database.prepare('INSERT INTO workspace_collections(owner_plugin_id, workspace_id, name, indexes_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(owner, workspace, text(collection.name, 'collection'), json(Array.isArray(collection.indexes) ? collection.indexes.map((field) => fieldText(field)) : []), t, t);
+  if (!collections.some((item) => item?.name === 'default')) database.prepare('INSERT INTO workspace_collections(owner_plugin_id, workspace_id, name, indexes_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(owner, workspace, 'default', '[]', t, t);
+  for (const record of Array.isArray(archive.records) ? archive.records : []) {
+    const collection = text(record.collection, 'collection'); const recordId = text(record.recordId, 'recordId');
+    database.prepare('INSERT INTO workspace_records(owner_plugin_id, workspace_id, collection, record_id, value_json, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(owner, workspace, collection, recordId, json(record.value), Number(record.version) || 1, Number(record.createdAt) || t, Number(record.updatedAt) || t);
+    updateRecordIndexes(owner, workspace, collection, recordId, record.value);
+  }
+  for (const vector of Array.isArray(archive.vectors) ? archive.vectors : []) database.prepare('INSERT INTO workspace_vectors(owner_plugin_id, workspace_id, collection, record_id, vector_json, model, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(owner, workspace, text(vector.collection, 'collection'), text(vector.recordId, 'recordId'), json(vector.vector), vector.model ?? null, json(vector.metadata), Number(vector.createdAt) || t, Number(vector.updatedAt) || t);
+}
+
+function browserAssetPath(req) {
+  try {
+    const raw = String(req.path ?? req.url ?? '').split('?')[0].replace(/^\/+/, '');
+    const target = path.resolve(BROWSER_ROOT, decodeURIComponent(raw)); const relative = path.relative(BROWSER_ROOT, target);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+    return target;
+  } catch { return null; }
+}
+
+function registerWorkspaceRoutes(router) {
+  router.get('/browser/core.js', (_req, res) => res.sendFile(path.join(BROWSER_ROOT, 'core.js')));
+  router.get('/browser/core.css', (_req, res) => res.sendFile(path.join(BROWSER_ROOT, 'core.css')));
+  if (typeof router.use === 'function') router.use('/browser', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const file = browserAssetPath(req); if (!file) return res.status(404).end();
+    return res.sendFile(file, (error) => { if (error && !res.headersSent) res.status(error.statusCode === 403 ? 403 : 404).end(); });
+  });
+  const health = (_req, res) => {
+    try {
+      ensureDatabase();
+      const sqliteVersion = database.prepare('SELECT sqlite_version() AS version').get().version;
+      const walMode = database.prepare('PRAGMA journal_mode').get().journal_mode;
+      let secretReady = false; let secretError;
+      try { ensureSecretKey(); secretReady = true; } catch (error) { secretError = error?.code ?? 'WORKSPACE_SECRET_UNAVAILABLE'; }
+      res.json({ ok: true, ready: initialized, database: path.basename(DB_PATH), schemaVersion: SCHEMA_VERSION, sqliteVersion, walMode, secretReady, secretError, error: initError?.message });
+    } catch (error) { routeError(res, error); }
+  };
+  router.get('/v1/health', health);
+  router.get('/v1/workspaces/health', health);
+  router.get('/v1/workspaces/integrity', (_req, res) => {
+    try {
+      ensureDatabase();
+      const messages = database.prepare('PRAGMA integrity_check').all().map((row) => String(row.integrity_check));
+      res.json({ ok: true, integrityOk: messages.length === 1 && messages[0] === 'ok', messages });
+    }
+    catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/open', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req);
+      const workspaceId = workspaceText(input.workspaceId); const owner = text(input.ownerPluginId ?? caller, 'ownerPluginId'); const t = now();
+      const existing = database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').get(owner, workspaceId);
+      if (!existing) {
+        if (owner !== caller) throw failure('WORKSPACE_ACCESS_DENIED');
+        if (input.create === false) throw failure('WORKSPACE_NOT_FOUND');
+        database.prepare('INSERT INTO workspaces(owner_plugin_id, workspace_id, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(owner, workspaceId, json(input.metadata ?? {}), t, t);
+        database.prepare('INSERT INTO workspace_collections(owner_plugin_id, workspace_id, name, indexes_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(owner, workspaceId, 'default', '[]', t, t);
+      } else if (!hasAccess(owner, workspaceId, caller, 'read')) throw failure('WORKSPACE_ACCESS_DENIED');
+      const row = existing ?? database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').get(owner, workspaceId);
+      res.json({ ok: true, ownerPluginId: owner, workspaceId, created: !existing, metadata: parse(row.metadata_json), version: row.version });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/list', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const limit = clampLimit(input.limit); const cursor = decodeCursor(input.cursor);
+      const rows = database.prepare(`SELECT * FROM workspaces WHERE owner_plugin_id = ? ${cursor ? 'AND workspace_id > ?' : ''} ORDER BY workspace_id ASC LIMIT ?`).all(caller, ...(cursor ? [String(cursor.workspaceId ?? '')] : []), limit + 1);
+      const page = rows.slice(0, limit);
+      res.json({ ok: true, workspaces: page.map((row) => ({ ownerPluginId: caller, workspaceId: row.workspace_id, created: false, metadata: parse(row.metadata_json), version: row.version })), nextCursor: rows.length > limit && page.length ? encodeCursor({ workspaceId: page.at(-1).workspace_id }) : null });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/delete', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const workspace = workspaceText(input.workspaceId);
+      const row = database.prepare('SELECT version FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').get(caller, workspace); if (!row) throw failure('WORKSPACE_NOT_FOUND');
+      assertExpectedVersion(row, input.expectedVersion); database.prepare('DELETE FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').run(caller, workspace); res.json({ ok: true });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/clear-owned', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const preserve = Array.isArray(input.preserveWorkspaceIds) ? input.preserveWorkspaceIds.map((value) => workspaceText(value)) : [];
+      const idempotencyKey = input.idempotencyKey === undefined ? '' : text(input.idempotencyKey, 'idempotencyKey');
+      const cached = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v2 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(caller, caller, '*', idempotencyKey) : null;
+      if (cached) return res.json({ ...parse(cached.response_json), replayed: true });
+      database.exec('BEGIN IMMEDIATE'); let removed;
+      try {
+        const sql = `DELETE FROM workspaces WHERE owner_plugin_id = ? ${preserve.length ? `AND workspace_id NOT IN (${preserve.map(() => '?').join(',')})` : ''}`;
+        removed = Number(database.prepare(sql).run(caller, ...preserve).changes); database.exec('COMMIT');
+      } catch (error) { database.exec('ROLLBACK'); throw error; }
+      const response = { ok: true, removed, replayed: false };
+      if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v2(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(caller, caller, '*', idempotencyKey, json(response), now());
+      res.json(response);
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/collection', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'write'); const name = text(input.name, 'name'); const t = now();
+      const indexes = Array.isArray(input.indexes) ? [...new Set(input.indexes.map((field) => fieldText(field)))] : [];
+      database.prepare('INSERT INTO workspace_collections(owner_plugin_id, workspace_id, name, indexes_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, name) DO UPDATE SET indexes_json = excluded.indexes_json, updated_at = excluded.updated_at').run(owner, workspace, name, json(indexes), t, t);
+      rebuildCollectionIndexes(owner, workspace, name); res.json({ ok: true, ownerPluginId: owner, workspaceId: workspace, name });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/record', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, input.action === 'get' ? 'read' : 'write');
+      if (input.action === 'get') {
+        const collection = text(input.collection ?? 'default', 'collection'); const recordId = text(input.recordId, 'recordId'); collectionDefinition(owner, workspace, collection);
+        const row = database.prepare('SELECT value_json, version, updated_at FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId);
+        return res.json({ ok: true, record: row ? { recordId, value: parse(row.value_json), version: row.version, updatedAt: row.updated_at } : null });
+      }
+      if (input.action === 'delete') return res.json({ ok: true, removed: removeRecord(owner, workspace, input) });
+      if (input.action !== 'upsert') invalidPayload('record action is invalid');
+      res.json({ ok: true, record: writeRecord(owner, workspace, input) });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/query', (req, res) => {
+    try { ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'read'); res.json({ ok: true, ...queryRecords(owner, workspace, input) }); }
+    catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/transaction', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'write');
+      const operations = Array.isArray(input.operations) ? input.operations : []; if (operations.length > MAX_TRANSACTION_OPERATIONS) invalidPayload('too many transaction operations');
+      const idempotencyKey = input.idempotencyKey === undefined ? '' : text(input.idempotencyKey, 'idempotencyKey');
+      const previous = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v2 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(caller, owner, workspace, idempotencyKey) : null;
+      if (previous) return res.json({ ...parse(previous.response_json), replayed: true });
+      const results = []; database.exec('BEGIN IMMEDIATE');
+      try {
+        for (const operation of operations) {
+          if (operation?.action === 'upsert') { const record = writeRecord(owner, workspace, operation); results.push({ collection: text(operation.collection ?? 'default', 'collection'), recordId: record.recordId, action: 'upsert', version: record.version }); }
+          else if (operation?.action === 'delete') results.push({ collection: text(operation.collection ?? 'default', 'collection'), recordId: text(operation.recordId, 'recordId'), action: 'delete', removed: removeRecord(owner, workspace, operation) });
+          else invalidPayload('transaction operation is invalid');
+        }
+        database.prepare('UPDATE workspaces SET version = version + 1, updated_at = ? WHERE owner_plugin_id = ? AND workspace_id = ?').run(now(), owner, workspace);
+        database.exec('COMMIT');
+      } catch (error) { database.exec('ROLLBACK'); throw error; }
+      const response = { ok: true, operationCount: operations.length, replayed: false, results };
+      if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v2(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(caller, owner, workspace, idempotencyKey, json(response), now());
+      res.json(response);
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/grant', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const owner = text(input.ownerPluginId ?? caller, 'ownerPluginId'); const workspace = workspaceText(input.workspaceId);
+      if (owner !== caller || !database.prepare('SELECT 1 FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').get(owner, workspace)) throw failure('WORKSPACE_ACCESS_DENIED');
+      const grantee = text(input.granteePluginId, 'granteePluginId');
+      if (input.action === 'revoke') database.prepare('DELETE FROM workspace_grants WHERE owner_plugin_id = ? AND workspace_id = ? AND grantee_plugin_id = ?').run(owner, workspace, grantee);
+      else {
+        const actions = Array.isArray(input.actions) ? [...new Set(input.actions.filter((action) => ['read', 'write', 'vector', 'backup'].includes(action)))] : [];
+        if (!actions.length) invalidPayload('grant actions are required');
+        database.prepare('INSERT INTO workspace_grants(owner_plugin_id, workspace_id, grantee_plugin_id, actions_json, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, grantee_plugin_id) DO UPDATE SET actions_json = excluded.actions_json, expires_at = excluded.expires_at').run(owner, workspace, grantee, json(actions), input.expiresAt ?? null);
+      }
+      res.json({ ok: true });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/vector', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'vector'); const collection = text(input.collection ?? 'default', 'collection'); const recordId = text(input.recordId, 'recordId');
+      if (input.action === 'delete') return res.json({ ok: true, removed: Number(database.prepare('DELETE FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').run(owner, workspace, collection, recordId).changes) > 0 });
+      collectionDefinition(owner, workspace, collection);
+      if (!database.prepare('SELECT 1 FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId)) throw failure('WORKSPACE_NOT_FOUND', `Record ${recordId} does not exist`);
+      const vector = Array.isArray(input.vector) ? input.vector.map(Number) : []; if (!vector.length || vector.some((value) => !Number.isFinite(value))) invalidPayload('vector is invalid');
+      const current = database.prepare('SELECT created_at FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId); const t = now();
+      database.prepare('INSERT INTO workspace_vectors(owner_plugin_id, workspace_id, collection, record_id, vector_json, model, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, collection, record_id) DO UPDATE SET vector_json = excluded.vector_json, model = excluded.model, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at').run(owner, workspace, collection, recordId, json(vector), input.model ?? null, json(input.metadata), Number(current?.created_at ?? t), t);
+      res.json({ ok: true });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/vector/search', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'vector'); const query = Array.isArray(input.vector) ? input.vector.map(Number) : [];
+      if (!query.length || query.some((value) => !Number.isFinite(value))) invalidPayload('vector is invalid');
+      const rows = database.prepare('SELECT collection, record_id, vector_json, model, metadata_json FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ?').all(owner, workspace).filter((row) => vectorMatches(row, input));
+      const norm = Math.sqrt(query.reduce((sum, value) => sum + value * value, 0)) || 1;
+      const hits = rows.map((row) => {
+        const vector = parse(row.vector_json) ?? []; if (!Array.isArray(vector) || vector.length !== query.length) return null;
+        const denominator = (Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1) * norm;
+        return { collection: row.collection, recordId: row.record_id, score: vector.reduce((sum, value, index) => sum + value * query[index], 0) / denominator, model: row.model ?? undefined, metadata: parse(row.metadata_json) };
+      }).filter(Boolean).sort((a, b) => b.score - a.score || a.recordId.localeCompare(b.recordId)).slice(0, clampLimit(input.limit, 10));
+      res.json({ ok: true, hits });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/vector/list', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'vector'); const limit = clampLimit(input.limit); const cursor = decodeCursor(input.cursor);
+      let rows = database.prepare('SELECT collection, record_id, vector_json, model, metadata_json, created_at, updated_at FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY updated_at DESC, record_id DESC').all(owner, workspace).filter((row) => vectorMatches(row, input));
+      if (cursor) { const index = rows.findIndex((row) => row.collection === cursor.collection && row.record_id === cursor.recordId); if (index >= 0) rows = rows.slice(index + 1); }
+      const page = rows.slice(0, limit); res.json({ ok: true, vectors: page.map((row) => ({ collection: row.collection, recordId: row.record_id, model: row.model ?? undefined, metadata: parse(row.metadata_json), dimensions: (parse(row.vector_json) ?? []).length, createdAt: row.created_at, updatedAt: row.updated_at })), nextCursor: rows.length > limit && page.length ? encodeCursor({ collection: page.at(-1).collection, recordId: page.at(-1).record_id }) : null });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/vector/clear', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace } = requireWorkspace(input, caller, 'vector'); const rows = database.prepare('SELECT collection, record_id, model, metadata_json FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ?').all(owner, workspace).filter((row) => vectorMatches(row, input));
+      const remove = database.prepare('DELETE FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?'); database.exec('BEGIN IMMEDIATE');
+      try { for (const row of rows) remove.run(owner, workspace, row.collection, row.record_id); database.exec('COMMIT'); } catch (error) { database.exec('ROLLBACK'); throw error; }
+      res.json({ ok: true, removed: rows.length });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/secret', (req, res) => {
+    try {
+      ensureDatabase();
+      const caller = callerOf(req); const input = bodyOf(req); const workspace = workspaceText(input.workspaceId);
+      if (!database.prepare('SELECT 1 FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').get(caller, workspace)) throw failure('WORKSPACE_NOT_FOUND');
+      if (input.action === 'list') {
+        const rows = database.prepare('SELECT secret_id, metadata_json, ciphertext, updated_at, key_version FROM workspace_secrets WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY secret_id').all(caller, workspace);
+        return res.json({ ok: true, secrets: rows.map((row) => ({ secretId: row.secret_id, metadata: parse(row.metadata_json), maskedValue: maskSecret(decryptSecret(caller, workspace, row.secret_id, row)), updatedAt: row.updated_at, keyVersion: row.key_version })) });
+      }
+      const secretId = text(input.secretId, 'secretId');
+      if (input.action === 'get') {
+        const row = database.prepare('SELECT * FROM workspace_secrets WHERE owner_plugin_id = ? AND workspace_id = ? AND secret_id = ?').get(caller, workspace, secretId);
+        return res.json({ ok: true, secret: row ? { secretId, metadata: parse(row.metadata_json), maskedValue: maskSecret(decryptSecret(caller, workspace, secretId, row)), value: decryptSecret(caller, workspace, secretId, row), updatedAt: row.updated_at, keyVersion: row.key_version } : null });
+      }
+      if (input.action === 'delete') {
+        return res.json({ ok: true, removed: Number(database.prepare('DELETE FROM workspace_secrets WHERE owner_plugin_id = ? AND workspace_id = ? AND secret_id = ?').run(caller, workspace, secretId).changes) > 0 });
+      }
+      if (input.action !== 'set' || typeof input.value !== 'string' || input.value.length > MAX_VALUE_BYTES) invalidPayload('secret value is invalid');
+      const encrypted = encryptSecret(caller, workspace, secretId, input.value); const t = now();
+      database.prepare('INSERT INTO workspace_secrets(owner_plugin_id, workspace_id, secret_id, ciphertext, iv, auth_tag, key_version, metadata_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, secret_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, auth_tag = excluded.auth_tag, key_version = excluded.key_version, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at').run(caller, workspace, secretId, encrypted.ciphertext, encrypted.iv, encrypted.authTag, SECRET_KEY_VERSION, json(input.metadata), t);
+      res.json({ ok: true, secret: { secretId, metadata: input.metadata ?? null, maskedValue: maskSecret(input.value), updatedAt: t, keyVersion: SECRET_KEY_VERSION } });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/backup/export', (req, res) => {
+    try { ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const { owner, workspace, row } = requireWorkspace(input, caller, 'backup'); const archive = snapshotWorkspace(owner, workspace, row); res.json({ ok: true, archive, sha256: archiveDigest(archive) }); }
+    catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/backup/import', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const archive = input.archive;
+      if (!archive || archive.format !== 'ss-helper-workspace' || archive.version !== 1 || typeof input.sha256 !== 'string' || archiveDigest(archive) !== input.sha256) throw failure('BACKUP_INTEGRITY_INVALID');
+      const { owner, workspace } = requireWorkspace(input, caller, 'backup'); database.exec('BEGIN IMMEDIATE');
+      const preservedSecrets = captureWorkspaceSecrets(owner, [workspace]);
+      try { database.prepare('DELETE FROM workspaces WHERE owner_plugin_id = ? AND workspace_id = ?').run(owner, workspace); restoreWorkspace(owner, workspace, archive); restoreWorkspaceSecrets(preservedSecrets); database.exec('COMMIT'); }
+      catch (error) { database.exec('ROLLBACK'); throw error; }
+      res.json({ ok: true });
+    } catch (error) { routeError(res, error); }
+  });
+  router.get('/v1/workspaces/backup/export-all', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const rows = database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? ORDER BY workspace_id').all(caller);
+      const archive = { format: 'ss-helper-workspace-owner', version: 1, ownerPluginId: caller, exportedAt: now(), workspaces: rows.map((row) => snapshotWorkspace(caller, row.workspace_id, row)) };
+      res.json({ ok: true, archive, sha256: archiveDigest(archive) });
+    } catch (error) { routeError(res, error); }
+  });
+  router.post('/v1/workspaces/backup/import-all', (req, res) => {
+    try {
+      ensureDatabase(); const caller = callerOf(req); const input = bodyOf(req); const archive = input.archive;
+      if (!archive || archive.format !== 'ss-helper-workspace-owner' || archive.version !== 1 || archive.ownerPluginId !== caller || !Array.isArray(archive.workspaces) || typeof input.sha256 !== 'string' || archiveDigest(archive) !== input.sha256) throw failure('BACKUP_INTEGRITY_INVALID');
+      database.exec('BEGIN IMMEDIATE');
+      const preservedSecrets = captureWorkspaceSecrets(caller, archive.workspaces.map((workspace) => workspace.workspaceId));
+      try { database.prepare('DELETE FROM workspaces WHERE owner_plugin_id = ?').run(caller); for (const workspace of archive.workspaces) restoreWorkspace(caller, workspace.workspaceId, workspace); restoreWorkspaceSecrets(preservedSecrets); database.exec('COMMIT'); }
+      catch (error) { database.exec('ROLLBACK'); throw error; }
+      res.json({ ok: true, workspaceCount: archive.workspaces.length });
+    } catch (error) { routeError(res, error); }
+  });
+}
+
+export async function init(router) {
+  try { ensureDatabase(); } catch { /* health route reports the failure */ }
+  try { ensureSecretKey(); } catch { /* Secret API reports the failure without disabling the workspace */ }
+  registerWorkspaceRoutes(router);
+}
+
+export function exit() {
+  try { database?.close(); } finally { database = undefined; initialized = false; initError = undefined; secretKey = undefined; secretKeyError = undefined; }
+}
+
+export const __test = Object.freeze({ DB_PATH, SECRET_KEY_PATH, createSchema, ROOT, resolveDatabasePath, hash: (value) => crypto.createHash('sha256').update(String(value)).digest('hex') });

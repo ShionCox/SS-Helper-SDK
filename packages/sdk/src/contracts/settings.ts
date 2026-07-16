@@ -25,14 +25,18 @@ interface SettingsFieldBase<Kind extends string> {
 
 export interface SectionField extends SettingsFieldBase<'section'> { readonly children: readonly SettingsField[]; }
 export interface ToggleField extends SettingsFieldBase<'toggle'> { readonly defaultValue?: boolean; }
+export interface CheckboxField extends SettingsFieldBase<'checkbox'> { readonly defaultValue?: boolean; readonly validation?: ValidationRule; }
 export interface TextField extends SettingsFieldBase<'text'> { readonly defaultValue?: string; readonly placeholder?: string; readonly validation?: ValidationRule; readonly secret?: boolean; }
-export interface NumberField extends SettingsFieldBase<'number'> { readonly defaultValue?: number; readonly validation?: ValidationRule; }
+export interface NumberField extends SettingsFieldBase<'number'> { readonly defaultValue?: number; readonly validation?: ValidationRule; readonly step?: number; readonly unit?: string; readonly showStepper?: boolean; }
 export interface RangeField extends SettingsFieldBase<'range'> { readonly min: number; readonly max: number; readonly step?: number; readonly defaultValue?: number; }
-export interface SelectField extends SettingsFieldBase<'select'> { readonly options: readonly { readonly value: string; readonly label: string }[]; readonly defaultValue?: string; }
+export interface SettingsOption { readonly value: string; readonly label: string; }
+export interface SelectField extends SettingsFieldBase<'select'> { readonly options: readonly SettingsOption[]; readonly defaultValue?: string; readonly validation?: ValidationRule; }
+export interface RadioField extends SettingsFieldBase<'radio'> { readonly options: readonly SettingsOption[]; readonly defaultValue?: string; readonly validation?: ValidationRule; }
+export interface MultiSelectField extends SettingsFieldBase<'multiSelect'> { readonly options: readonly SettingsOption[]; readonly defaultValue?: readonly string[]; readonly placeholder?: string; readonly validation?: ValidationRule; }
 export interface ActionField extends SettingsFieldBase<'action'> { readonly actionId: string; readonly tone?: 'neutral' | 'danger'; readonly popup?: PopupToken; }
 export interface StatusField extends SettingsFieldBase<'status'> { readonly value: string; readonly tone?: 'neutral' | 'success' | 'warning' | 'error'; }
 
-export type SettingsField = SectionField | ToggleField | TextField | NumberField | RangeField | SelectField | ActionField | StatusField;
+export type SettingsField = SectionField | ToggleField | CheckboxField | TextField | NumberField | RangeField | SelectField | RadioField | MultiSelectField | ActionField | StatusField;
 
 export interface SettingsSchema {
   readonly id: string;

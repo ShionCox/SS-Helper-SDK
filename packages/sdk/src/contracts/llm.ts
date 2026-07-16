@@ -20,6 +20,11 @@ export interface LlmRouteDiagnosticsRequest { readonly requestId?: string; }
 export interface LlmRouteDiagnostic { readonly requestId: string; readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'aborted'; readonly route?: LlmRouteMetadata; readonly durationMs?: number; readonly errorCode?: string; }
 export interface LlmRouteDiagnosticsResponse { readonly entries: readonly LlmRouteDiagnostic[]; }
 export interface LlmRouteChangedPayload { readonly previousRoute?: string; readonly route: string; readonly reason: 'configured' | 'fallback' | 'availability'; }
+export interface LlmConsumerTask { readonly taskKey: string; readonly taskKind: 'generation' | 'embedding' | 'rerank'; readonly requiredCapabilities?: readonly string[]; readonly description?: string; readonly backgroundEligible?: boolean; readonly maxTokens?: number; readonly recommendedRoute?: { readonly resourceId?: string; readonly profileId?: string }; readonly recommendedDisplay?: 'fullscreen' | 'compact' | 'silent'; }
+export interface LlmConsumerRegistration { readonly displayName: string; readonly registrationVersion: number; readonly tasks: readonly LlmConsumerTask[]; }
+export interface LlmConsumerUnregisterRequest { readonly keepPersistent?: boolean; }
+export interface LlmWaitForDisplayRequest { readonly requestId: string; }
+export interface LlmWaitForDisplayResponse { readonly closed: boolean; }
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -38,6 +43,7 @@ const plainData = (value: unknown, seen = new Set<object>()): value is PlainData
 };
 const optionalNonEmpty = (value: unknown): boolean => value === undefined || nonEmpty(value);
 const optionalTimeout = (value: unknown): boolean => value === undefined || positiveInteger(value);
+const optionalRecommendation = (value: unknown): boolean => value === undefined || (record(value) && exact(value, [], ['resourceId', 'profileId']) && optionalNonEmpty(value.resourceId) && optionalNonEmpty(value.profileId));
 const route = (value: unknown): value is LlmRouteMetadata => record(value) && exact(value, ['route'], ['provider', 'model', 'fallback']) && nonEmpty(value.route) && optionalNonEmpty(value.provider) && optionalNonEmpty(value.model) && (value.fallback === undefined || typeof value.fallback === 'boolean');
 const usage = (value: unknown): value is LlmUsage => value === undefined || (record(value) && exact(value, [], ['inputTokens', 'outputTokens', 'totalTokens']) && ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => value[key] === undefined || nonNegativeInteger(value[key])));
 const message = (value: unknown): value is LlmMessage => record(value) && exact(value, ['role', 'content']) && (value.role === 'system' || value.role === 'user' || value.role === 'assistant') && typeof value.content === 'string';
@@ -60,4 +66,12 @@ export const LLM_STRUCTURED_TASK_V1 = service('structured-task', isLlmStructured
 export const LLM_EMBEDDING_V1 = service('embedding', isLlmEmbeddingRequest, isLlmEmbeddingResponse);
 export const LLM_RERANK_V1 = service('rerank', isLlmRerankRequest, isLlmRerankResponse);
 export const LLM_ROUTE_DIAGNOSTICS_V1 = service('route-diagnostics', isLlmRouteDiagnosticsRequest, isLlmRouteDiagnosticsResponse);
+const isConsumerRegistration = (value: unknown): value is LlmConsumerRegistration => record(value) && exact(value, ['displayName', 'registrationVersion', 'tasks']) && nonEmpty(value.displayName) && positiveInteger(value.registrationVersion) && Array.isArray(value.tasks) && value.tasks.every((task) => record(task) && exact(task, ['taskKey', 'taskKind'], ['requiredCapabilities', 'description', 'backgroundEligible', 'maxTokens', 'recommendedRoute', 'recommendedDisplay']) && nonEmpty(task.taskKey) && ['generation', 'embedding', 'rerank'].includes(String(task.taskKind)) && (task.requiredCapabilities === undefined || (Array.isArray(task.requiredCapabilities) && task.requiredCapabilities.every(nonEmpty))) && (task.description === undefined || typeof task.description === 'string') && (task.backgroundEligible === undefined || typeof task.backgroundEligible === 'boolean') && (task.maxTokens === undefined || positiveInteger(task.maxTokens)) && optionalRecommendation(task.recommendedRoute) && (task.recommendedDisplay === undefined || ['fullscreen', 'compact', 'silent'].includes(String(task.recommendedDisplay))));
+const isConsumerUnregisterRequest = (value: unknown): value is LlmConsumerUnregisterRequest => record(value) && exact(value, [], ['keepPersistent']) && (value.keepPersistent === undefined || typeof value.keepPersistent === 'boolean');
+const isWaitForDisplayRequest = (value: unknown): value is LlmWaitForDisplayRequest => record(value) && exact(value, ['requestId']) && nonEmpty(value.requestId);
+const isWaitForDisplayResponse = (value: unknown): value is LlmWaitForDisplayResponse => record(value) && exact(value, ['closed']) && typeof value.closed === 'boolean';
+const isAck = (value: unknown): value is { readonly ok: true } => record(value) && exact(value, ['ok']) && value.ok === true;
+export const LLM_CONSUMER_REGISTER_V1 = service('consumer-register', isConsumerRegistration, isAck);
+export const LLM_CONSUMER_UNREGISTER_V1 = service('consumer-unregister', isConsumerUnregisterRequest, isAck);
+export const LLM_WAIT_FOR_DISPLAY_V1 = service('wait-for-display', isWaitForDisplayRequest, isWaitForDisplayResponse);
 export const LLM_ROUTE_CHANGED_V1: EventContract<typeof LLM_PLUGIN_ID, 'route-changed', 1, LlmRouteChangedPayload> = Object.freeze({ kind: 'event', provider: LLM_PLUGIN_ID, name: 'route-changed', version: 1, schemaId: 'ss-helper.llm.route-changed.v1', validatePayload: isLlmRouteChangedPayload });

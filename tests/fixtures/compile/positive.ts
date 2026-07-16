@@ -42,7 +42,15 @@ const plugin: PluginDescriptor<'tavern.chat.read'> = {
   apiMajor: 1, minApiMinor: 0, capabilities: ['tavern.chat.read'],
 };
 const axes: VersionAxes = { coreVersion: '4.0.0', sdkPackageVersion: '1.2.3', apiMajor: 1, apiMinor: 7, pluginVersion: '0.8.0' };
-const settings: SettingsSchema = { id: 'example', title: 'Example', fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled' }] };
+const settings: SettingsSchema = {
+  id: 'example', title: 'Example', fields: [
+    { kind: 'toggle', id: 'enabled', label: 'Enabled' },
+    { kind: 'checkbox', id: 'strict', label: 'Strict' },
+    { kind: 'number', id: 'count', label: 'Count', step: 1, unit: 'items', showStepper: true },
+    { kind: 'radio', id: 'strategy', label: 'Strategy', options: [{ value: 'auto', label: 'Auto' }] },
+    { kind: 'multiSelect', id: 'sources', label: 'Sources', options: [{ value: 'chat', label: 'Chat' }], defaultValue: ['chat'] },
+  ],
+};
 const popup: PopupToken<{ readonly tab: string }> = { kind: 'popup', provider: 'example.plugin', name: 'workbench', version: 1 };
 
 declare const services: ServicePort;

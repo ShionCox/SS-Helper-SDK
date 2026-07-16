@@ -100,6 +100,7 @@ export class CoreRuntime {
   dispose(reason: SessionCloseReason = 'core_disposed', nextGeneration?: number): void {
     if (!this.#active) return;
     this.#active = false;
+    this.settings.dispose();
     this.plugins.closeAll(reason, nextGeneration);
     this.services.dispose();
     this.events.dispose();

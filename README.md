@@ -10,8 +10,10 @@ This workspace delivers the two SS-Helper platform artifacts:
   communication, the capability-gated HostPort, settings host, popup host, and
   diagnostics.
 
-LLM and Memory remain independent consumers: Core owns platform mechanisms;
-each consumer owns its business logic, storage, migration, and recovery.
+LLM and Memory remain independent consumers: Core/SDK owns platform mechanisms,
+the generic SQLite workspace and encrypted Secret API; each consumer owns its
+business rules, mapping, validation and recovery. No consumer-specific schema
+or legacy migration code belongs in SDK.
 
 ## Use the public SDK
 
@@ -46,6 +48,12 @@ renders validation, disabled states, descriptions, accessibility labels, plugin
 health, and reload behavior consistently. A plugin-specific workbench may open
 only through its registered popup/dialog, never through an extra top-level
 settings card or direct legacy-settings-container mount.
+
+Server-side consumers access shared data through `session.workspace`; use
+`open/defineCollection/query/transaction` for records and
+`secretSet/secretGet/secretDelete/secretList` for credentials. The SDK creates
+`data/_ss-helper/ss-helper.sqlite3` and its AES-256-GCM key on first startup.
+Backups never contain Secret values.
 
 ## Commands
 
