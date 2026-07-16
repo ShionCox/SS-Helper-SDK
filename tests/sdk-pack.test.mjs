@@ -19,7 +19,7 @@ test('SDK pack canonicalizes text and reproduces archive bytes', () => {
     mkdirSync(path.join(packageDirectory, 'dist'), { recursive: true });
     writeFileSync(path.join(packageDirectory, 'package.json'), JSON.stringify({
       name: '@fixture/sdk',
-      version: '1.0.0',
+      version: '2.0.0',
       type: 'module',
       files: ['dist/**', 'README.md', 'LICENSE'],
     }).replace(/\n/gu, '\r\n'));

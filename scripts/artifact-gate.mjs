@@ -184,6 +184,7 @@ function buildCoreArtifact() {
   mkdirSync(libraryRoot, { recursive: true });
   mkdirSync(sdkRoot, { recursive: true });
   copyJavaScriptTree(path.join(root, 'packages/sdk/dist'), sdkRoot);
+  rmSync(path.join(sdkRoot, 'server.js'), { force: true });
   copyJavaScriptTree(
     path.join(root, 'apps/core-extension/dist'),
     libraryRoot,
@@ -228,9 +229,9 @@ function buildCoreArtifact() {
     installDirectory: 'third-party/SS-Helper-SDK',
     coreVersion: extensionManifest.version,
     sdkPackageVersion: packageJson.version,
-    apiMajor: 1,
-    apiMinor: 3,
-    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-1.3`,
+    apiMajor: 2,
+    apiMinor: 0,
+    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-2.0`,
     contentDigest: contentDigest(files),
     toolchain,
     files,
@@ -295,7 +296,7 @@ function artifactSmoke(core, sdk) {
     '  state.discoveryBefore = discoveryBefore?.descriptor;',
     '  state.generationBefore = discoveryBefore?.descriptor?.generation;',
     "  const requested = ['tavern.context.read','tavern.chat.read','tavern.chat.events','tavern.worldbooks.read','tavern.worldbooks.write','tavern.generation.read','tavern.prompt.contribute','tavern.plugin.request','tavern.plugin.binary-request.v1'];",
-    "  const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'1.0.0', sdkPackageVersion:'1.0.0', apiMajor:1, minApiMinor:0, capabilities:requested }, { target: globalThis, timeoutMs:10000 });",
+    "  const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'1.0.0', sdkPackageVersion:'2.0.0', apiMajor:2, minApiMinor:0, capabilities:requested }, { target: globalThis, timeoutMs:10000 });",
     '  const context = await session.host.context.read();',
     '  const chat = await session.host.chat.readCurrent();',
     '  const unsubscribe = session.host.events.subscribe("chat-changed", () => {}); unsubscribe();',
@@ -336,7 +337,7 @@ function artifactSmoke(core, sdk) {
     '  const discoveryBefore = globalThis[discoverySymbol];',
     '  state.discoveryBefore = discoveryBefore?.descriptor;',
     "  const requested = ['tavern.context.read'];",
-    "  const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'1.0.0', sdkPackageVersion:'1.0.0', apiMajor:1, minApiMinor:0, capabilities:requested }, { target: globalThis, timeoutMs:10000 });",
+    "  const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'1.0.0', sdkPackageVersion:'2.0.0', apiMajor:2, minApiMinor:0, capabilities:requested }, { target: globalThis, timeoutMs:10000 });",
     '  const context = await session.host.context.read(); state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey } };',
     "  const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
     '  await session.services.waitFor(contract, { timeoutMs:10000 });',

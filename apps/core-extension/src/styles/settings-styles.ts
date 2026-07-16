@@ -11,6 +11,7 @@ export const SETTINGS_CSS = `
   --ss-theme-accent-soft: rgba(210, 168, 74, .13);
   --ss-theme-danger: #f05d5d;
   --ss-theme-success: #54c66b;
+  --ss-theme-warning: #e4ad46;
   color: var(--ss-theme-text);
   font-family: var(--mainFontFamily, "Segoe UI", "Microsoft YaHei UI", sans-serif);
   font-size: 14px;
@@ -108,11 +109,42 @@ export const SETTINGS_CSS = `
 #ss-helper-settings-center .stx-ui-badge,
 #ss-helper-settings-root .stx-ui-badge {
   display: inline-flex; align-items: center; min-height: 22px; padding: 3px 8px;
-  border: 1px solid var(--ss-theme-border); border-radius: 999px; color: var(--ss-theme-muted); font-size: .72rem; line-height: 1; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--ss-theme-text) 26%, transparent); border-radius: 999px;
+  background: color-mix(in srgb, var(--ss-theme-text) 8%, transparent); color: var(--ss-theme-text);
+  font-size: .72rem; line-height: 1; white-space: nowrap;
 }
-:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-success { border-color: rgba(84, 198, 107, .42); color: #76d687; }
-:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-warning { border-color: rgba(228, 173, 70, .5); color: #e4bd72; }
-:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-error { border-color: rgba(240, 93, 93, .52); color: #ff9797; }
+:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-neutral {
+  border-color: color-mix(in srgb, var(--ss-theme-text) 30%, transparent);
+  background: color-mix(in srgb, var(--ss-theme-text) 10%, transparent); color: var(--ss-theme-text);
+}
+:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-success {
+  border-color: color-mix(in srgb, var(--ss-theme-success) 48%, transparent);
+  background: color-mix(in srgb, var(--ss-theme-success) 14%, transparent);
+  color: color-mix(in srgb, var(--ss-theme-success) 72%, var(--ss-theme-text));
+}
+:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-warning {
+  border-color: color-mix(in srgb, var(--ss-theme-warning) 52%, transparent);
+  background: color-mix(in srgb, var(--ss-theme-warning) 14%, transparent);
+  color: color-mix(in srgb, var(--ss-theme-warning) 72%, var(--ss-theme-text));
+}
+:where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-badge-error {
+  border-color: color-mix(in srgb, var(--ss-theme-danger) 52%, transparent);
+  background: color-mix(in srgb, var(--ss-theme-danger) 14%, transparent);
+  color: color-mix(in srgb, var(--ss-theme-danger) 72%, var(--ss-theme-text));
+}
+#ss-helper-settings-center .stx-ui-status-badge {
+  --stx-status-color: color-mix(in srgb, var(--ss-theme-text) 72%, #8b95a5);
+  min-height: 32px; max-width: 100%; padding: 7px 11px; border-radius: 6px;
+  border-color: color-mix(in srgb, var(--stx-status-color) 62%, transparent);
+  border-left: 3px solid var(--stx-status-color);
+  background: color-mix(in srgb, var(--stx-status-color) 16%, var(--ss-theme-surface));
+  color: var(--ss-theme-text); font-size: .8rem; font-weight: 650; line-height: 1.35;
+  white-space: normal; overflow-wrap: anywhere;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 7%, transparent), 0 1px 2px rgba(0, 0, 0, .24);
+}
+#ss-helper-settings-center .stx-ui-status-badge.stx-ui-badge-success { --stx-status-color: var(--ss-theme-success); color: var(--ss-theme-text); }
+#ss-helper-settings-center .stx-ui-status-badge.stx-ui-badge-warning { --stx-status-color: var(--ss-theme-warning); color: var(--ss-theme-text); }
+#ss-helper-settings-center .stx-ui-status-badge.stx-ui-badge-error { --stx-status-color: var(--ss-theme-danger); color: var(--ss-theme-text); }
 
 :where(#ss-helper-settings-root, #ss-helper-settings-center) .stx-ui-btn {
   min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px;

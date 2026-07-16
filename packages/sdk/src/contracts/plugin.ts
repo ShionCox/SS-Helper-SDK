@@ -10,6 +10,12 @@ export type PluginId = `${string}.${string}`;
 export interface PluginDescriptor<Capabilities extends HostCapability = HostCapability> {
   readonly id: PluginId;
   readonly displayName: string;
+  /**
+   * Optional name used only by the SDK settings centre.  Keeping this
+   * separate from displayName lets a plugin retain its package identity while
+   * presenting a concise, localised settings entry.
+   */
+  readonly settingsDisplayName?: string;
   readonly pluginVersion: string;
   readonly sdkPackageVersion: string;
   readonly apiMajor: number;

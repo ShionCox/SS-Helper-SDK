@@ -77,6 +77,11 @@ type WorkspaceHealthState =
   | { readonly state: 'degraded'; readonly value?: WorkspaceHealth; readonly message?: string };
 
 const OVERVIEW_ID = 'overview';
+
+function formatReleaseVersion(version: string): string {
+  const normalized = version.trim().replace(/^[vV]+/, '');
+  return `v${normalized}`;
+}
 const SETTINGS_FIELD_KINDS = new Set([
   'section', 'toggle', 'checkbox', 'text', 'number', 'range', 'select', 'radio', 'multiSelect', 'action', 'status',
 ]);
@@ -444,21 +449,36 @@ export class SettingsHost {
     if (contribution === undefined) throw new SSHelperError('SETTINGS_ADAPTER_ERROR', 'Settings are not registered', { pluginId });
     const revision = ++contribution.saveRevision;
     contribution.valuesRevision += 1;
-    try {
-      const values = validateValues(contribution.schema, await contribution.adapter.reset(), 'settings_reset');
-      if (!contribution.active || revision !== contribution.saveRevision) return contribution.values;
-      contribution.values = values;
-      contribution.committedValues = values;
-      contribution.health = 'healthy';
-      contribution.saveState = 'saved';
-      delete contribution.lastError;
-      this.#fieldErrors.delete(pluginId);
-      this.#renderAll();
-      return values;
-    } catch {
-      this.#degrade(contribution);
-      throw new SSHelperError('SETTINGS_ADAPTER_ERROR', '插件设置恢复失败', { pluginId });
-    }
+    contribution.saveState = 'saving';
+    this.#syncContributionUi(contribution);
+    const operation = contribution.saveQueue.catch(() => undefined).then(async () => {
+      try {
+        const values = validateValues(contribution.schema, await contribution.adapter.reset(), 'settings_reset');
+        if (!contribution.active || revision !== contribution.saveRevision) return contribution.values;
+        contribution.values = values;
+        contribution.committedValues = values;
+        contribution.health = 'healthy';
+        contribution.saveState = 'saved';
+        delete contribution.lastError;
+        this.#fieldErrors.delete(pluginId);
+        this.#renderAll();
+        return values;
+      } catch {
+        if (contribution.active && revision === contribution.saveRevision) {
+          try {
+            const authoritative = validateValues(contribution.schema, await contribution.adapter.load(), 'settings_reset_recovery');
+            if (contribution.active && revision === contribution.saveRevision) {
+              contribution.values = authoritative;
+              contribution.committedValues = authoritative;
+            }
+          } catch { /* retain the last committed values when authoritative reload also fails */ }
+          if (contribution.active && revision === contribution.saveRevision) this.#degrade(contribution);
+        }
+        throw new SSHelperError('SETTINGS_ADAPTER_ERROR', '插件设置恢复失败', { pluginId });
+      }
+    });
+    contribution.saveQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   snapshot(): readonly SettingsContributionSnapshot[] {
@@ -554,10 +574,10 @@ export class SettingsHost {
     const nav = document.createElement('nav'); nav.className = 'stx-center-nav'; nav.setAttribute('aria-label', 'SS-Helper 插件');
     nav.append(this.#renderNavButton(document, OVERVIEW_ID, '概览', 'fa-gauge-high', 'Core 与服务状态', 'healthy'));
     for (const contribution of this.#contributions.values()) {
-      nav.append(this.#renderNavButton(document, contribution.identity.id, contribution.identity.displayName, 'fa-puzzle-piece', contribution.identity.pluginVersion, contribution.health));
+      nav.append(this.#renderNavButton(document, contribution.identity.id, contribution.identity.displayName, 'fa-puzzle-piece', formatReleaseVersion(contribution.identity.pluginVersion), contribution.health));
     }
     const sidebarMeta = document.createElement('div'); sidebarMeta.className = 'stx-center-sidebar-meta';
-    sidebarMeta.textContent = `Core ${this.core.coreVersion} · generation ${this.core.generation}`;
+    sidebarMeta.textContent = `Core ${formatReleaseVersion(this.core.coreVersion)} · generation ${this.core.generation}`;
     sidebar.append(navLabel, nav, sidebarMeta);
 
     const main = document.createElement('main'); main.className = 'stx-center-main';
@@ -601,7 +621,7 @@ export class SettingsHost {
     const content = document.createElement('div'); content.className = 'stx-center-scroll';
     const grid = document.createElement('div'); grid.className = 'stx-overview-grid';
     grid.append(
-      this.#renderOverviewCard(document, 'Core Runtime', `v${this.core.coreVersion}`, `API ${this.core.apiMajor}.${this.core.apiMinor} · generation ${this.core.generation}`, 'fa-microchip', 'healthy'),
+      this.#renderOverviewCard(document, 'Core Runtime', formatReleaseVersion(this.core.coreVersion), `API ${this.core.apiMajor}.${this.core.apiMinor} · generation ${this.core.generation}`, 'fa-microchip', 'healthy'),
       this.#renderWorkspaceCard(document),
       this.#renderOverviewCard(document, '已注册插件', String(this.#contributions.size), '设置会自动出现在左侧菜单', 'fa-plug', this.#contributions.size > 0 ? 'healthy' : 'degraded'),
     );
@@ -613,7 +633,7 @@ export class SettingsHost {
       for (const contribution of this.#contributions.values()) {
         const row = document.createElement('div'); row.className = 'stx-overview-plugin'; row.dataset.pluginId = contribution.identity.id; row.dataset.health = contribution.health;
         const name = document.createElement('strong'); name.textContent = contribution.identity.displayName;
-        const version = document.createElement('span'); version.textContent = contribution.identity.pluginVersion;
+        const version = document.createElement('span'); version.textContent = formatReleaseVersion(contribution.identity.pluginVersion);
         const health = document.createElement('span'); health.dataset.healthBadge = 'true'; health.className = `stx-ui-badge stx-ui-badge-${contribution.health === 'healthy' ? 'success' : 'warning'}`; health.textContent = contribution.health === 'healthy' ? '正常' : '需检查';
         row.append(name, version, health); list.append(row);
       }
@@ -654,7 +674,7 @@ export class SettingsHost {
         Accept: 'application/json',
         'X-SS-Helper-Plugin': this.core.id,
       };
-      const response = await fetch('/api/plugins/ss-helper-sdk/v1/workspaces/health', { headers });
+      const response = await fetch('/api/plugins/ss-helper-sdk/v2/workspaces/health', { headers });
       const payload = await response.json() as Record<string, unknown>;
       if (!response.ok || payload.ok !== true) throw new Error(String(payload.error ?? 'WORKSPACE_UNAVAILABLE'));
       const value: WorkspaceHealth = {
@@ -684,7 +704,7 @@ export class SettingsHost {
     const subtitle = document.createElement('p'); subtitle.textContent = schema.title;
     headingCopy.append(title, subtitle);
     const badges = document.createElement('div'); badges.className = 'stx-center-page-badges';
-    const version = document.createElement('span'); version.className = 'stx-ui-badge'; version.textContent = identity.pluginVersion;
+    const version = document.createElement('span'); version.className = 'stx-ui-badge'; version.textContent = formatReleaseVersion(identity.pluginVersion);
     const health = document.createElement('span'); health.dataset.healthBadge = 'true'; health.className = `stx-ui-badge stx-ui-badge-${contribution.health === 'healthy' ? 'success' : 'warning'}`; health.textContent = contribution.health === 'healthy' ? '正常' : '需检查';
     badges.append(version, health); heading.append(headingCopy, badges);
 

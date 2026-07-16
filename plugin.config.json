@@ -7,13 +7,13 @@
     "id": "ss-helper-sdk",
     "name": "SS-Helper SDK",
     "description": "SS-Helper Core runtime and shared workspace storage",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "browser": {
-    "coreVersion": "1.0.0",
-    "sdkPackageVersion": "1.0.0",
-    "apiMajor": 1,
-    "apiMinor": 2,
+    "coreVersion": "2.0.0",
+    "sdkPackageVersion": "2.0.0",
+    "apiMajor": 2,
+    "apiMinor": 0,
     "modulePath": "/api/plugins/ss-helper-sdk/browser/core.js",
     "stylePath": "/api/plugins/ss-helper-sdk/browser/core.css"
   }

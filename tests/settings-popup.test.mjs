@@ -29,6 +29,12 @@ const schema = (id) => ({
 
 test('Core owns one idempotent launcher and one settings center with dynamic plugin navigation', async () => {
   const restore = installFakeDomGlobals();
+  const originalFetch = globalThis.fetch;
+  const fetched = [];
+  globalThis.fetch = async (url) => {
+    fetched.push(String(url));
+    return { ok: true, json: async () => ({ ok: true, ready: true, schemaVersion: 2, walMode: 'wal' }) };
+  };
   try {
     const document = new FakeDocument();
     const container = document.createElement('div'); document.body.append(container);
@@ -37,7 +43,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.equal(runtime.settings.mount(container), runtime.settings.mount(container));
     assert.equal(document.getElementById(SETTINGS_ROOT_ID), container.children[0]);
     const saved = [];
-    const session = runtime.connect(pluginDescriptor('example.settings'));
+    const session = runtime.connect({ ...pluginDescriptor('example.settings'), settingsDisplayName: '记忆系统', pluginVersion: 'V0.0.2' });
     session.registerSettings(schema('example.settings'), {
       load: async () => ({ enabled: true, 'api-key': 'secret', count: 2, mode: 'a' }),
       save: async (values) => { saved.push(values); },
@@ -50,15 +56,24 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.ok(coreStyles);
     assert.match(coreStyles.textContent, /\.stx-ui-control-action \{ justify-content: flex-start; \}/);
     assert.match(coreStyles.textContent, /\.stx-ui-control-status \{ justify-content: flex-start; flex-wrap: wrap; \}/);
+    assert.match(coreStyles.textContent, /\.stx-ui-badge-neutral \{/);
+    assert.match(coreStyles.textContent, /\.stx-ui-status-badge \{/);
+    assert.match(coreStyles.textContent, /background: color-mix\(in srgb, var\(--ss-theme-text\) 10%, transparent\)/);
+    assert.match(coreStyles.textContent, /border-left: 3px solid var\(--stx-status-color\)/);
+    assert.match(coreStyles.textContent, /background: color-mix\(in srgb, var\(--stx-status-color\) 16%, var\(--ss-theme-surface\)\)/);
     assert.match(coreStyles.textContent, /\.stx-ui-control-status \{ align-items: flex-start; flex-direction: column; \}/);
     const opener = descendants(container.children[0]).find((node) => node.id === 'ss-helper-open-settings-center');
     opener.focus();
     opener.dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(fetched, ['/api/plugins/ss-helper-sdk/v2/workspaces/health']);
     assert.ok(document.getElementById(SETTINGS_CENTER_OVERLAY_ID));
     assert.ok(document.getElementById(SETTINGS_CENTER_ID));
     assert.equal(document.body.style.overflow, 'hidden');
     const pluginNav = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.settings');
     assert.ok(pluginNav);
+    assert.equal(descendants(pluginNav).some((node) => node.textContent === '记忆系统'), true);
+    assert.equal(descendants(pluginNav).some((node) => node.textContent === 'v0.0.2'), true);
     pluginNav.dispatchEvent({ type: 'click' });
     assert.equal(descendants(document.getElementById(SETTINGS_CENTER_ID)).some((node) => node.dataset.saveStatus === 'example.settings'), true);
     await runtime.settings.save('example.settings', { enabled: false, 'api-key': 'next', count: 3, mode: 'a' });
@@ -75,7 +90,10 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     const replacement = installCoreRuntime(coreIdentity({ buildId: 'reload' }), realm, { settingsContainer: container, document });
     assert.equal(replacement.generation, 2);
     assert.equal(document.body.children.flatMap((node) => node.children).filter((node) => node.id === SETTINGS_ROOT_ID).length, 1);
-  } finally { restore(); }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restore();
+  }
 });
 
 test('automatic saves are serialized per plugin and the newest successful value wins', async () => {
@@ -102,6 +120,29 @@ test('automatic saves are serialized per plugin and the newest successful value 
   await Promise.all([first, second]);
   assert.deepEqual(started, [1, 2]);
   assert.equal(runtime.settings.snapshot()[0].values.count, 2);
+});
+
+test('reset shares the save queue and reloads authoritative values after failure', async () => {
+  const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
+  const session = runtime.connect(pluginDescriptor('example.reset-queue'));
+  const order = []; let releaseSave; let persisted = { count: 0 }; let failReset = false;
+  session.registerSettings({ id: 'example.reset-queue', title: 'Queue', fields: [{ kind: 'number', id: 'count', label: 'Count' }] }, {
+    load: async () => ({ ...persisted }),
+    save: async (values) => { order.push(`save:${values.count}`); await new Promise((resolve) => { releaseSave = resolve; }); persisted = { ...values }; },
+    reset: async () => { order.push('reset'); if (failReset) throw new Error('reset failed'); persisted = { count: 0 }; return { ...persisted }; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const save = runtime.settings.save('example.reset-queue', { count: 1 });
+  const reset = runtime.settings.reset('example.reset-queue');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ['save:1']);
+  releaseSave(); await Promise.all([save, reset]);
+  assert.deepEqual(order, ['save:1', 'reset']);
+  assert.equal(runtime.settings.snapshot()[0].values.count, 0);
+
+  failReset = true; persisted = { count: 7 };
+  await assert.rejects(runtime.settings.reset('example.reset-queue'), errorCode('SETTINGS_ADAPTER_ERROR'));
+  assert.equal(runtime.settings.snapshot()[0].values.count, 7);
 });
 
 test('settings center renders screenshot-style tabs, search, controls, auto-save state, and inline errors', async () => {

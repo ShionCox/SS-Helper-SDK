@@ -13,7 +13,7 @@ const memoryRuntime = readFileSync(path.join(memoryRoot, 'src', 'host', 'memory-
 const checks = [];
 const check = (name, condition, evidence) => checks.push({ name, ok: Boolean(condition), evidence });
 
-check('SDK registers only browser, health and workspace routes', !sdkServer.includes('/v1/memory') && sdkServer.includes('/v1/workspaces/'), 'server-plugin/index.js');
+check('SDK registers only browser, health and workspace routes', !sdkServer.includes('/v1/memory') && sdkServer.includes('/v2/workspaces/'), 'server-plugin/index.js');
 check('SDK does not load Memory implementation', !/SS-Helper-Memory|server[\\/]memory|import\([^)]*memory/iu.test(sdkServer), 'server-plugin/index.js');
 check('SDK schema is workspace-generic', /CREATE TABLE IF NOT EXISTS workspace_records/u.test(sdkServer) && !/(?:facts|evidence|recall_logs|fact_vectors)/u.test(sdkServer), 'server-plugin/index.js');
 check('WorkspacePort exposes generic owner operations', ['health()', 'integrity()', 'list(', 'clearOwned(', 'exportAll()', 'importAll('].every((token) => workspaceContract.includes(token)), 'packages/sdk/src/contracts/workspace.ts');

@@ -1,6 +1,6 @@
 {
   "name": "@ss-helper/sdk",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Stateless public contracts for SS-Helper plugins",
   "type": "module",
   "sideEffects": false,
@@ -11,6 +11,7 @@
   ],
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./server": { "types": "./dist/server.d.ts", "node": "./dist/server.js", "import": "./dist/server.js", "default": "./dist/server.js" },
     "./contracts/core": { "types": "./dist/contracts/core.d.ts", "import": "./dist/contracts/core.js", "default": "./dist/contracts/core.js" },
     "./contracts/plugin": { "types": "./dist/contracts/plugin.d.ts", "import": "./dist/contracts/plugin.js", "default": "./dist/contracts/plugin.js" },
     "./contracts/services": { "types": "./dist/contracts/services.d.ts", "import": "./dist/contracts/services.js", "default": "./dist/contracts/services.js" },

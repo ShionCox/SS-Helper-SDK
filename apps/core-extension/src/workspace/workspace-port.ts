@@ -17,12 +17,6 @@ import type {
   WorkspaceRecord,
   WorkspaceRecordRequest,
   WorkspaceRemoveRequest,
-  WorkspaceSecretDeleteRequest,
-  WorkspaceSecretGetRequest,
-  WorkspaceSecretListRequest,
-  WorkspaceSecretMetadata,
-  WorkspaceSecretRecord,
-  WorkspaceSecretSetRequest,
   WorkspaceTransactionRequest,
   WorkspaceTransactionResult,
   WorkspaceVectorClearRequest,
@@ -51,7 +45,7 @@ function requestHeaders(pluginId: string): Headers {
 
 async function request(scope: ResourceScope, pluginId: string, path: string, body?: RequestBody): Promise<Record<string, unknown>> {
   scope.assertActive();
-  const response = await fetch(`/api/plugins/ss-helper-sdk/v1${path}`, {
+  const response = await fetch(`/api/plugins/ss-helper-sdk/v2${path}`, {
     method: body ? 'POST' : 'GET', headers: requestHeaders(pluginId), ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -87,10 +81,6 @@ export function createWorkspacePort(scope: ResourceScope, pluginId: string): Wor
     vectorDelete: async (value: Omit<WorkspaceVectorRequest, 'vector' | 'model' | 'metadata'>): Promise<boolean> => (await post(scope, pluginId, '/workspaces/vector', { ...value, action: 'delete' })).removed === true,
     vectorList: async (value: WorkspaceVectorListRequest): Promise<WorkspaceVectorPage> => post(scope, pluginId, '/workspaces/vector/list', value as unknown as RequestBody) as unknown as WorkspaceVectorPage,
     vectorClear: async (value: WorkspaceVectorClearRequest): Promise<number> => Number((await post(scope, pluginId, '/workspaces/vector/clear', value as unknown as RequestBody)).removed ?? 0),
-    secretSet: async (value: WorkspaceSecretSetRequest): Promise<WorkspaceSecretMetadata> => (await post(scope, pluginId, '/workspaces/secret', { ...value, action: 'set' } as unknown as RequestBody)).secret as WorkspaceSecretMetadata,
-    secretGet: async (value: WorkspaceSecretGetRequest): Promise<WorkspaceSecretRecord | null> => ((await post(scope, pluginId, '/workspaces/secret', { ...value, action: 'get' } as unknown as RequestBody)).secret as WorkspaceSecretRecord | null) ?? null,
-    secretDelete: async (value: WorkspaceSecretDeleteRequest): Promise<boolean> => (await post(scope, pluginId, '/workspaces/secret', { ...value, action: 'delete' } as unknown as RequestBody)).removed === true,
-    secretList: async (value: WorkspaceSecretListRequest): Promise<readonly WorkspaceSecretMetadata[]> => (await post(scope, pluginId, '/workspaces/secret', { ...value, action: 'list' } as unknown as RequestBody)).secrets as WorkspaceSecretMetadata[],
     grant: async (value: WorkspaceGrantRequest): Promise<void> => { await post(scope, pluginId, '/workspaces/grant', value as unknown as RequestBody); },
     revoke: async (value: WorkspaceGrantRequest): Promise<void> => { await post(scope, pluginId, '/workspaces/grant', { ...value, action: 'revoke' }); },
     export: async (value: WorkspaceBackupExportRequest) => post(scope, pluginId, '/workspaces/backup/export', value as unknown as RequestBody) as never,

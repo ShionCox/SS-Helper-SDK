@@ -92,7 +92,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   registerSettings(schema: SettingsSchema, adapter: SettingsAdapter): () => void {
     return this.settingsHost.register(this.#scope, {
       id: this.descriptor.id,
-      displayName: this.descriptor.displayName,
+      displayName: settingsDisplayNameOf(this.descriptor),
       pluginVersion: this.descriptor.pluginVersion,
       capabilities: this.host.capabilities,
     }, schema, adapter, (token, input) => this.popupHost.open(this.#scope, token, input));
@@ -113,12 +113,24 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   }
 }
 
+function settingsDisplayNameOf(descriptor: PluginDescriptor): string {
+  return descriptor.settingsDisplayName === undefined
+    ? descriptor.displayName
+    : descriptor.settingsDisplayName.trim();
+}
+
 function validateDescriptor(descriptor: PluginDescriptor): void {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(descriptor.id)
     || descriptor.id === 'ss-helper.core'
     || descriptor.displayName.trim() === ''
     || descriptor.pluginVersion.trim() === '') {
     throw new SSHelperError('PAYLOAD_INVALID', 'The plugin descriptor is invalid', { reason: 'descriptor' });
+  }
+  if (descriptor.settingsDisplayName !== undefined) {
+    const value = descriptor.settingsDisplayName.trim();
+    if (value.length === 0 || value.length > 40 || /[\u0000-\u001f\u007f]/u.test(value)) {
+      throw new SSHelperError('PAYLOAD_INVALID', 'The plugin settings display name is invalid', { reason: 'descriptor.settingsDisplayName' });
+    }
   }
 }
 

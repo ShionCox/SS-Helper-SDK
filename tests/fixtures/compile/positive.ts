@@ -31,6 +31,7 @@ import type { ServiceContract } from '@ss-helper/sdk/contracts/services';
 import type { SettingsAdapter } from '@ss-helper/sdk/contracts/settings';
 import type { PopupToken } from '@ss-helper/sdk/contracts/ui';
 import { SSHelperError } from '@ss-helper/sdk/errors';
+import type { ServerPluginSession } from '@ss-helper/sdk/server';
 
 const descriptor: CoreDescriptor = {
   kind: 'ss-helper-core', id: CORE_PLUGIN_ID, coreVersion: '2.4.0', sdkPackageVersion: '1.0.0',
@@ -93,5 +94,6 @@ const closeInfo: SessionCloseInfo = { reason: 'core_replaced', generation: 1, ne
 const capability: HostCapability = 'tavern.chat.read';
 const error = new SSHelperError('CORE_MISSING', 'Core missing');
 const memoryMessage: ChatMessageInput = { role: 'assistant', text: 'state', variables: [{ initialized_lorebooks: { lore: [] }, stat_data: { world: { day: 5 }, inventory: ['core'] } }] };
+const serverSession = null as unknown as ServerPluginSession;
 
-void [descriptor, plugin, axes, popup, serviceToken, eventToken, memoryResponse, closeInfo, capability, error, memoryMessage, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY];
+void [descriptor, plugin, axes, popup, serviceToken, eventToken, memoryResponse, closeInfo, capability, error, memoryMessage, serverSession, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY];
