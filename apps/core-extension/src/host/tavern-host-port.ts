@@ -196,7 +196,7 @@ function subscribeToChatEvents(
 
 const HOST_EVENT_NAMES = new Set<HostEventName>([
   'chat-changed', 'message-received', 'message-sent', 'message-edited', 'message-deleted',
-  'generation-started', 'generation-ended', 'prompt-ready', 'worldbook-updated', 'identity-changed',
+  'generation-started', 'generation-ended', 'generation-config-changed', 'prompt-ready', 'worldbook-updated', 'identity-changed',
 ]);
 
 const exactKeys = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean => {
@@ -257,6 +257,7 @@ function isHostEvent(expectedName: HostEventName, value: unknown): boolean {
   }
   if (expectedName === 'message-deleted') return exactKeys(event, ['name', 'messageId'], ['chatKey']) && typeof event.messageId === 'string' && optionalString(event.chatKey);
   if (expectedName === 'generation-started' || expectedName === 'generation-ended') return exactKeys(event, ['name', 'generation'], ['chatKey']) && optionalString(event.chatKey) && isGeneration(event.generation);
+  if (expectedName === 'generation-config-changed') return exactKeys(event, ['name', 'generation']) && isGeneration(event.generation);
   if (expectedName === 'prompt-ready') return exactKeys(event, ['name', 'prompt'], ['chatKey']) && optionalString(event.chatKey) && isPrompt(event.prompt);
   if (expectedName === 'worldbook-updated') return exactKeys(event, ['name', 'worldbook']) && isWorldbook(event.worldbook);
   return exactKeys(event, ['name', 'identity']) && isIdentity(event.identity);

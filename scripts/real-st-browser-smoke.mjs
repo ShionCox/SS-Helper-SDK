@@ -513,6 +513,10 @@ async function main() {
         const runtimeEvents = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown' || event.method === 'Runtime.consoleAPICalled');
         throw new Error(`Joint consumers did not register: ${JSON.stringify(runtimeEvents.slice(-30))}`);
       }
+      if (measured.jointConsumers.some((consumer) => consumer.health !== 'healthy')) {
+        const runtimeEvents = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown' || (event.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(event.params?.type)));
+        throw new Error(`Joint consumer settings degraded: ${JSON.stringify({ consumers: measured.jointConsumers, runtimeEvents: runtimeEvents.slice(-30) })}`);
+      }
       assert.deepEqual(measured.jointConsumers, [
         { id: 'ss-helper.llm', health: 'healthy', title: 'SS-Helper [AI 调度中枢]' },
         { id: 'ss-helper.memory', health: 'healthy', title: 'SS-Helper [记忆]' },

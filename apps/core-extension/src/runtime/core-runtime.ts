@@ -15,6 +15,7 @@ import { DiagnosticsStore } from '../diagnostics/diagnostics-store.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { dispatchLifecycle, type CoreRealm } from './lifecycle.js';
 import { PopupHost } from '../popup/popup-host.js';
+import { ToastHost } from '../toast/toast-host.js';
 import { SettingsHost } from '../settings/settings-host.js';
 import type { TavernHostAdapter } from '../host/tavern-host-port.js';
 
@@ -42,6 +43,7 @@ export class CoreRuntime {
   readonly plugins: PluginRegistry;
   readonly settings: SettingsHost;
   readonly popups: PopupHost;
+  readonly toasts: ToastHost;
   readonly port: CorePort;
   #active = true;
   #snapshot?: CoreDiscoverySnapshot;
@@ -53,7 +55,11 @@ export class CoreRuntime {
     private readonly transitionDisposed: (runtime: CoreRuntime) => void,
     options: CoreRuntimeOptions = {},
   ) {
-    const capabilities = Object.freeze([...(identity.capabilities ?? [])]);
+    const document = options.document ?? options.settingsContainer?.ownerDocument;
+    const capabilities = Object.freeze([...new Set([
+      ...(identity.capabilities ?? []),
+      ...(document === undefined ? [] : ['core.ui.notification.v1' as const]),
+    ])]);
     this.descriptor = Object.freeze({
       kind: 'ss-helper-core',
       id: 'ss-helper.core',
@@ -70,11 +76,12 @@ export class CoreRuntime {
     this.services = new ServiceRegistry(this.diagnosticsStore);
     this.events = new EventHub(this.diagnosticsStore);
     this.settings = new SettingsHost(this.descriptor);
-    this.popups = new PopupHost(options.document ?? options.settingsContainer?.ownerDocument);
+    this.popups = new PopupHost(document);
+    this.toasts = new ToastHost(document, this.diagnosticsStore);
     this.plugins = new PluginRegistry(
       generation, identity.apiMajor, identity.apiMinor, capabilities,
       () => this.#active, this.services, this.events, this.diagnosticsStore,
-      options.hostAdapter ?? {}, this.settings, this.popups,
+      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts,
     );
     if (options.settingsContainer !== undefined) this.settings.mount(options.settingsContainer);
     this.port = Object.freeze({
@@ -105,6 +112,7 @@ export class CoreRuntime {
     this.services.dispose();
     this.events.dispose();
     this.popups.dispose();
+    this.toasts.dispose();
     this.diagnosticsStore.record({ type: 'core.disposed' });
     this.transitionDisposed(this);
   }

@@ -1,13 +1,14 @@
 import { SSHelperError, type PlainData, type PopupRegistration, type PopupToken } from '@ss-helper/sdk';
 import type { SessionScope } from '../plugins/session-scope.js';
 import { assertPayload } from '../communication/contracts.js';
+import { ensureCoreUiStyles } from '../styles/settings-styles.js';
 
 function key(token: PopupToken): string { return JSON.stringify([token.provider, token.name, token.version]); }
 
 export class PopupHost {
   readonly #entries = new Map<string, { readonly scope: SessionScope; readonly registration: PopupRegistration }>();
   readonly #open = new Map<string, () => void>();
-  constructor(private readonly document?: Document) {}
+  constructor(private readonly document?: Document) { if (document !== undefined) ensureCoreUiStyles(document); }
 
   register(scope: SessionScope, registration: PopupRegistration): () => void {
     scope.assertActive();

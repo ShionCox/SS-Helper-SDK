@@ -14,6 +14,17 @@ export interface PopupRegistration<Input extends PlainData = PlainData> {
   render(container: HTMLElement, input: Input): void | (() => void);
 }
 
+export type ToastLevel = 'info' | 'success' | 'warning' | 'error';
+
+export interface ToastNotification {
+  readonly level: ToastLevel;
+  readonly message: string;
+  readonly title?: string;
+  readonly code?: string;
+  readonly durationMs?: number;
+}
+
 export interface UiPort {
   openPopup<Input extends PlainData>(token: PopupToken<Input>, input: Input): void;
+  showToast(notification: ToastNotification): void;
 }

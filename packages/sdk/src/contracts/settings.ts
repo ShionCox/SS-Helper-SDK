@@ -33,8 +33,35 @@ export interface SettingsOption { readonly value: string; readonly label: string
 export interface SelectField extends SettingsFieldBase<'select'> { readonly options: readonly SettingsOption[]; readonly defaultValue?: string; readonly validation?: ValidationRule; }
 export interface RadioField extends SettingsFieldBase<'radio'> { readonly options: readonly SettingsOption[]; readonly defaultValue?: string; readonly validation?: ValidationRule; }
 export interface MultiSelectField extends SettingsFieldBase<'multiSelect'> { readonly options: readonly SettingsOption[]; readonly defaultValue?: readonly string[]; readonly placeholder?: string; readonly validation?: ValidationRule; }
-export interface ActionField extends SettingsFieldBase<'action'> { readonly actionId: string; readonly tone?: 'neutral' | 'danger'; readonly popup?: PopupToken; }
-export interface StatusField extends SettingsFieldBase<'status'> { readonly value: string; readonly tone?: 'neutral' | 'success' | 'warning' | 'error'; }
+export type SettingsTone = 'neutral' | 'success' | 'warning' | 'error';
+export interface SettingsNavigationTarget {
+  readonly pluginId: string;
+  readonly tabId?: string;
+  readonly fieldId?: string;
+}
+export interface SettingsStatusSnapshot {
+  readonly value: string;
+  readonly tone: SettingsTone;
+  readonly description?: string;
+}
+export interface SettingsFieldStateSnapshot {
+  readonly disabled: boolean;
+  readonly disabledReason?: string;
+}
+export type SettingsFieldStateMap = Readonly<Record<string, SettingsFieldStateSnapshot>>;
+export interface StatusAction {
+  readonly buttonLabel: string;
+  readonly target: SettingsNavigationTarget;
+  readonly showWhen?: readonly SettingsTone[];
+}
+export interface ActionField extends SettingsFieldBase<'action'> {
+  readonly actionId: string;
+  readonly tone?: 'neutral' | 'danger';
+  readonly popup?: PopupToken;
+  readonly placement?: 'footer' | 'inline';
+  readonly buttonLabel?: string;
+}
+export interface StatusField extends SettingsFieldBase<'status'> { readonly value: string; readonly tone?: SettingsTone; readonly action?: StatusAction; }
 
 export type SettingsField = SectionField | ToggleField | CheckboxField | TextField | NumberField | RangeField | SelectField | RadioField | MultiSelectField | ActionField | StatusField;
 
@@ -51,4 +78,8 @@ export interface SettingsAdapter {
   save(values: SettingsValues): void | Promise<void>;
   reset(): SettingsValues | Promise<SettingsValues>;
   subscribe?(listener: (values: SettingsValues) => void): () => void;
+  loadStatus?(): Readonly<Record<string, SettingsStatusSnapshot>> | Promise<Readonly<Record<string, SettingsStatusSnapshot>>>;
+  subscribeStatus?(listener: (status: Readonly<Record<string, SettingsStatusSnapshot>>) => void): () => void;
+  loadFieldState?(): SettingsFieldStateMap | Promise<SettingsFieldStateMap>;
+  subscribeFieldState?(listener: (state: SettingsFieldStateMap) => void): () => void;
 }

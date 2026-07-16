@@ -3,7 +3,7 @@ import type { PluginDescriptor, PluginSession } from './plugin.js';
 
 export const SDK_PACKAGE_VERSION = '1.0.0' as const;
 export const API_MAJOR = 1 as const;
-export const API_MINOR = 2 as const;
+export const API_MINOR = 3 as const;
 
 export const CORE_EXTENSION_DIRECTORY = 'third-party/SS-Helper-SDK' as const;
 export const CORE_PLUGIN_ID = 'ss-helper.core' as const;

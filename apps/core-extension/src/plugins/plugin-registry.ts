@@ -17,6 +17,7 @@ import {
   type PopupToken,
   type PlainData,
   type UiPort,
+  type ToastNotification,
 } from '@ss-helper/sdk';
 import type { EventHub } from '../communication/event-hub.js';
 import type { ServiceRegistry } from '../communication/service-registry.js';
@@ -25,6 +26,7 @@ import { ResourceScope } from './session-scope.js';
 import { createTavernHostPort, type TavernHostAdapter } from '../host/tavern-host-port.js';
 import type { SettingsHost } from '../settings/settings-host.js';
 import type { PopupHost } from '../popup/popup-host.js';
+import type { ToastHost } from '../toast/toast-host.js';
 import { createWorkspacePort } from '../workspace/workspace-port.js';
 
 export interface PluginSnapshot {
@@ -61,6 +63,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     hostAdapter: TavernHostAdapter,
     private readonly settingsHost: SettingsHost,
     private readonly popupHost: PopupHost,
+    private readonly toastHost: ToastHost,
   ) {
     this.#scope = new ResourceScope(descriptor.id, generation, coreActive);
     let close!: (info: SessionCloseInfo) => void;
@@ -77,7 +80,13 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     }) as EventPort;
     this.host = createTavernHostPort(this.#scope, granted, hostAdapter);
     this.workspace = createWorkspacePort(this.#scope, descriptor.id);
-    this.ui = Object.freeze({ openPopup: <Input extends PlainData>(token: PopupToken<Input>, input: Input) => this.popupHost.open(this.#scope, token, input) });
+    this.ui = Object.freeze({
+      openPopup: <Input extends PlainData>(token: PopupToken<Input>, input: Input) => this.popupHost.open(this.#scope, token, input),
+      showToast: (notification: ToastNotification) => {
+        if (!this.host.has('core.ui.notification.v1')) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications are unavailable', { capability: 'core.ui.notification.v1' });
+        this.toastHost.show(this.#scope, notification);
+      },
+    });
   }
 
   registerSettings(schema: SettingsSchema, adapter: SettingsAdapter): () => void {
@@ -128,6 +137,7 @@ export class PluginRegistry {
     private readonly hostAdapter: TavernHostAdapter,
     private readonly settingsHost: SettingsHost,
     private readonly popupHost: PopupHost,
+    private readonly toastHost: ToastHost,
   ) {}
 
   register<Capabilities extends HostCapability>(descriptor: PluginDescriptor<Capabilities>): PluginSession<Capabilities> {
@@ -152,6 +162,7 @@ export class PluginRegistry {
       this.hostAdapter,
       this.settingsHost,
       this.popupHost,
+      this.toastHost,
     );
     this.#sessions.set(descriptor.id, session as unknown as PluginSessionImpl<HostCapability>);
     this.diagnostics.increment('plugins', 1);

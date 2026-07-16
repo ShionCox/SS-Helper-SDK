@@ -1,6 +1,7 @@
 import type { PlainData } from './plain-data.js';
 
 export type HostCapability =
+  | 'core.ui.notification.v1'
   | 'tavern.context.read'
   | 'tavern.identity.read'
   | 'tavern.character.read'
@@ -36,7 +37,7 @@ export interface GenerationUsageSnapshot { readonly inputTokens?: number; readon
 export interface GenerationSnapshot { readonly active: boolean; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
 export interface GenerationRequest { readonly prompt: string; readonly model?: string | undefined; readonly quiet?: boolean; }
 export interface GenerationResult { readonly text: string; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
-export type HostEventName = 'chat-changed' | 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted' | 'generation-started' | 'generation-ended' | 'prompt-ready' | 'worldbook-updated' | 'identity-changed';
+export type HostEventName = 'chat-changed' | 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted' | 'generation-started' | 'generation-ended' | 'generation-config-changed' | 'prompt-ready' | 'worldbook-updated' | 'identity-changed';
 export interface PromptMessageSnapshot { readonly role?: string | undefined; readonly name?: string | undefined; readonly content?: PlainData; }
 export interface PromptSnapshot { readonly messages: readonly PromptMessageSnapshot[]; readonly dryRun: boolean; }
 export interface HostEventMap {
@@ -47,6 +48,7 @@ export interface HostEventMap {
   readonly 'message-deleted': { readonly name: 'message-deleted'; readonly chatKey?: string | undefined; readonly messageId: string };
   readonly 'generation-started': { readonly name: 'generation-started'; readonly chatKey?: string | undefined; readonly generation: GenerationSnapshot };
   readonly 'generation-ended': { readonly name: 'generation-ended'; readonly chatKey?: string | undefined; readonly generation: GenerationSnapshot };
+  readonly 'generation-config-changed': { readonly name: 'generation-config-changed'; readonly generation: GenerationSnapshot };
   readonly 'prompt-ready': { readonly name: 'prompt-ready'; readonly chatKey?: string | undefined; readonly prompt: PromptSnapshot };
   readonly 'worldbook-updated': { readonly name: 'worldbook-updated'; readonly worldbook: WorldbookSnapshot };
   readonly 'identity-changed': { readonly name: 'identity-changed'; readonly identity: HostIdentitySnapshot };

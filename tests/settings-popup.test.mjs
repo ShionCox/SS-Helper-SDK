@@ -46,7 +46,11 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(runtime.settings.snapshot()[0].values['api-key'], '[REDACTED]');
     assert.equal(container.children[0].children.filter((node) => node.dataset.pluginId === 'ss-helper.core').length, 1);
-    assert.equal(container.children[0].children.filter((node) => node.dataset.ssHelperStyle === 'settings').length, 1);
+    const coreStyles = document.body.children.find((node) => node.dataset.ssHelperStyle === 'core-ui');
+    assert.ok(coreStyles);
+    assert.match(coreStyles.textContent, /\.stx-ui-control-action \{ justify-content: flex-start; \}/);
+    assert.match(coreStyles.textContent, /\.stx-ui-control-status \{ justify-content: flex-start; flex-wrap: wrap; \}/);
+    assert.match(coreStyles.textContent, /\.stx-ui-control-status \{ align-items: flex-start; flex-direction: column; \}/);
     const opener = descendants(container.children[0]).find((node) => node.id === 'ss-helper-open-settings-center');
     opener.focus();
     opener.dispatchEvent({ type: 'click' });
@@ -108,10 +112,14 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
     const session = runtime.connect(pluginDescriptor('example.legacy-theme'));
     const saved = [];
+    let popupInput;
+    const popupToken = { kind: 'popup', provider: 'example.legacy-theme', name: 'tools', version: 1 };
+    session.registerPopup({ token: popupToken, title: 'Tools', render: (_popupContainer, input) => { popupInput = input; } });
     session.registerSettings({
       id: 'example.legacy-theme', title: 'Legacy theme', fields: [
         { kind: 'section', id: 'basic', label: '基础', children: [
           { kind: 'toggle', id: 'enabled', label: '启用', description: '是否启用。' },
+          { kind: 'action', id: 'legacyAction', label: '旧版底栏动作', actionId: 'legacy' },
         ] },
         { kind: 'section', id: 'advanced', label: '高级', children: [
           { kind: 'range', id: 'volume', label: '预算', min: 0, max: 10, step: 1 },
@@ -119,7 +127,8 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
           { kind: 'radio', id: 'strategy', label: '响应策略', options: [{ value: 'auto', label: '自动' }, { value: 'exact', label: '精确' }] },
           { kind: 'multiSelect', id: 'sources', label: '记忆来源', options: [{ value: 'chat', label: '聊天记录' }, { value: 'world', label: '世界书' }] },
           { kind: 'number', id: 'count', label: '召回条数', step: 1, unit: '条', validation: { min: 1, max: 50 } },
-          { kind: 'action', id: 'open', label: '打开工具', actionId: 'open' },
+          { kind: 'action', id: 'open', label: '打开工具', description: '在高级页打开工具。', actionId: 'open', placement: 'inline', buttonLabel: '进入工具', popup: popupToken },
+          { kind: 'action', id: 'danger', label: '危险工具', actionId: 'danger', tone: 'danger', placement: 'inline', buttonLabel: '执行', disabledReason: '当前不可用' },
         ] },
       ],
     }, {
@@ -143,7 +152,30 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     assert.equal(tabButtons[1].getAttribute('aria-selected'), 'true');
     assert.equal(tabPanels[1].hidden, false);
 
+    tabButtons[0].dispatchEvent({ type: 'click' });
     const search = descendants(center).find((node) => node.tagName === 'INPUT' && node.type === 'search');
+    search.value = '打开工具';
+    search.dispatchEvent({ type: 'input' });
+    assert.equal(tabButtons[1].getAttribute('aria-selected'), 'true');
+    assert.equal(tabPanels[1].hidden, false);
+    const inlineActionRow = descendants(center).find((node) => node.dataset.fieldId === 'open');
+    const footerActions = descendants(center).find((node) => node.className === 'stx-center-footer-actions');
+    assert.equal(tabPanels[1].contains(inlineActionRow), true);
+    assert.equal(footerActions.contains(inlineActionRow), false);
+    assert.equal(descendants(footerActions).some((node) => node.tagName === 'BUTTON' && node.textContent === '旧版底栏动作'), true);
+    const inlineActionButton = descendants(inlineActionRow).find((node) => node.tagName === 'BUTTON');
+    assert.equal(inlineActionButton.textContent, '进入工具');
+    assert.ok(inlineActionButton.getAttribute('aria-describedby'));
+    const savesBeforeAction = saved.length;
+    inlineActionButton.dispatchEvent({ type: 'click' });
+    assert.deepEqual(popupInput, { actionId: 'open' });
+    assert.equal(saved.length, savesBeforeAction);
+    const disabledActionButton = descendants(center).find((node) => node.dataset.fieldId === 'danger').children
+      .flatMap((node) => [node, ...descendants(node)]).find((node) => node.tagName === 'BUTTON');
+    assert.equal(disabledActionButton.disabled, true);
+    assert.equal(disabledActionButton.getAttribute('aria-disabled'), 'true');
+    assert.match(disabledActionButton.className, /stx-ui-btn-danger/u);
+
     search.value = '预算';
     search.dispatchEvent({ type: 'input' });
     let rows = descendants(center).filter((node) => node.dataset.fieldId);
@@ -188,7 +220,7 @@ test('settings schemas allow the eleven supported kinds and reject unknown kinds
       { kind: 'radio', id: 'radio', label: 'Radio', options: [{ value: 'a', label: 'A' }] },
       { kind: 'multiSelect', id: 'multi', label: 'Multi', options: [{ value: 'a', label: 'A' }] },
       { kind: 'section', id: 'section', label: 'Section', children: [] },
-      { kind: 'action', id: 'action', label: 'Action', actionId: 'run' },
+      { kind: 'action', id: 'action', label: 'Action', actionId: 'run', placement: 'inline', buttonLabel: 'Run' },
       { kind: 'status', id: 'status', label: 'Status', value: 'Ready' },
     ],
   }, { load: () => ({}), save: () => {}, reset: () => ({}) }));
@@ -197,6 +229,14 @@ test('settings schemas allow the eleven supported kinds and reject unknown kinds
     id: 'example.invalid-kind', title: 'Invalid', fields: [{ kind: 'html', id: 'unsafe', label: 'Unsafe', html: '<b>x</b>' }],
   }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('PAYLOAD_INVALID'));
   assert.equal(runtime.settings.snapshot().some((entry) => entry.id === 'example.invalid-kind'), false);
+  const invalidPlacement = runtime.connect(pluginDescriptor('example.invalid-action-placement'));
+  assert.throws(() => invalidPlacement.registerSettings({
+    id: 'example.invalid-action-placement', title: 'Invalid action placement', fields: [{ kind: 'action', id: 'run', label: 'Run', actionId: 'run', placement: 'sidebar' }],
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('PAYLOAD_INVALID'));
+  const invalidButtonLabel = runtime.connect(pluginDescriptor('example.invalid-action-label'));
+  assert.throws(() => invalidButtonLabel.registerSettings({
+    id: 'example.invalid-action-label', title: 'Invalid action label', fields: [{ kind: 'action', id: 'run', label: 'Run', actionId: 'run', buttonLabel: '   ' }],
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('PAYLOAD_INVALID'));
 });
 
 test('required settings are validated consistently and missing saves never reach the adapter', async () => {
@@ -276,5 +316,103 @@ test('throwing popup render rolls back overlay, listeners, session cleanup, and 
     assert.equal(document.activeElement, opener);
     assert.doesNotThrow(() => session.dispose());
     assert.equal(document.body.children.filter((node) => node.dataset.ssHelperPopup !== undefined).length, 0);
+  } finally { restore(); }
+});
+
+test('ToastHost gates notifications, stacks and deduplicates safe DTOs, and cleans session state', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const denied = runtime.connect(pluginDescriptor('example.toast-denied'));
+    assert.throws(() => denied.ui.showToast({ level: 'info', message: 'Denied' }), errorCode('CAPABILITY_NOT_GRANTED'));
+
+    const session = runtime.connect(pluginDescriptor('example.toast', { capabilities: ['core.ui.notification.v1'] }));
+    assert.throws(() => session.ui.showToast({ level: 'info', message: '', durationMs: 10 }), errorCode('PAYLOAD_INVALID'));
+    for (let index = 0; index < 6; index += 1) session.ui.showToast({ level: index === 0 ? 'error' : 'warning', title: `Notice ${index}`, message: `Message ${index}`, code: `NOTICE_${index}`, durationMs: 0 });
+    const root = document.getElementById('ss-helper-toast-root');
+    assert.ok(root);
+    assert.equal(root.children.length, 5);
+    assert.equal(root.children[0].getAttribute('role'), 'alert');
+    session.ui.showToast({ level: 'success', title: 'Updated', message: 'Updated message', code: 'NOTICE_5', durationMs: 0 });
+    assert.equal(root.children.length, 5);
+    assert.equal(descendants(root.children[0]).some((node) => node.textContent === 'Updated message'), true);
+    assert.equal(runtime.port.diagnostics().events.at(-1).code, 'NOTICE_5');
+    session.dispose();
+    assert.equal(document.getElementById('ss-helper-toast-root'), null);
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('ToastHost pauses automatic dismissal while expanded and resumes after click collapse', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.toast-timer', { capabilities: ['core.ui.notification.v1'] }));
+    session.ui.showToast({ level: 'info', message: 'Timed message', durationMs: 1_500 });
+    const root = document.getElementById('ss-helper-toast-root');
+    root.dispatchEvent({ type: 'click', target: root });
+    assert.equal(root.dataset.expanded, 'true');
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    assert.equal(root.children.length, 1);
+    root.dispatchEvent({ type: 'click', target: root });
+    assert.equal(root.dataset.expanded, 'false');
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    assert.equal(document.getElementById('ss-helper-toast-root'), null);
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('dynamic field state disables the current control with an inline reason and updates by subscription', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const container = document.createElement('div'); document.body.append(container);
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
+    const session = runtime.connect(pluginDescriptor('example.field-state'));
+    let fieldStateListener;
+    session.registerSettings({ id: 'example.field-state', title: 'Field state', fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled' }] }, {
+      load: () => ({ enabled: true }), save: () => {}, reset: () => ({ enabled: true }),
+      loadFieldState: () => ({ enabled: { disabled: true, disabledReason: 'Enter a chat first' } }),
+      subscribeFieldState: (listener) => { fieldStateListener = listener; return () => {}; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.field-state').dispatchEvent({ type: 'click' });
+    let row = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.fieldId === 'enabled');
+    assert.equal(descendants(row).find((node) => node.tagName === 'INPUT').disabled, true);
+    assert.equal(descendants(row).some((node) => node.textContent === 'Enter a chat first'), true);
+    fieldStateListener({ enabled: { disabled: false } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    row = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.fieldId === 'enabled');
+    assert.equal(descendants(row).find((node) => node.tagName === 'INPUT').disabled, false);
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('an external settings snapshot during a delayed save remains authoritative', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.settings-race'));
+    let releaseSave;
+    let valuesListener;
+    session.registerSettings({ id: 'example.settings-race', title: 'Race', fields: [{ kind: 'text', id: 'chat', label: 'Chat' }] }, {
+      load: () => ({ chat: 'chat-a' }),
+      save: () => new Promise((resolve) => { releaseSave = resolve; }),
+      reset: () => ({ chat: 'chat-a' }),
+      subscribe: (listener) => { valuesListener = listener; return () => {}; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const saving = runtime.settings.save('example.settings-race', { chat: 'chat-a-saved' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    valuesListener({ chat: 'chat-b' });
+    releaseSave();
+    await saving;
+    assert.deepEqual(runtime.settings.snapshot().find((item) => item.id === 'example.settings-race').values, { chat: 'chat-b' });
+    runtime.dispose();
   } finally { restore(); }
 });

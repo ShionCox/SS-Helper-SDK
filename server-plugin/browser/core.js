@@ -17,7 +17,7 @@ export const coreRuntime = installCoreRuntime({
   coreVersion: '1.0.0',
   sdkPackageVersion: '1.0.0',
   apiMajor: 1,
-  apiMinor: 2,
+  apiMinor: 3,
   buildId: 'ss-helper-sdk',
   contentDigest: 'runtime',
   capabilities: host.capabilities,

@@ -94,6 +94,15 @@ const message = (value: unknown, index: number): ChatMessageSnapshot => {
   };
 };
 const chatKey = (context: UnknownRecord): string | undefined => text(context.chatId) ?? text(context.chat_id) ?? text(context.chatFile);
+const chatDisplayName = (context: UnknownRecord): string | undefined => {
+  if (context.groupId !== undefined && context.groupId !== null && String(context.groupId).trim() !== '') {
+    const groups = Array.isArray(context.groups) ? context.groups : [];
+    const group = groups.map(record).find((item) => item !== undefined && String(item.id) === String(context.groupId));
+    return text(group?.name) ?? text(context.name2);
+  }
+  const characters = Array.isArray(context.characters) ? context.characters : [];
+  return text(record(characters[Number(context.characterId)])?.name) ?? text(context.name2);
+};
 const identity = (context: UnknownRecord, characterId?: unknown): HostIdentitySnapshot => ({
   ...(text(context.userId) === undefined ? {} : { userId: text(context.userId) }),
   ...(text(context.name1) === undefined ? {} : { userName: text(context.name1) }),
@@ -121,11 +130,11 @@ const generationUsage = (...args: unknown[]): GenerationSnapshot['usage'] => {
     ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }), ...(totalTokens === undefined ? {} : { totalTokens }),
   };
 };
-const generationEvent = (name: 'generation-started' | 'generation-ended', context: UnknownRecord, args: unknown[]): HostEvent => {
+const generationEvent = (name: 'generation-started' | 'generation-ended' | 'generation-config-changed', context: UnknownRecord, args: unknown[]): HostEvent => {
   const usage = generationUsage(...args);
   const key = chatKey(context);
   return {
-    name, ...(key === undefined ? {} : { chatKey: key }),
+    name, ...(key === undefined || name === 'generation-config-changed' ? {} : { chatKey: key }),
     generation: { active: name === 'generation-started', ...(text(context.main_api) === undefined ? {} : { provider: text(context.main_api) }), ...(text(context.online_status) === undefined ? {} : { model: text(context.online_status) }), ...(usage === undefined ? {} : { usage }) },
   };
 };
@@ -189,7 +198,7 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
     adapter.character = { read: async (): Promise<HostCharacterSnapshot | null> => { const c = getContext(); const chars = Array.isArray(c.characters) ? c.characters : []; const raw = record(chars[Number(c.characterId)]); if (raw === undefined) return null; return { id: text(raw.avatar) ?? String(c.characterId ?? ''), name: text(raw.name) ?? text(c.name2) ?? '', ...(text(raw.avatar) === undefined ? {} : { avatar: text(raw.avatar) }), ...(text(raw.description) === undefined ? {} : { description: text(raw.description) }), ...(text(raw.personality) === undefined ? {} : { personality: text(raw.personality) }), ...(text(raw.scenario) === undefined ? {} : { scenario: text(raw.scenario) }), ...(text(raw.first_mes) === undefined ? {} : { firstMessage: text(raw.first_mes) }), ...(text(raw.mes_example) === undefined ? {} : { exampleMessages: text(raw.mes_example) }) }; } };
     adapter.persona = { read: async (): Promise<HostPersonaSnapshot | null> => { const c = getContext(); const name = text(c.name1); if (name === undefined) return null; return { name, ...(text(c.user_avatar) === undefined ? {} : { avatar: text(c.user_avatar) }), ...(text(c.persona_description) === undefined ? {} : { description: text(c.persona_description) }) }; } };
     adapter.chat = {
-      readCurrent: async (): Promise<ChatSnapshot | null> => { const c = getContext(); const list = Array.isArray(c.chat) ? c.chat : []; const key = text(c.chatId) ?? text(c.chat_id) ?? text(c.chatFile); const value = retainedPlain(c.chat_metadata); const variables: Readonly<Record<string, PlainData>> | undefined = value !== undefined && !Array.isArray(value) && value !== null && typeof value === 'object' ? value as Readonly<Record<string, PlainData>> : undefined; return key === undefined ? null : { key, messageCount: list.length, messages: list.map(message), ...(variables === undefined ? {} : { variables }) }; },
+      readCurrent: async (): Promise<ChatSnapshot | null> => { const c = getContext(); const list = Array.isArray(c.chat) ? c.chat : []; const key = text(c.chatId) ?? text(c.chat_id) ?? text(c.chatFile); const name = chatDisplayName(c); const value = retainedPlain(c.chat_metadata); const variables: Readonly<Record<string, PlainData>> | undefined = value !== undefined && !Array.isArray(value) && value !== null && typeof value === 'object' ? value as Readonly<Record<string, PlainData>> : undefined; return key === undefined ? null : { key, messageCount: list.length, messages: list.map(message), ...(name === undefined ? {} : { name }), ...(variables === undefined ? {} : { variables }) }; },
       readMessages: async () => { const c = getContext(); return (Array.isArray(c.chat) ? c.chat : []).map(message); },
       list: async () => [],
       append: async (input: ChatMessageInput) => { const c = getContext(); const add = fn(c.addOneMessage); if (add === undefined) throw new Error('append unavailable'); const raw = { name: input.name ?? (input.role === 'user' ? c.name1 : c.name2), is_user: input.role === 'user', is_system: input.role === 'system', mes: input.text, variables: input.variables }; await add.call(c, raw); const list = Array.isArray(c.chat) ? c.chat : []; return message(list.at(-1) ?? raw, Math.max(0, list.length - 1)); },
@@ -205,20 +214,22 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
   const on = fn(eventSource?.on); const off = fn(eventSource?.off) ?? fn(eventSource?.removeListener);
   if (eventSource !== undefined && on !== undefined && off !== undefined) {
     capabilities.push('tavern.chat.events');
-    const names: Record<HostEventName, string> = { 'chat-changed': 'CHAT_CHANGED', 'message-received': 'MESSAGE_RECEIVED', 'message-sent': 'MESSAGE_SENT', 'message-edited': 'MESSAGE_EDITED', 'message-deleted': 'MESSAGE_DELETED', 'generation-started': 'GENERATION_STARTED', 'generation-ended': 'GENERATION_ENDED', 'prompt-ready': 'CHAT_COMPLETION_PROMPT_READY', 'worldbook-updated': 'WORLDINFO_UPDATED', 'identity-changed': 'CHARACTER_EDITED' };
+    const names: Record<HostEventName, string> = { 'chat-changed': 'CHAT_CHANGED', 'message-received': 'MESSAGE_RECEIVED', 'message-sent': 'MESSAGE_SENT', 'message-edited': 'MESSAGE_EDITED', 'message-deleted': 'MESSAGE_DELETED', 'generation-started': 'GENERATION_STARTED', 'generation-ended': 'GENERATION_ENDED', 'generation-config-changed': 'GENERATION_CONFIG_CHANGED', 'prompt-ready': 'CHAT_COMPLETION_PROMPT_READY', 'worldbook-updated': 'WORLDINFO_UPDATED', 'identity-changed': 'CHARACTER_EDITED' };
     adapter.events = { subscribe: (name, listener) => {
-      const hostName = String(eventTypes[names[name]] ?? names[name]);
+      const hostNames = name === 'generation-config-changed'
+        ? ['MAIN_API_CHANGED', 'ONLINE_STATUS_CHANGED'].map((key) => String(eventTypes[key] ?? key))
+        : [String(eventTypes[names[name]] ?? names[name])];
       const callback = (...args: unknown[]): void => {
         const context = getContext();
         if (name === 'chat-changed') listener({ name, chatKey: text(args[0]) ?? chatKey(context) ?? '' });
         else if (name === 'message-received' || name === 'message-sent' || name === 'message-edited' || name === 'message-deleted') listener(messageEvent(name, context, args[0]));
-        else if (name === 'generation-started' || name === 'generation-ended') listener(generationEvent(name, context, args));
+        else if (name === 'generation-started' || name === 'generation-ended' || name === 'generation-config-changed') listener(generationEvent(name, context, args));
         else if (name === 'prompt-ready') listener(promptEvent(context, args[0]));
         else if (name === 'worldbook-updated') listener(worldbookEvent(context, args[0], args[1]));
         else { const detail = record(record(args[0])?.detail); listener({ name, identity: identity(context, detail?.id) }); }
       };
-      on.call(eventSource, hostName, callback);
-      return () => { off.call(eventSource, hostName, callback); };
+      hostNames.forEach((hostName) => on.call(eventSource, hostName, callback));
+      return () => { hostNames.forEach((hostName) => off.call(eventSource, hostName, callback)); };
     } };
   }
 

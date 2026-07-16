@@ -11,11 +11,12 @@ export {
   type SettingsContributionSnapshot,
 } from './settings/settings-host.js';
 export { PopupHost } from './popup/popup-host.js';
+export { ToastHost } from './toast/toast-host.js';
 
 export const CORE_EXTENSION_SKELETON = Object.freeze({
   id: 'ss-helper.core',
   installDirectory: 'third-party/SS-Helper-SDK',
   coreVersion: '1.0.0',
   apiMajor: 1,
-  apiMinor: 2,
+  apiMinor: 3,
 });

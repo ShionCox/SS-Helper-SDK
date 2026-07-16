@@ -5,12 +5,17 @@ import {
   type PopupToken,
   type SettingsAdapter,
   type SettingsField,
+  type SettingsFieldStateMap,
+  type SettingsFieldStateSnapshot,
+  type SettingsNavigationTarget,
   type SettingsSchema,
+  type SettingsStatusSnapshot,
+  type SettingsTone,
   type SettingsValues,
   type WorkspaceHealth,
 } from '@ss-helper/sdk';
 import type { SessionScope } from '../plugins/session-scope.js';
-import { SETTINGS_CSS } from '../styles/settings-styles.js';
+import { ensureCoreUiStyles } from '../styles/settings-styles.js';
 import { assertPayload } from '../communication/contracts.js';
 import {
   SETTINGS_CENTER_ID,
@@ -49,6 +54,14 @@ interface Contribution {
   saveQueue: Promise<void>;
   lastError?: string;
   unsubscribe?: () => void;
+  unsubscribeStatus?: () => void;
+  unsubscribeFieldState?: () => void;
+  status: Readonly<Record<string, SettingsStatusSnapshot>>;
+  fieldState: SettingsFieldStateMap;
+  active: boolean;
+  valuesRevision: number;
+  statusRevision: number;
+  fieldStateRevision: number;
   readonly openPopup: (token: PopupToken, input: PlainData) => void;
 }
 
@@ -67,6 +80,17 @@ const OVERVIEW_ID = 'overview';
 const SETTINGS_FIELD_KINDS = new Set([
   'section', 'toggle', 'checkbox', 'text', 'number', 'range', 'select', 'radio', 'multiSelect', 'action', 'status',
 ]);
+const SETTINGS_TONES = new Set<SettingsTone>(['neutral', 'success', 'warning', 'error']);
+
+function settingsValuesEqual(left: SettingsValues, right: SettingsValues): boolean {
+  const leftEntries = Object.entries(left);
+  if (leftEntries.length !== Object.keys(right).length) return false;
+  return leftEntries.every(([key, value]) => {
+    const other = right[key];
+    if (Array.isArray(value) && Array.isArray(other)) return value.length === other.length && value.every((item, index) => item === other[index]);
+    return value === other;
+  });
+}
 
 function fields(schema: SettingsSchema): readonly SettingsField[] {
   const result: SettingsField[] = [];
@@ -80,6 +104,45 @@ function fields(schema: SettingsSchema): readonly SettingsField[] {
 
 function actionFields(schema: SettingsSchema): readonly Extract<SettingsField, { kind: 'action' }>[] {
   return fields(schema).filter((field): field is Extract<SettingsField, { kind: 'action' }> => field.kind === 'action');
+}
+
+function statusFields(schema: SettingsSchema): readonly Extract<SettingsField, { kind: 'status' }>[] {
+  return fields(schema).filter((field): field is Extract<SettingsField, { kind: 'status' }> => field.kind === 'status');
+}
+
+function validateNavigationTarget(target: SettingsNavigationTarget, reason: string): void {
+  const value = target as unknown as Record<string, unknown>;
+  if (typeof target !== 'object' || target === null || Object.keys(value).some((key) => !['pluginId', 'tabId', 'fieldId'].includes(key)) || typeof target.pluginId !== 'string' || target.pluginId.trim() === '' || (target.tabId !== undefined && (typeof target.tabId !== 'string' || target.tabId.trim() === '')) || (target.fieldId !== undefined && (typeof target.fieldId !== 'string' || target.fieldId.trim() === ''))) {
+    throw new SSHelperError('PAYLOAD_INVALID', 'Settings navigation target is invalid', { reason });
+  }
+}
+
+function validateStatusMap(schema: SettingsSchema, status: Readonly<Record<string, SettingsStatusSnapshot>>, phase: string): Readonly<Record<string, SettingsStatusSnapshot>> {
+  assertPayload(status, undefined, phase);
+  const allowed = new Set(statusFields(schema).map((field) => field.id));
+  for (const [id, snapshot] of Object.entries(status)) {
+    if (!allowed.has(id) || typeof snapshot !== 'object' || snapshot === null || Object.keys(snapshot).some((key) => !['value', 'tone', 'description'].includes(key)) || typeof snapshot.value !== 'string' || snapshot.value.trim() === '' || !SETTINGS_TONES.has(snapshot.tone) || (snapshot.description !== undefined && typeof snapshot.description !== 'string')) {
+      throw new SSHelperError('PAYLOAD_INVALID', 'Settings status is invalid', { phase, field: id });
+    }
+  }
+  return Object.freeze({ ...status });
+}
+
+function validateFieldStateMap(schema: SettingsSchema, state: SettingsFieldStateMap, phase: string): SettingsFieldStateMap {
+  assertPayload(state, undefined, phase);
+  const allowed = new Set(fields(schema).filter((field) => field.kind !== 'section' && field.kind !== 'status').map((field) => field.id));
+  const next: Record<string, SettingsFieldStateSnapshot> = {};
+  for (const [id, snapshot] of Object.entries(state)) {
+    if (!allowed.has(id) || typeof snapshot !== 'object' || snapshot === null
+      || Object.keys(snapshot).some((key) => !['disabled', 'disabledReason'].includes(key))
+      || typeof snapshot.disabled !== 'boolean'
+      || (snapshot.disabledReason !== undefined && (typeof snapshot.disabledReason !== 'string' || snapshot.disabledReason.trim() === ''))
+      || (snapshot.disabled && snapshot.disabledReason === undefined)) {
+      throw new SSHelperError('PAYLOAD_INVALID', 'Settings field state is invalid', { phase, field: id });
+    }
+    next[id] = Object.freeze({ disabled: snapshot.disabled, ...(snapshot.disabledReason === undefined ? {} : { disabledReason: snapshot.disabledReason.trim() }) });
+  }
+  return Object.freeze(next);
 }
 
 function validateOptions(field: Extract<SettingsField, { kind: 'select' | 'radio' | 'multiSelect' }>): void {
@@ -103,6 +166,25 @@ function validateSchema(pluginId: string, schema: SettingsSchema): void {
     }
     if (field.kind === 'number' && field.step !== undefined && field.step <= 0) {
       throw new SSHelperError('PAYLOAD_INVALID', 'Number field step is invalid', { reason: 'number_step' });
+    }
+    if (field.kind === 'action') {
+      if (field.placement !== undefined && field.placement !== 'footer' && field.placement !== 'inline') {
+        throw new SSHelperError('PAYLOAD_INVALID', 'Action field placement is invalid', { reason: 'action_placement' });
+      }
+      if (field.buttonLabel !== undefined && (typeof field.buttonLabel !== 'string' || field.buttonLabel.trim() === '')) {
+        throw new SSHelperError('PAYLOAD_INVALID', 'Action field button label is invalid', { reason: 'action_button_label' });
+      }
+    }
+    if (field.kind === 'status' && (typeof field.value !== 'string' || field.value.trim() === '' || (field.tone !== undefined && !SETTINGS_TONES.has(field.tone)))) {
+      throw new SSHelperError('PAYLOAD_INVALID', 'Status field is invalid', { reason: 'status_field' });
+    }
+    if (field.kind === 'status' && field.action !== undefined) {
+      const action = field.action as unknown as Record<string, unknown>;
+      if (Object.keys(action).some((key) => !['buttonLabel', 'target', 'showWhen'].includes(key)) || typeof field.action.buttonLabel !== 'string' || field.action.buttonLabel.trim() === '') throw new SSHelperError('PAYLOAD_INVALID', 'Status action button label is invalid', { reason: 'status_action_label' });
+      validateNavigationTarget(field.action.target, 'status_action_target');
+      if (field.action.showWhen !== undefined && (!Array.isArray(field.action.showWhen) || field.action.showWhen.length === 0 || field.action.showWhen.some((tone) => !SETTINGS_TONES.has(tone)))) {
+        throw new SSHelperError('PAYLOAD_INVALID', 'Status action visibility is invalid', { reason: 'status_action_visibility' });
+      }
     }
   }
 }
@@ -153,7 +235,8 @@ function validateValues(schema: SettingsSchema, values: SettingsValues, phase: s
 }
 
 function searchText(field: SettingsField): string {
-  return `${field.id} ${field.label} ${field.description ?? ''}`.toLocaleLowerCase();
+  const actionLabel = field.kind === 'status' && field.action !== undefined ? field.action.buttonLabel : '';
+  return `${field.id} ${field.label} ${field.description ?? ''} ${actionLabel}`.toLocaleLowerCase();
 }
 
 function domId(pluginId: string, suffix: string): string {
@@ -189,6 +272,7 @@ export class SettingsHost {
 
   mount(container: HTMLElement): HTMLElement {
     const document = container.ownerDocument;
+    ensureCoreUiStyles(document);
     const existing = document.getElementById(SETTINGS_ROOT_ID);
     if (existing !== null) {
       if (existing.dataset.ssHelperOwner !== 'core') throw new SSHelperError('BRIDGE_CORRUPTED', 'The settings root is not owned by Core');
@@ -216,15 +300,20 @@ export class SettingsHost {
     const empty = Object.freeze({});
     const contribution: Contribution = {
       identity, schema, adapter, openPopup, values: empty, committedValues: empty,
-      health: 'healthy', saveState: 'idle', saveRevision: 0, saveQueue: Promise.resolve(),
+      health: 'healthy', saveState: 'idle', saveRevision: 0, saveQueue: Promise.resolve(), status: empty, fieldState: empty,
+      active: true, valuesRevision: 0, statusRevision: 0, fieldStateRevision: 0,
     };
     this.#contributions.set(identity.id, contribution);
     void this.#load(contribution);
+    void this.#loadStatus(contribution);
+    void this.#loadFieldState(contribution);
     if (adapter.subscribe !== undefined) {
       try {
         contribution.unsubscribe = adapter.subscribe((values) => {
           try {
             const validated = validateValues(contribution.schema, values, 'settings_subscribe');
+            contribution.valuesRevision += 1;
+            if (!settingsValuesEqual(validated, contribution.values)) contribution.saveRevision += 1;
             contribution.values = validated;
             contribution.committedValues = validated;
             contribution.health = 'healthy';
@@ -233,9 +322,37 @@ export class SettingsHost {
         });
       } catch { this.#degrade(contribution); }
     }
+    if (adapter.subscribeStatus !== undefined) {
+      try {
+        contribution.unsubscribeStatus = adapter.subscribeStatus((status) => {
+          try {
+            contribution.status = validateStatusMap(contribution.schema, status, 'settings_status_subscribe');
+            contribution.statusRevision += 1;
+            this.#syncStatusUi(contribution);
+          } catch { this.#degrade(contribution); }
+        });
+      } catch { this.#degrade(contribution); }
+    }
+    if (adapter.subscribeFieldState !== undefined) {
+      try {
+        contribution.unsubscribeFieldState = adapter.subscribeFieldState((state) => {
+          try {
+            contribution.fieldState = validateFieldStateMap(contribution.schema, state, 'settings_field_state_subscribe');
+            contribution.fieldStateRevision += 1;
+            this.#renderAll();
+          } catch { this.#degrade(contribution); }
+        });
+      } catch { this.#degrade(contribution); }
+    }
     this.#renderAll();
     return scope.addCleanup(() => {
+      contribution.active = false;
+      contribution.valuesRevision += 1;
+      contribution.statusRevision += 1;
+      contribution.fieldStateRevision += 1;
       contribution.unsubscribe?.();
+      contribution.unsubscribeStatus?.();
+      contribution.unsubscribeFieldState?.();
       this.#contributions.delete(identity.id);
       this.#activeTabs.delete(identity.id);
       this.#searchQueries.delete(identity.id);
@@ -247,15 +364,39 @@ export class SettingsHost {
   }
 
   async #load(contribution: Contribution): Promise<void> {
+    const revision = contribution.valuesRevision;
     try {
       const values = validateValues(contribution.schema, await contribution.adapter.load(), 'settings_load');
+      if (!contribution.active || revision !== contribution.valuesRevision) return;
       contribution.values = values;
       contribution.committedValues = values;
       contribution.health = 'healthy';
       contribution.saveState = 'idle';
       delete contribution.lastError;
       this.#renderAll();
-    } catch { this.#degrade(contribution); }
+    } catch { if (contribution.active) this.#degrade(contribution); }
+  }
+
+  async #loadStatus(contribution: Contribution): Promise<void> {
+    if (contribution.adapter.loadStatus === undefined) return;
+    const revision = contribution.statusRevision;
+    try {
+      const status = validateStatusMap(contribution.schema, await contribution.adapter.loadStatus(), 'settings_status_load');
+      if (!contribution.active || revision !== contribution.statusRevision) return;
+      contribution.status = status;
+      this.#syncStatusUi(contribution);
+    } catch { if (contribution.active) this.#degrade(contribution); }
+  }
+
+  async #loadFieldState(contribution: Contribution): Promise<void> {
+    if (contribution.adapter.loadFieldState === undefined) return;
+    const revision = contribution.fieldStateRevision;
+    try {
+      const state = validateFieldStateMap(contribution.schema, await contribution.adapter.loadFieldState(), 'settings_field_state_load');
+      if (!contribution.active || revision !== contribution.fieldStateRevision) return;
+      contribution.fieldState = state;
+      this.#renderAll();
+    } catch { if (contribution.active) this.#degrade(contribution); }
   }
 
   #degrade(contribution: Contribution, rerender = true): void {
@@ -271,14 +412,15 @@ export class SettingsHost {
     if (contribution === undefined) throw new SSHelperError('SETTINGS_ADAPTER_ERROR', 'Settings are not registered', { pluginId });
     const validatedValues = validateValues(contribution.schema, values, 'settings_save');
     const revision = ++contribution.saveRevision;
+    contribution.valuesRevision += 1;
     contribution.values = validatedValues;
     contribution.saveState = 'saving';
     this.#syncContributionUi(contribution);
     const operation = contribution.saveQueue.catch(() => undefined).then(async () => {
       try {
         await contribution.adapter.save(validatedValues);
-        contribution.committedValues = validatedValues;
         if (revision === contribution.saveRevision) {
+          contribution.committedValues = validatedValues;
           contribution.values = validatedValues;
           contribution.health = 'healthy';
           contribution.saveState = 'saved';
@@ -300,8 +442,11 @@ export class SettingsHost {
   async reset(pluginId: string): Promise<SettingsValues> {
     const contribution = this.#contributions.get(pluginId);
     if (contribution === undefined) throw new SSHelperError('SETTINGS_ADAPTER_ERROR', 'Settings are not registered', { pluginId });
+    const revision = ++contribution.saveRevision;
+    contribution.valuesRevision += 1;
     try {
       const values = validateValues(contribution.schema, await contribution.adapter.reset(), 'settings_reset');
+      if (!contribution.active || revision !== contribution.saveRevision) return contribution.values;
       contribution.values = values;
       contribution.committedValues = values;
       contribution.health = 'healthy';
@@ -348,11 +493,6 @@ export class SettingsHost {
     if (root === undefined) return;
     const document = root.ownerDocument;
     root.replaceChildren();
-    const style = document.createElement('style');
-    style.dataset.ssHelperStyle = 'settings';
-    style.textContent = SETTINGS_CSS;
-    root.append(style);
-
     const heading = document.createElement('div');
     heading.className = 'stx-launcher-heading';
     const headingCopy = document.createElement('div');
@@ -562,16 +702,16 @@ export class SettingsHost {
     if (topSections) this.#renderTabs(document, fieldContainer, contribution, schema.fields as readonly Extract<SettingsField, { kind: 'section' }>[]);
     else this.#renderFields(document, fieldContainer, fieldContainer, contribution, schema.fields);
     fieldContainer.append(empty); content.append(searchBar, fieldContainer);
-    search.addEventListener('input', () => { this.#searchQueries.set(identity.id, search.value); this.#applySearch(fieldContainer, search.value); });
-    this.#applySearch(fieldContainer, search.value);
+    search.addEventListener('input', () => { this.#searchQueries.set(identity.id, search.value); this.#applySearch(fieldContainer, search.value, identity.id); });
+    this.#applySearch(fieldContainer, search.value, identity.id);
 
     const footer = document.createElement('footer'); footer.className = 'stx-center-footer';
     const status = document.createElement('div'); status.className = `stx-save-state stx-save-state-${contribution.saveState}`; status.dataset.saveStatus = identity.id;
     status.append(icon(document, contribution.saveState === 'error' ? 'fa-circle-exclamation' : contribution.saveState === 'saving' ? 'fa-rotate' : 'fa-circle-check'));
     const statusText = document.createElement('span'); statusText.textContent = this.#saveStateText(contribution); status.append(statusText);
     const actions = document.createElement('div'); actions.className = 'stx-center-footer-actions';
-    for (const field of actionFields(schema)) {
-      const action = document.createElement('button'); action.type = 'button'; action.className = `stx-ui-btn stx-ui-btn-${field.tone ?? 'neutral'}`; action.disabled = field.disabledReason !== undefined; action.textContent = field.label;
+    for (const field of actionFields(schema).filter((candidate) => candidate.placement !== 'inline')) {
+      const action = document.createElement('button'); action.type = 'button'; action.className = `stx-ui-btn stx-ui-btn-${field.tone ?? 'neutral'}`; action.disabled = this.#disabledReason(contribution, field) !== undefined; action.textContent = field.buttonLabel ?? field.label;
       if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }));
       actions.append(action);
     }
@@ -616,7 +756,7 @@ export class SettingsHost {
 
   #renderFields(document: Document, parent: HTMLElement, searchRoot: HTMLElement, contribution: Contribution, entries: readonly SettingsField[]): void {
     for (const field of entries) {
-      if (field.kind === 'action') continue;
+      if (field.kind === 'action' && field.placement !== 'inline') continue;
       if (field.kind === 'section') {
         const group = document.createElement('fieldset'); group.className = 'stx-ui-fieldset';
         const legend = document.createElement('legend'); legend.textContent = field.label; group.append(legend);
@@ -624,22 +764,38 @@ export class SettingsHost {
       }
       const row = document.createElement('div'); row.className = `stx-ui-field-row stx-ui-field-${field.kind}`; row.dataset.fieldId = field.id; row.dataset.fieldKind = field.kind; row.dataset.searchText = searchText(field);
       const labelCell = document.createElement('div'); labelCell.className = 'stx-ui-field-label';
-      const label = document.createElement('label'); label.className = 'stx-ui-item-title'; label.textContent = field.label; labelCell.append(label);
+      const label = document.createElement(field.kind === 'action' ? 'div' : 'label'); label.className = 'stx-ui-item-title'; label.textContent = field.label; labelCell.append(label);
       const valueCell = document.createElement('div'); valueCell.className = 'stx-ui-field-value';
       const control = document.createElement('div'); control.className = `stx-ui-control stx-ui-control-${field.kind}`;
       const descriptionId = domId(contribution.identity.id, `${field.id}-description`);
       const errorId = domId(contribution.identity.id, `${field.id}-error`);
-      const description = document.createElement('small'); description.id = descriptionId; description.className = 'stx-ui-item-desc'; description.textContent = field.disabledReason ?? field.description ?? '';
+      const disabledReason = this.#disabledReason(contribution, field);
+      const description = document.createElement('small'); description.id = descriptionId; description.className = 'stx-ui-item-desc'; description.textContent = disabledReason ?? field.description ?? '';
       const error = document.createElement('small'); error.id = errorId; error.className = 'stx-ui-field-error'; error.setAttribute('role', 'alert');
       const existingError = this.#fieldErrors.get(contribution.identity.id)?.get(field.id);
       error.textContent = existingError ?? ''; error.hidden = existingError === undefined;
       if (existingError !== undefined) row.dataset.validationError = existingError;
 
-      if (field.kind === 'status') {
+      if (field.kind === 'action') {
+        const action = document.createElement('button'); action.type = 'button'; action.className = `stx-ui-btn stx-ui-btn-${field.tone ?? 'neutral'}`; action.disabled = disabledReason !== undefined; action.textContent = field.buttonLabel ?? field.label;
+        action.setAttribute('aria-label', field.aria?.label ?? field.buttonLabel ?? field.label);
+        if (description.textContent !== '') action.setAttribute('aria-describedby', descriptionId);
+        if (action.disabled) action.setAttribute('aria-disabled', 'true');
+        if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }));
+        control.append(action);
+      } else if (field.kind === 'status') {
         row.setAttribute('role', 'status');
-        const badge = document.createElement('span'); badge.className = `stx-ui-badge stx-ui-badge-${field.tone ?? 'neutral'}`; badge.textContent = field.value; control.append(badge);
+        const snapshot = this.#statusSnapshot(contribution, field);
+        description.textContent = snapshot.description ?? field.description ?? '';
+        const badge = document.createElement('span'); badge.className = `stx-ui-badge stx-ui-status-badge stx-ui-badge-${snapshot.tone}`; badge.dataset.statusBadge = 'true'; badge.textContent = snapshot.value; control.append(badge);
+        if (field.action !== undefined && (field.action.showWhen === undefined || field.action.showWhen.includes(snapshot.tone))) {
+          const action = document.createElement('button'); action.type = 'button'; action.className = 'stx-ui-btn stx-ui-btn-neutral stx-ui-status-action'; action.dataset.statusAction = 'true'; action.textContent = field.action.buttonLabel;
+          action.setAttribute('aria-label', field.action.buttonLabel); if (description.textContent !== '') action.setAttribute('aria-describedby', descriptionId);
+          this.#configureNavigationButton(action, field.action.target, field.action.buttonLabel);
+          action.addEventListener('click', () => this.#navigateToSettings(field.action!.target)); control.append(action);
+        }
       } else if (field.kind === 'toggle' || field.kind === 'checkbox') {
-        const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.type = 'checkbox'; input.checked = Boolean(this.#fieldValue(contribution, field)); this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined);
+        const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.type = 'checkbox'; input.checked = Boolean(this.#fieldValue(contribution, field)); this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
         if (field.kind === 'toggle') {
           const toggle = document.createElement('label'); toggle.className = 'stx-ui-toggle'; toggle.setAttribute('for', input.id);
           const track = document.createElement('span'); track.className = 'stx-ui-toggle-track'; toggle.append(input, track); control.append(toggle);
@@ -650,7 +806,8 @@ export class SettingsHost {
         const current = this.#fieldValue(contribution, field);
         for (const option of field.options) {
           const optionLabel = document.createElement('label'); optionLabel.className = 'stx-ui-radio-option';
-          const input = document.createElement('input'); input.type = 'radio'; input.name = domId(contribution.identity.id, field.id); input.value = option.value; input.checked = current === option.value; input.disabled = field.disabledReason !== undefined;
+          const input = document.createElement('input'); input.type = 'radio'; input.name = domId(contribution.identity.id, field.id); input.value = option.value; input.checked = current === option.value; input.disabled = disabledReason !== undefined;
+          if (input.disabled) input.setAttribute('aria-disabled', 'true');
           const text = document.createElement('span'); text.textContent = option.label; optionLabel.append(input, text); control.append(optionLabel);
           input.addEventListener('change', () => { if (input.checked) this.#commitField(contribution, field, option.value); });
         }
@@ -662,17 +819,17 @@ export class SettingsHost {
           const option = field.options.find((candidate) => candidate.value === selectedValue); if (option === undefined) continue;
           const chip = document.createElement('span'); chip.className = 'stx-ui-chip';
           const text = document.createElement('span'); text.textContent = option.label;
-          const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'stx-ui-chip-remove'; remove.setAttribute('aria-label', `移除 ${option.label}`); remove.append(icon(document, 'fa-xmark'));
+          const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'stx-ui-chip-remove'; remove.setAttribute('aria-label', `移除 ${option.label}`); remove.disabled = disabledReason !== undefined; remove.append(icon(document, 'fa-xmark'));
           remove.addEventListener('click', () => this.#commitField(contribution, field, Object.freeze(selected.filter((value) => value !== selectedValue))));
           chip.append(text, remove); chips.append(chip);
         }
-        const select = document.createElement('select'); select.id = domId(contribution.identity.id, field.id); select.className = 'stx-ui-select'; this.#configureInput(select, label, field, descriptionId, errorId, existingError !== undefined);
+        const select = document.createElement('select'); select.id = domId(contribution.identity.id, field.id); select.className = 'stx-ui-select'; this.#configureInput(select, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
         const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = field.placeholder ?? '添加选项…'; select.append(placeholder);
         for (const option of field.options.filter((candidate) => !selected.includes(candidate.value))) { const node = document.createElement('option'); node.value = option.value; node.textContent = option.label; select.append(node); }
         select.addEventListener('change', () => { if (select.value !== '') this.#commitField(contribution, field, Object.freeze([...selected, select.value])); });
         wrap.append(chips, select); control.append(wrap);
       } else if (field.kind === 'select') {
-        const select = document.createElement('select'); select.id = domId(contribution.identity.id, field.id); select.className = 'stx-ui-select'; this.#configureInput(select, label, field, descriptionId, errorId, existingError !== undefined);
+        const select = document.createElement('select'); select.id = domId(contribution.identity.id, field.id); select.className = 'stx-ui-select'; this.#configureInput(select, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
         for (const option of field.options) { const node = document.createElement('option'); node.value = option.value; node.textContent = option.label; select.append(node); }
         const value = this.#fieldValue(contribution, field); if (typeof value === 'string') select.value = value;
         select.addEventListener('change', () => this.#commitField(contribution, field, select.value)); control.append(select);
@@ -681,38 +838,130 @@ export class SettingsHost {
         const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.className = 'stx-ui-input'; input.type = 'number';
         const value = this.#fieldValue(contribution, field); if (typeof value === 'number') input.value = String(value);
         if (field.validation?.min !== undefined) input.min = String(field.validation.min); if (field.validation?.max !== undefined) input.max = String(field.validation.max); input.step = String(field.step ?? 1);
-        this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined);
+        this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
         const flush = (): void => this.#scheduleFieldSave(contribution, field, () => input.value.trim() === '' ? Number.NaN : Number(input.value));
         input.addEventListener('input', flush); input.addEventListener('blur', () => this.#flushDebouncedSave(contribution.identity.id, field.id)); input.addEventListener('keydown', (event: KeyboardEvent) => { if (event.key === 'Enter') this.#flushDebouncedSave(contribution.identity.id, field.id); });
         if (field.showStepper !== false) {
           const minus = this.#stepButton(document, 'fa-minus', `减少${field.label}`); const plus = this.#stepButton(document, 'fa-plus', `增加${field.label}`);
+          minus.disabled = disabledReason !== undefined; plus.disabled = disabledReason !== undefined;
           minus.addEventListener('click', () => this.#stepNumber(contribution, field, input, -1)); plus.addEventListener('click', () => this.#stepNumber(contribution, field, input, 1)); stepper.append(minus, input, plus);
         } else stepper.append(input);
         if (field.unit !== undefined) { const unit = document.createElement('span'); unit.className = 'stx-ui-unit'; unit.textContent = field.unit; stepper.append(unit); }
         control.append(stepper);
       } else if (field.kind === 'range') {
         const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.className = 'stx-ui-input'; input.type = 'range'; input.min = String(field.min); input.max = String(field.max); input.step = String(field.step ?? 1);
-        const value = this.#fieldValue(contribution, field); if (typeof value === 'number') input.value = String(value); this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined);
+        const value = this.#fieldValue(contribution, field); if (typeof value === 'number') input.value = String(value); this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
         const output = document.createElement('output'); output.className = 'stx-ui-range-output'; output.textContent = input.value; output.setAttribute('for', input.id);
         input.addEventListener('input', () => { output.textContent = input.value; }); input.addEventListener('change', () => this.#commitField(contribution, field, Number(input.value)));
         control.append(input, output);
       } else {
         const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.className = 'stx-ui-input'; input.type = field.secret === true ? 'password' : 'text'; input.placeholder = field.placeholder ?? '';
-        const value = this.#fieldValue(contribution, field); if (typeof value === 'string') input.value = value; this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined);
+        const value = this.#fieldValue(contribution, field); if (typeof value === 'string') input.value = value; this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
         input.addEventListener('input', () => this.#scheduleFieldSave(contribution, field, () => input.value)); input.addEventListener('blur', () => this.#flushDebouncedSave(contribution.identity.id, field.id)); input.addEventListener('keydown', (event: KeyboardEvent) => { if (event.key === 'Enter') this.#flushDebouncedSave(contribution.identity.id, field.id); });
         control.append(input);
       }
       valueCell.append(control);
-      if (description.textContent !== '') valueCell.append(description);
+      if (description.textContent !== '') (field.kind === 'action' ? labelCell : valueCell).append(description);
       valueCell.append(error); row.append(labelCell, valueCell); parent.append(row);
     }
   }
 
-  #configureInput(input: HTMLInputElement | HTMLSelectElement, label: HTMLLabelElement, field: Exclude<SettingsField, { kind: 'section' | 'action' | 'status' }>, descriptionId: string, errorId: string, invalid: boolean): void {
+  #statusSnapshot(contribution: Contribution, field: Extract<SettingsField, { kind: 'status' }>): SettingsStatusSnapshot {
+    return contribution.status[field.id] ?? { value: field.value, tone: field.tone ?? 'neutral', ...(field.description === undefined ? {} : { description: field.description }) };
+  }
+
+  #navigationAvailable(target: SettingsNavigationTarget): boolean {
+    return this.#contributions.has(target.pluginId);
+  }
+
+  #configureNavigationButton(button: HTMLButtonElement, target: SettingsNavigationTarget, label: string): void {
+    const available = this.#navigationAvailable(target);
+    button.disabled = !available;
+    if (!available) {
+      button.title = '目标插件未连接';
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('aria-label', `${label}（目标插件未连接）`);
+    } else {
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('title');
+      button.setAttribute('aria-label', label);
+    }
+  }
+
+  #topTabForField(schema: SettingsSchema, fieldId: string | undefined): string | undefined {
+    if (fieldId === undefined) return undefined;
+    for (const field of schema.fields) {
+      if (field.kind !== 'section') continue;
+      const nested = (entries: readonly SettingsField[]): boolean => entries.some((entry) => entry.id === fieldId || (entry.kind === 'section' && nested(entry.children)));
+      if (nested(field.children)) return field.id;
+    }
+    return undefined;
+  }
+
+  #navigateToSettings(target: SettingsNavigationTarget): void {
+    const contribution = this.#contributions.get(target.pluginId);
+    if (contribution === undefined) return;
+    this.#activePluginId = target.pluginId;
+    this.#searchQueries.set(target.pluginId, '');
+    const tabId = target.tabId ?? this.#topTabForField(contribution.schema, target.fieldId);
+    if (tabId !== undefined && contribution.schema.fields.some((field) => field.kind === 'section' && field.id === tabId)) this.#activeTabs.set(target.pluginId, tabId);
+    if (this.#center?.open === true) this.#renderCenter();
+    else this.#openSettingsCenter();
+    queueMicrotask(() => {
+      const dialog = this.#root?.ownerDocument.getElementById(SETTINGS_CENTER_ID);
+      if (dialog === null || dialog === undefined || target.fieldId === undefined) return;
+      const row = [...dialog.querySelectorAll<HTMLElement>('[data-field-id]')].find((node) => node.dataset.fieldId === target.fieldId);
+      if (row === undefined) return;
+      row.dataset.navFocus = 'true';
+      row.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+      const focusable = row.querySelector<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])');
+      (focusable ?? row).focus();
+      setTimeout(() => { delete row.dataset.navFocus; }, 1600);
+    });
+  }
+
+  #syncStatusUi(contribution: Contribution): void {
+    const document = this.#root?.ownerDocument;
+    if (document === undefined) return;
+    const main = [...document.querySelectorAll<HTMLElement>('main[data-plugin-id]')].find((node) => node.dataset.pluginId === contribution.identity.id);
+    if (main === undefined) return;
+    for (const field of statusFields(contribution.schema)) {
+      const row = [...main.querySelectorAll<HTMLElement>('[data-field-id]')].find((node) => node.dataset.fieldId === field.id);
+      if (row === undefined) continue;
+      const snapshot = this.#statusSnapshot(contribution, field);
+      const badge = row.querySelector<HTMLElement>('[data-status-badge], .stx-ui-status-badge');
+      if (badge !== null) { badge.className = `stx-ui-badge stx-ui-status-badge stx-ui-badge-${snapshot.tone}`; badge.textContent = snapshot.value; }
+      const description = row.querySelector<HTMLElement>('.stx-ui-item-desc');
+      if (description !== null) description.textContent = snapshot.description ?? field.description ?? '';
+      const action = field.action;
+      const shouldShow = action !== undefined && (action.showWhen === undefined || action.showWhen.includes(snapshot.tone));
+      const existing = row.querySelector<HTMLButtonElement>('[data-status-action]');
+      if (!shouldShow) { existing?.remove(); continue; }
+      const control = row.querySelector<HTMLElement>('.stx-ui-control-status');
+      if (control === null || action === undefined) continue;
+      const button = existing ?? document.createElement('button');
+      if (existing === null) {
+        button.type = 'button'; button.className = 'stx-ui-btn stx-ui-btn-neutral stx-ui-status-action'; button.dataset.statusAction = 'true'; button.textContent = action.buttonLabel;
+        button.setAttribute('aria-describedby', `${domId(contribution.identity.id, `${field.id}-description`)}`);
+        button.addEventListener('click', () => this.#navigateToSettings(action.target)); control.append(button);
+      }
+      this.#configureNavigationButton(button, action.target, action.buttonLabel);
+    }
+    const container = main.querySelector<HTMLElement>('.stx-ui-fields');
+    if (container !== null) this.#applySearch(container, this.#searchQueries.get(contribution.identity.id) ?? '', contribution.identity.id);
+  }
+
+  #disabledReason(contribution: Contribution, field: SettingsField): string | undefined {
+    if (field.disabledReason !== undefined) return field.disabledReason;
+    const state = contribution.fieldState[field.id];
+    return state?.disabled === true ? state.disabledReason ?? '当前不可用' : undefined;
+  }
+
+  #configureInput(input: HTMLInputElement | HTMLSelectElement, label: HTMLElement, field: Exclude<SettingsField, { kind: 'section' | 'action' | 'status' }>, descriptionId: string, errorId: string, invalid: boolean, disabledReason?: string): void {
     label.setAttribute('for', input.id);
     input.setAttribute('aria-label', field.aria?.label ?? field.label);
     input.setAttribute('aria-describedby', `${descriptionId} ${errorId}`);
-    input.disabled = field.disabledReason !== undefined;
+    input.disabled = disabledReason !== undefined;
     if (input.disabled) input.setAttribute('aria-disabled', 'true');
     if (invalid) input.setAttribute('aria-invalid', 'true');
   }
@@ -772,11 +1021,32 @@ export class SettingsHost {
     catch { this.#renderCenter(); }
   }
 
-  #applySearch(root: HTMLElement, query: string): void {
+  #applySearch(root: HTMLElement, query: string, pluginId: string): void {
     const normalized = query.trim().toLocaleLowerCase(); let visible = 0;
+    const matchingTabs = new Set<string>();
     for (const node of Array.from(root.querySelectorAll<HTMLElement>('[data-field-id]'))) {
       if (!node.dataset.fieldId || !node.dataset.searchText) continue;
-      const matches = normalized === '' || node.dataset.searchText.includes(normalized); node.hidden = !matches; if (matches) visible += 1;
+      const matches = normalized === '' || node.dataset.searchText.includes(normalized); node.hidden = !matches;
+      if (matches) {
+        visible += 1;
+        let ancestor = node.parentElement;
+        while (ancestor !== null && ancestor !== root) {
+          if (ancestor.dataset.tabPanel !== undefined) { matchingTabs.add(ancestor.dataset.tabPanel); break; }
+          ancestor = ancestor.parentElement;
+        }
+      }
+    }
+    const activeTab = this.#activeTabs.get(pluginId);
+    if (normalized !== '' && matchingTabs.size > 0 && (activeTab === undefined || !matchingTabs.has(activeTab))) {
+      const target = matchingTabs.values().next().value as string;
+      this.#activeTabs.set(pluginId, target);
+      for (const button of Array.from(root.querySelectorAll<HTMLElement>('[data-tab-id]'))) {
+        if (button.dataset.tabId === undefined) continue;
+        const active = button.dataset.tabId === target; button.setAttribute('aria-selected', String(active)); button.dataset.active = String(active); button.tabIndex = active ? 0 : -1;
+      }
+      for (const panel of Array.from(root.querySelectorAll<HTMLElement>('[data-tab-panel]'))) {
+        if (panel.dataset.tabPanel !== undefined) panel.hidden = panel.dataset.tabPanel !== target;
+      }
     }
     const empty = this.#searchEmpty.get(root); if (empty !== undefined) empty.hidden = normalized === '' || visible > 0;
   }
