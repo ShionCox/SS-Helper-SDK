@@ -62,6 +62,11 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.match(coreStyles.textContent, /border-left: 3px solid var\(--stx-status-color\)/);
     assert.match(coreStyles.textContent, /background: color-mix\(in srgb, var\(--stx-status-color\) 16%, var\(--ss-theme-surface\)\)/);
     assert.match(coreStyles.textContent, /\.stx-ui-control-status \{ align-items: flex-start; flex-direction: column; \}/);
+    assert.match(coreStyles.textContent, /\.stx-ui-select-wrap \{ position: relative;/);
+    assert.match(coreStyles.textContent, /\.stx-ui-select-trigger \{/);
+    assert.match(coreStyles.textContent, /\.stx-ui-select-arrow \{/);
+    assert.match(coreStyles.textContent, /\.stx-ui-select-listbox \{/);
+    assert.match(coreStyles.textContent, /background: var\(--ss-theme-surface-3\)/);
     const opener = descendants(container.children[0]).find((node) => node.id === 'ss-helper-open-settings-center');
     opener.focus();
     opener.dispatchEvent({ type: 'click' });
@@ -76,6 +81,15 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.equal(descendants(pluginNav).some((node) => node.textContent === 'v0.0.2'), true);
     pluginNav.dispatchEvent({ type: 'click' });
     assert.equal(descendants(document.getElementById(SETTINGS_CENTER_ID)).some((node) => node.dataset.saveStatus === 'example.settings'), true);
+    const selectWrap = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.className === 'stx-ui-select-wrap');
+    assert.ok(selectWrap);
+    assert.equal(selectWrap.children[0].tagName, 'BUTTON');
+    assert.equal(selectWrap.children[0].getAttribute('role'), 'combobox');
+    assert.equal(selectWrap.children[0].getAttribute('aria-expanded'), 'false');
+    assert.match(selectWrap.children[0].children[1].className, /stx-ui-select-arrow/u);
+    assert.equal(selectWrap.children[0].children[1].getAttribute('aria-hidden'), 'true');
+    assert.equal(selectWrap.children[1].getAttribute('role'), 'listbox');
+    assert.equal(selectWrap.children[1].hidden, true);
     await runtime.settings.save('example.settings', { enabled: false, 'api-key': 'next', count: 3, mode: 'a' });
     assert.equal(saved.length, 1);
     await assert.rejects(runtime.settings.save('example.settings', { enabled: false, 'api-key': '', count: 9, mode: 'x' }), errorCode('PAYLOAD_INVALID'));
@@ -90,6 +104,58 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     const replacement = installCoreRuntime(coreIdentity({ buildId: 'reload' }), realm, { settingsContainer: container, document });
     assert.equal(replacement.generation, 2);
     assert.equal(document.body.children.flatMap((node) => node.children).filter((node) => node.id === SETTINGS_ROOT_ID).length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restore();
+  }
+});
+
+test('custom select renders its own listbox and supports keyboard selection', async () => {
+  const restore = installFakeDomGlobals();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, ready: true, schemaVersion: 2, walMode: 'wal' }) });
+  try {
+    const document = new FakeDocument();
+    const container = document.createElement('div'); document.body.append(container);
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
+    runtime.settings.mount(container);
+    const saved = [];
+    const session = runtime.connect(pluginDescriptor('example.custom-select'));
+    session.registerSettings({
+      id: 'example.custom-select', title: 'Select', fields: [{ kind: 'select', id: 'mode', label: '模式', options: [
+        { value: 'balanced', label: '均衡' }, { value: 'precise', label: '精确' }, { value: 'creative', label: '创意' },
+      ] }],
+    }, {
+      load: async () => ({ mode: 'precise' }),
+      save: async (values) => { saved.push(values); },
+      reset: async () => ({ mode: 'balanced' }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let center = document.getElementById(SETTINGS_CENTER_ID);
+    descendants(center).find((node) => node.dataset.pluginId === 'example.custom-select').dispatchEvent({ type: 'click' });
+    center = document.getElementById(SETTINGS_CENTER_ID);
+    const trigger = descendants(center).find((node) => node.className === 'stx-ui-select-trigger');
+    const listbox = descendants(center).find((node) => node.className === 'stx-ui-select-listbox');
+    trigger.focus();
+    trigger.dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {} });
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+    assert.equal(listbox.hidden, false);
+    assert.match(trigger.getAttribute('aria-activedescendant'), /option-1$/u);
+    trigger.dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {} });
+    assert.match(trigger.getAttribute('aria-activedescendant'), /option-2$/u);
+    trigger.dispatchEvent({ type: 'keydown', key: 'Enter', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(saved.at(-1).mode, 'creative');
+    assert.equal(runtime.settings.snapshot()[0].values.mode, 'creative');
+    center = document.getElementById(SETTINGS_CENTER_ID);
+    const rerenderedTrigger = descendants(center).find((node) => node.className === 'stx-ui-select-trigger');
+    rerenderedTrigger.dispatchEvent({ type: 'click' });
+    assert.equal(rerenderedTrigger.getAttribute('aria-expanded'), 'true');
+    rerenderedTrigger.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() {} });
+    assert.equal(rerenderedTrigger.getAttribute('aria-expanded'), 'false');
+    runtime.dispose();
   } finally {
     globalThis.fetch = originalFetch;
     restore();
@@ -340,6 +406,27 @@ test('registered popup owns dialog lifecycle, Escape cleanup, focus return, and 
     assert.equal(document.activeElement, opener);
     unregister();
     assert.throws(() => session.ui.openPopup(token, {}), errorCode('PAYLOAD_INVALID'));
+  } finally { restore(); }
+});
+
+test('workspace popup exposes a stable presentation marker and shared chrome', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const opener = document.createElement('button'); document.body.append(opener); opener.focus();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.workspace-popup'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'workbench', version: 1 });
+    session.registerPopup({ token, title: 'Workspace', presentation: 'workspace', render: (container) => { container.append(document.createElement('main')); } });
+    session.ui.openPopup(token, {});
+    const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    const dialog = overlay.children[0];
+    assert.equal(dialog.dataset.presentation, 'workspace');
+    assert.equal(dialog.children[0].dataset.popupHeader, 'true');
+    assert.equal(dialog.children[1].dataset.popupContent, 'true');
+    dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    assert.equal(document.activeElement, opener);
+    assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 1 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('PAYLOAD_INVALID'));
   } finally { restore(); }
 });
 

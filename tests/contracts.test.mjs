@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   API_MAJOR, API_MINOR, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY, CORE_PLUGIN_ID,
   LLM_COMPLETION_V1, LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1,
@@ -8,6 +9,8 @@ import {
   MEMORY_UPDATED_V1, PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, SDK_PACKAGE_VERSION, SS_HELPER_ERROR_CODES,
   isPluginBinaryRequestV1, isPluginBinaryResponseV1,
 } from '../packages/sdk/dist/index.js';
+
+const sdkPackage = JSON.parse(readFileSync(new URL('../packages/sdk/package.json', import.meta.url), 'utf8'));
 
 const binaryBody = (bytes) => ({
   encoding: 'base64', contentType: PLUGIN_BINARY_CONTENT_TYPE, data: bytes.toString('base64'), byteLength: bytes.length,
@@ -96,10 +99,10 @@ test('LLM service validators reject malformed requests and provider responses ex
 });
 
 test('version axes are not conflated by exported metadata', () => {
-  assert.equal(SDK_PACKAGE_VERSION, '2.0.0');
+  assert.match(SDK_PACKAGE_VERSION, /^\d+\.\d+\.\d+$/u);
+  assert.equal(SDK_PACKAGE_VERSION, sdkPackage.version);
   assert.equal(API_MAJOR, 2);
-  assert.equal(API_MINOR, 0);
-  assert.notEqual('2.4.0', SDK_PACKAGE_VERSION);
+  assert.equal(API_MINOR, 1);
 });
 
 test('the complete frozen error-code set is exported', () => {

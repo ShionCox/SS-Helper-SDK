@@ -16,7 +16,7 @@ export { ToastHost } from './toast/toast-host.js';
 export const CORE_EXTENSION_SKELETON = Object.freeze({
   id: 'ss-helper.core',
   installDirectory: 'third-party/SS-Helper-SDK',
-  coreVersion: '2.0.0',
+  coreVersion: '2.1.0',
   apiMajor: 2,
-  apiMinor: 0,
+  apiMinor: 1,
 });

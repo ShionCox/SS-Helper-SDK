@@ -12,7 +12,13 @@ export class PopupHost {
 
   register(scope: SessionScope, registration: PopupRegistration): () => void {
     scope.assertActive();
-    if (registration.token.provider !== scope.id || registration.token.kind !== 'popup' || registration.title.trim() === '') {
+    const presentation = registration.presentation ?? 'default';
+    if (
+      registration.token.provider !== scope.id
+      || registration.token.kind !== 'popup'
+      || registration.title.trim() === ''
+      || (presentation !== 'default' && presentation !== 'workspace')
+    ) {
       throw new SSHelperError('PAYLOAD_INVALID', 'The popup registration is invalid', { reason: 'popup_registration' });
     }
     const id = key(registration.token);
@@ -38,11 +44,16 @@ export class PopupHost {
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-label', entry.registration.ariaLabel ?? entry.registration.title);
+    dialog.dataset.presentation = entry.registration.presentation ?? 'default';
     dialog.tabIndex = -1;
+    const header = document.createElement('div');
+    header.dataset.popupHeader = 'true';
     const heading = document.createElement('h2'); heading.textContent = entry.registration.title;
     const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.textContent = 'Close'; closeButton.setAttribute('aria-label', `Close ${entry.registration.title}`);
+    header.append(heading, closeButton);
     const content = document.createElement('div');
-    dialog.append(heading, closeButton, content); overlay.append(dialog); document.body.append(overlay);
+    content.dataset.popupContent = 'true';
+    dialog.append(header, content); overlay.append(dialog); document.body.append(overlay);
     let active = true;
     let renderCleanup: void | (() => void);
     let removeScopeCleanup = (): void => undefined;

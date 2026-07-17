@@ -544,15 +544,21 @@ async function main() {
         dialog.style.display = 'none';
       }
       for (const popup of document.querySelectorAll('.popup, .popup_background')) popup.style.display = 'none';
+      document.querySelector('#ss-helper-settings-center .stx-ui-select-trigger')?.click();
     })()`);
     await new Promise((resolve) => setTimeout(resolve, 100));
     const visualMetrics = await evaluate(cdp, `(() => {
       const overlay = document.querySelector('#ss-helper-settings-center-overlay');
       const dialog = document.querySelector('#ss-helper-settings-center');
       const heading = dialog?.querySelector('.stx-center-header');
+      const selectTrigger = dialog?.querySelector('.stx-ui-select-trigger');
+      const selectListbox = dialog?.querySelector('.stx-ui-select-listbox');
       const styles = (node) => node ? ((value) => ({ display:value.display, visibility:value.visibility, opacity:value.opacity, color:value.color, background:value.backgroundColor, width:value.width, height:value.height, zIndex:value.zIndex }))(getComputedStyle(node)) : null;
-      return { overlay: styles(overlay), dialog: styles(dialog), heading: styles(heading), text: dialog?.innerText?.slice(0, 1200) ?? '', childCount: dialog?.querySelectorAll('*').length ?? 0 };
+      return { overlay: styles(overlay), dialog: styles(dialog), heading: styles(heading), select:{ trigger:styles(selectTrigger), listbox:styles(selectListbox), expanded:selectTrigger?.getAttribute('aria-expanded') ?? null, options:selectListbox?.querySelectorAll('[role="option"]').length ?? 0 }, text: dialog?.innerText?.slice(0, 1200) ?? '', childCount: dialog?.querySelectorAll('*').length ?? 0 };
     })()`);
+    assert.equal(visualMetrics.select.expanded, 'true');
+    assert.ok(visualMetrics.select.options > 0);
+    assert.notEqual(visualMetrics.select.listbox?.display, 'none');
     await cdp.send('Page.bringToFront');
     await new Promise((resolve) => setTimeout(resolve, 250));
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false });

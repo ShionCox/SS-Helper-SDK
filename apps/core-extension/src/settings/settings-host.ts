@@ -8,6 +8,7 @@ import {
   type SettingsFieldStateMap,
   type SettingsFieldStateSnapshot,
   type SettingsNavigationTarget,
+  type SettingsOption,
   type SettingsSchema,
   type SettingsStatusSnapshot,
   type SettingsTone,
@@ -253,6 +254,90 @@ function icon(document: Document, name: string): HTMLElement {
   node.className = `fa-solid ${name}`;
   node.setAttribute('aria-hidden', 'true');
   return node;
+}
+
+interface SelectControlOptions {
+  readonly id: string;
+  readonly label: HTMLElement;
+  readonly ariaLabel: string;
+  readonly descriptionId: string;
+  readonly errorId: string;
+  readonly invalid: boolean;
+  readonly disabledReason?: string | undefined;
+  readonly options: readonly SettingsOption[];
+  readonly value?: string | undefined;
+  readonly placeholder?: string | undefined;
+  readonly onSelect: (value: string) => void;
+}
+
+function selectControl(document: Document, config: SelectControlOptions): HTMLElement {
+  const shell = document.createElement('div'); shell.className = 'stx-ui-select-wrap'; shell.dataset.open = 'false';
+  const trigger = document.createElement('button'); trigger.id = config.id; trigger.type = 'button'; trigger.className = 'stx-ui-select-trigger';
+  trigger.setAttribute('role', 'combobox'); trigger.setAttribute('aria-haspopup', 'listbox'); trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-label', config.ariaLabel); trigger.setAttribute('aria-describedby', `${config.descriptionId} ${config.errorId}`);
+  trigger.disabled = config.disabledReason !== undefined || config.options.length === 0;
+  if (trigger.disabled) trigger.setAttribute('aria-disabled', 'true');
+  if (config.invalid) trigger.setAttribute('aria-invalid', 'true');
+  config.label.setAttribute('for', trigger.id);
+
+  const matchedIndex = config.options.findIndex((option) => option.value === config.value);
+  const selectedIndex = matchedIndex >= 0 ? matchedIndex : config.placeholder === undefined && config.options.length > 0 ? 0 : -1;
+  const selected = selectedIndex >= 0 ? config.options[selectedIndex] : undefined;
+  const value = document.createElement('span'); value.className = 'stx-ui-select-value'; value.textContent = selected?.label ?? config.placeholder ?? '暂无可用选项';
+  const arrow = document.createElement('span'); arrow.className = 'stx-ui-select-arrow'; arrow.setAttribute('aria-hidden', 'true'); arrow.append(icon(document, 'fa-chevron-down'));
+  trigger.append(value, arrow);
+
+  const listbox = document.createElement('div'); listbox.id = `${config.id}-listbox`; listbox.className = 'stx-ui-select-listbox'; listbox.setAttribute('role', 'listbox'); listbox.setAttribute('aria-label', config.ariaLabel); listbox.hidden = true;
+  trigger.setAttribute('aria-controls', listbox.id);
+  const optionNodes: HTMLElement[] = [];
+  let activeIndex = selected === undefined ? 0 : selectedIndex;
+
+  const syncActive = (): void => {
+    optionNodes.forEach((node, index) => { node.dataset.active = String(index === activeIndex); });
+    const active = optionNodes[activeIndex];
+    if (active !== undefined && !listbox.hidden) {
+      trigger.setAttribute('aria-activedescendant', active.id);
+      active.scrollIntoView?.({ block: 'nearest' });
+    } else trigger.removeAttribute('aria-activedescendant');
+  };
+  const close = (): void => { listbox.hidden = true; shell.dataset.open = 'false'; trigger.setAttribute('aria-expanded', 'false'); trigger.removeAttribute('aria-activedescendant'); };
+  const open = (): void => { if (trigger.disabled) return; listbox.hidden = false; shell.dataset.open = 'true'; trigger.setAttribute('aria-expanded', 'true'); syncActive(); };
+  const choose = (index: number): void => {
+    const option = config.options[index]; if (option === undefined) return;
+    value.textContent = option.label; close(); config.onSelect(option.value);
+  };
+  const move = (index: number): void => { activeIndex = Math.max(0, Math.min(config.options.length - 1, index)); syncActive(); };
+
+  config.options.forEach((option, index) => {
+    const node = document.createElement('div'); node.id = `${config.id}-option-${index}`; node.className = 'stx-ui-select-option'; node.setAttribute('role', 'option'); node.setAttribute('aria-selected', String(option.value === selected?.value)); node.tabIndex = -1;
+    const text = document.createElement('span'); text.textContent = option.label; node.append(text);
+    if (option.value === selected?.value) { const check = document.createElement('span'); check.className = 'stx-ui-select-check'; check.setAttribute('aria-hidden', 'true'); check.append(icon(document, 'fa-check')); node.append(check); }
+    node.addEventListener('pointerdown', (event) => event.preventDefault());
+    node.addEventListener('pointermove', () => move(index));
+    node.addEventListener('click', () => choose(index));
+    optionNodes.push(node); listbox.append(node);
+  });
+
+  trigger.addEventListener('click', () => { if (listbox.hidden) open(); else close(); });
+  trigger.addEventListener('blur', () => queueMicrotask(() => { if (!shell.contains(document.activeElement)) close(); }));
+  trigger.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (event.key === 'Escape') { if (!listbox.hidden) { event.preventDefault(); event.stopPropagation(); close(); } return; }
+    if (event.key === 'Tab') { close(); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (listbox.hidden) open(); else move(activeIndex + (event.key === 'ArrowDown' ? 1 : -1));
+      return;
+    }
+    if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); if (listbox.hidden) open(); move(event.key === 'Home' ? 0 : config.options.length - 1); return; }
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (listbox.hidden) open(); else choose(activeIndex); return; }
+    if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      const key = event.key.toLocaleLowerCase(); const match = config.options.findIndex((option, index) => index > activeIndex && option.label.toLocaleLowerCase().startsWith(key));
+      const wrapped = match >= 0 ? match : config.options.findIndex((option) => option.label.toLocaleLowerCase().startsWith(key));
+      if (wrapped >= 0) { event.preventDefault(); if (listbox.hidden) open(); move(wrapped); }
+    }
+  });
+
+  syncActive(); shell.append(trigger, listbox); return shell;
 }
 
 function setButtonLabel(document: Document, button: HTMLButtonElement, iconName: string, label: string): void {
@@ -843,16 +928,20 @@ export class SettingsHost {
           remove.addEventListener('click', () => this.#commitField(contribution, field, Object.freeze(selected.filter((value) => value !== selectedValue))));
           chip.append(text, remove); chips.append(chip);
         }
-        const select = document.createElement('select'); select.id = domId(contribution.identity.id, field.id); select.className = 'stx-ui-select'; this.#configureInput(select, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
-        const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = field.placeholder ?? '添加选项…'; select.append(placeholder);
-        for (const option of field.options.filter((candidate) => !selected.includes(candidate.value))) { const node = document.createElement('option'); node.value = option.value; node.textContent = option.label; select.append(node); }
-        select.addEventListener('change', () => { if (select.value !== '') this.#commitField(contribution, field, Object.freeze([...selected, select.value])); });
+        const available = field.options.filter((candidate) => !selected.includes(candidate.value));
+        const select = selectControl(document, {
+          id: domId(contribution.identity.id, field.id), label, ariaLabel: field.aria?.label ?? field.label, descriptionId, errorId,
+          invalid: existingError !== undefined, disabledReason, options: available, placeholder: field.placeholder ?? (available.length === 0 ? '已添加全部选项' : '添加选项…'),
+          onSelect: (value) => this.#commitField(contribution, field, Object.freeze([...selected, value])),
+        });
         wrap.append(chips, select); control.append(wrap);
       } else if (field.kind === 'select') {
-        const select = document.createElement('select'); select.id = domId(contribution.identity.id, field.id); select.className = 'stx-ui-select'; this.#configureInput(select, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
-        for (const option of field.options) { const node = document.createElement('option'); node.value = option.value; node.textContent = option.label; select.append(node); }
-        const value = this.#fieldValue(contribution, field); if (typeof value === 'string') select.value = value;
-        select.addEventListener('change', () => this.#commitField(contribution, field, select.value)); control.append(select);
+        const value = this.#fieldValue(contribution, field);
+        control.append(selectControl(document, {
+          id: domId(contribution.identity.id, field.id), label, ariaLabel: field.aria?.label ?? field.label, descriptionId, errorId,
+          invalid: existingError !== undefined, disabledReason, options: field.options, value: typeof value === 'string' ? value : undefined,
+          onSelect: (selected) => this.#commitField(contribution, field, selected),
+        }));
       } else if (field.kind === 'number') {
         const stepper = document.createElement('div'); stepper.className = 'stx-ui-number-stepper';
         const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.className = 'stx-ui-input'; input.type = 'number';

@@ -14,10 +14,10 @@ const host = createSillyTavernHostBridge(globalThis);
 if (host.capabilities.length === 0) throw new Error('SS-Helper SDK found no supported SillyTavern host capabilities');
 
 export const coreRuntime = installCoreRuntime({
-  coreVersion: '2.0.0',
-  sdkPackageVersion: '2.0.0',
+  coreVersion: '2.1.0',
+  sdkPackageVersion: '2.1.0',
   apiMajor: 2,
-  apiMinor: 0,
+  apiMinor: 1,
   buildId: 'ss-helper-sdk',
   contentDigest: 'runtime',
   capabilities: host.capabilities,

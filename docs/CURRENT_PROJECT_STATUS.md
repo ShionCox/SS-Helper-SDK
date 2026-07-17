@@ -69,7 +69,7 @@
 - **统一 UI**：唯一 settings root、schema renderer、插件列表、隔离存储、popup/dialog、reload/late-registration 与可访问性/焦点行为。
 - **typed consumer contracts**：SDK 公开版本化 DTO、service/event token、LLM completion/structured-task/embedding/rerank/route diagnostics 与 Memory recall/update 边界。
 - **LLM 非破坏迁移**：保留旧 Dexie v4 中非 LLM rows；LLM stores 迁入新库后校验 parity，失败回滚且不提前写 marker；真实 Chrome cutover/rollback 已验证。
-- **Memory 数据与协议保留**：SQLite server、schema、`V0.0.2` 插件版本、server `0.0.1`、authenticated raw SQLite backup/import content type 与响应元数据未被改写。
+- **Memory 数据与协议保留**：SQLite server、schema、`V0.0.3` 插件版本、server `0.0.1`、authenticated raw SQLite backup/import content type 与响应元数据未被改写。
 - **官方联合矩阵**：SillyTavern 1.16.0 + Chrome 150 下完成 Core、LLM、Memory、双 fixture consumer 的注册、加载顺序、reload、清理、设置、popup、typed services、二进制传输、ownership 与诊断脱敏验证。
 
 ## 7. 最新验证证据

@@ -7,10 +7,13 @@ export interface PopupToken<Input extends PlainData = PlainData> {
   readonly version: number;
 }
 
+export type PopupPresentation = 'default' | 'workspace';
+
 export interface PopupRegistration<Input extends PlainData = PlainData> {
   readonly token: PopupToken<Input>;
   readonly title: string;
   readonly ariaLabel?: string;
+  readonly presentation?: PopupPresentation;
   render(container: HTMLElement, input: Input): void | (() => void);
 }
 
