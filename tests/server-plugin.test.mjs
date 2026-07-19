@@ -31,6 +31,10 @@ test('SDK server plugin creates a shared database and enforces workspace ownersh
     assert.equal(result.status, 200);
     result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', recordId: 'fact-1', value: { text: 'shared' }, action: 'upsert' } });
     assert.equal(result.status, 200);
+    const encodedSlotId = `fact-slot:${encodeURIComponent('同名聊天 - 2026-07-18@03h29m55s201ms')}:${encodeURIComponent('人物::位置')}`;
+    result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', recordId: encodedSlotId, value: { chatKey: '同名聊天', slotKey: '人物::位置', factId: 'fact-1' }, action: 'upsert' } });
+    assert.equal(result.status, 200);
+    assert.equal(result.payload.record.recordId, encodedSlotId);
     result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.llm'), body: { ownerPluginId: 'ss-helper.memory', workspaceId: 'character:hero', recordId: 'fact-1', action: 'get' } });
     assert.equal(result.status, 403);
     result = await invoke('POST', '/v2/workspaces/grant', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', granteePluginId: 'ss-helper.llm', actions: ['read'] } });
@@ -75,6 +79,10 @@ test('SDK server plugin creates a shared database and enforces workspace ownersh
     assert.equal(result.payload.removed, 1);
     const listed = await invoke('POST', '/v2/workspaces/list', caller('ss-helper.memory'));
     assert.deepEqual(listed.payload.workspaces.map((item) => item.workspaceId), ['character:hero']);
+    const health = await invoke('GET', '/v2/workspaces/health', caller('ss-helper.memory'));
+    assert.match(health.payload.nodeVersion, /^v\d+/u);
+    assert.equal(Number.isSafeInteger(health.payload.databaseSizeBytes), true);
+    assert.equal(health.payload.databaseSizeBytes > 0, true);
     assert.equal(routes.has('GET /v1/memory/health'), false);
     module.exit();
   } finally {
@@ -100,6 +108,9 @@ test('SDK server bridge encrypts secrets while browser secret routes stay gone',
     const { connectServerPlugin } = await import(`../packages/sdk/dist/server.js?secret-client=${Date.now()}`);
     const server = await connectServerPlugin({ pluginId: 'ss-helper.sdk.test', capabilities: ['workspace.read', 'workspace.write', 'secrets.read', 'secrets.write'] });
     await server.workspace.open({ workspaceId: 'llm:global', create: true });
+    const health = await server.workspace.health();
+    assert.match(health.nodeVersion, /^v\d+/u);
+    assert.equal(health.databaseSizeBytes > 0, true);
     const metadata = await server.secrets.set({ workspaceId: 'llm:global', secretId: 'resource:demo:api-key', value: 'sk-test-secret', metadata: { label: 'Demo' } });
     assert.equal(metadata.maskedValue, 'sk-t***cret');
     assert.equal((await server.secrets.get({ workspaceId: 'llm:global', secretId: 'resource:demo:api-key' })).value, 'sk-test-secret');

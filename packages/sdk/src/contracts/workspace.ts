@@ -5,8 +5,12 @@ export interface WorkspaceHealth {
   readonly ready: boolean;
   readonly database: string;
   readonly schemaVersion: number;
+  /** 服务端实际运行的 Node.js 版本。旧版 Core 可能不返回。 */
+  readonly nodeVersion?: string;
   readonly sqliteVersion?: string;
   readonly walMode?: string;
+  /** SQLite 主文件与 WAL 文件当前实际占用的字节数。旧版 Core 可能不返回。 */
+  readonly databaseSizeBytes?: number;
   readonly error?: string;
   readonly secretReady?: boolean;
   readonly secretError?: string;

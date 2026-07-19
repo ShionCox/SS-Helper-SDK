@@ -95,7 +95,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
       displayName: settingsDisplayNameOf(this.descriptor),
       pluginVersion: this.descriptor.pluginVersion,
       capabilities: this.host.capabilities,
-    }, schema, adapter, (token, input) => this.popupHost.open(this.#scope, token, input));
+    }, schema, adapter, (token, input, restoreFocus) => this.popupHost.open(this.#scope, token, input, restoreFocus));
   }
 
   registerPopup(registration: PopupRegistration): () => void { return this.popupHost.register(this.#scope, registration); }

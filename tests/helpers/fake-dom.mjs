@@ -22,6 +22,8 @@ export class FakeElement {
     this.min = '';
     this.max = '';
     this.step = '';
+    this.scrollTop = 0;
+    this.scrollLeft = 0;
     this.style = { overflow: '' };
     this.classList = { contains: (name) => this.className.split(/\s+/u).includes(name) };
   }
@@ -43,6 +45,7 @@ export class FakeElement {
     const visit = (node) => { for (const child of node.children) { candidates.push(child); visit(child); } };
     visit(this);
     if (selector === 'span:last-child') return candidates.filter((node) => node.tagName === 'SPAN' && node.parentElement?.children.at(-1) === node);
+    if (selector.startsWith('.')) return candidates.filter((node) => node.className.split(/\s+/u).includes(selector.slice(1)));
     if (selector.includes('button')) return candidates.filter((node) => ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A'].includes(node.tagName) || node.attributes.has('tabindex'));
     if (selector.startsWith('[data-')) return candidates.filter((node) => Object.keys(node.dataset).length > 0);
     return candidates;

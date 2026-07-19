@@ -8,7 +8,6 @@ import {
   type SettingsFieldStateMap,
   type SettingsFieldStateSnapshot,
   type SettingsNavigationTarget,
-  type SettingsOption,
   type SettingsSchema,
   type SettingsStatusSnapshot,
   type SettingsTone,
@@ -23,6 +22,7 @@ import {
   SETTINGS_CENTER_OVERLAY_ID,
   SettingsCenterController,
 } from './settings-center-controller.js';
+import { createSelectControl } from '../ui/select-control.js';
 
 export const SETTINGS_ROOT_ID = 'ss-helper-settings-root';
 export { SETTINGS_CENTER_ID, SETTINGS_CENTER_OVERLAY_ID };
@@ -63,7 +63,7 @@ interface Contribution {
   valuesRevision: number;
   statusRevision: number;
   fieldStateRevision: number;
-  readonly openPopup: (token: PopupToken, input: PlainData) => void;
+  readonly openPopup: (token: PopupToken, input: PlainData, restoreFocus?: HTMLElement) => void;
 }
 
 interface DebouncedSave {
@@ -256,90 +256,6 @@ function icon(document: Document, name: string): HTMLElement {
   return node;
 }
 
-interface SelectControlOptions {
-  readonly id: string;
-  readonly label: HTMLElement;
-  readonly ariaLabel: string;
-  readonly descriptionId: string;
-  readonly errorId: string;
-  readonly invalid: boolean;
-  readonly disabledReason?: string | undefined;
-  readonly options: readonly SettingsOption[];
-  readonly value?: string | undefined;
-  readonly placeholder?: string | undefined;
-  readonly onSelect: (value: string) => void;
-}
-
-function selectControl(document: Document, config: SelectControlOptions): HTMLElement {
-  const shell = document.createElement('div'); shell.className = 'stx-ui-select-wrap'; shell.dataset.open = 'false';
-  const trigger = document.createElement('button'); trigger.id = config.id; trigger.type = 'button'; trigger.className = 'stx-ui-select-trigger';
-  trigger.setAttribute('role', 'combobox'); trigger.setAttribute('aria-haspopup', 'listbox'); trigger.setAttribute('aria-expanded', 'false');
-  trigger.setAttribute('aria-label', config.ariaLabel); trigger.setAttribute('aria-describedby', `${config.descriptionId} ${config.errorId}`);
-  trigger.disabled = config.disabledReason !== undefined || config.options.length === 0;
-  if (trigger.disabled) trigger.setAttribute('aria-disabled', 'true');
-  if (config.invalid) trigger.setAttribute('aria-invalid', 'true');
-  config.label.setAttribute('for', trigger.id);
-
-  const matchedIndex = config.options.findIndex((option) => option.value === config.value);
-  const selectedIndex = matchedIndex >= 0 ? matchedIndex : config.placeholder === undefined && config.options.length > 0 ? 0 : -1;
-  const selected = selectedIndex >= 0 ? config.options[selectedIndex] : undefined;
-  const value = document.createElement('span'); value.className = 'stx-ui-select-value'; value.textContent = selected?.label ?? config.placeholder ?? '暂无可用选项';
-  const arrow = document.createElement('span'); arrow.className = 'stx-ui-select-arrow'; arrow.setAttribute('aria-hidden', 'true'); arrow.append(icon(document, 'fa-chevron-down'));
-  trigger.append(value, arrow);
-
-  const listbox = document.createElement('div'); listbox.id = `${config.id}-listbox`; listbox.className = 'stx-ui-select-listbox'; listbox.setAttribute('role', 'listbox'); listbox.setAttribute('aria-label', config.ariaLabel); listbox.hidden = true;
-  trigger.setAttribute('aria-controls', listbox.id);
-  const optionNodes: HTMLElement[] = [];
-  let activeIndex = selected === undefined ? 0 : selectedIndex;
-
-  const syncActive = (): void => {
-    optionNodes.forEach((node, index) => { node.dataset.active = String(index === activeIndex); });
-    const active = optionNodes[activeIndex];
-    if (active !== undefined && !listbox.hidden) {
-      trigger.setAttribute('aria-activedescendant', active.id);
-      active.scrollIntoView?.({ block: 'nearest' });
-    } else trigger.removeAttribute('aria-activedescendant');
-  };
-  const close = (): void => { listbox.hidden = true; shell.dataset.open = 'false'; trigger.setAttribute('aria-expanded', 'false'); trigger.removeAttribute('aria-activedescendant'); };
-  const open = (): void => { if (trigger.disabled) return; listbox.hidden = false; shell.dataset.open = 'true'; trigger.setAttribute('aria-expanded', 'true'); syncActive(); };
-  const choose = (index: number): void => {
-    const option = config.options[index]; if (option === undefined) return;
-    value.textContent = option.label; close(); config.onSelect(option.value);
-  };
-  const move = (index: number): void => { activeIndex = Math.max(0, Math.min(config.options.length - 1, index)); syncActive(); };
-
-  config.options.forEach((option, index) => {
-    const node = document.createElement('div'); node.id = `${config.id}-option-${index}`; node.className = 'stx-ui-select-option'; node.setAttribute('role', 'option'); node.setAttribute('aria-selected', String(option.value === selected?.value)); node.tabIndex = -1;
-    const text = document.createElement('span'); text.textContent = option.label; node.append(text);
-    if (option.value === selected?.value) { const check = document.createElement('span'); check.className = 'stx-ui-select-check'; check.setAttribute('aria-hidden', 'true'); check.append(icon(document, 'fa-check')); node.append(check); }
-    node.addEventListener('pointerdown', (event) => event.preventDefault());
-    node.addEventListener('pointermove', () => move(index));
-    node.addEventListener('click', () => choose(index));
-    optionNodes.push(node); listbox.append(node);
-  });
-
-  trigger.addEventListener('click', () => { if (listbox.hidden) open(); else close(); });
-  trigger.addEventListener('blur', () => queueMicrotask(() => { if (!shell.contains(document.activeElement)) close(); }));
-  trigger.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.key === 'Escape') { if (!listbox.hidden) { event.preventDefault(); event.stopPropagation(); close(); } return; }
-    if (event.key === 'Tab') { close(); return; }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      if (listbox.hidden) open(); else move(activeIndex + (event.key === 'ArrowDown' ? 1 : -1));
-      return;
-    }
-    if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); if (listbox.hidden) open(); move(event.key === 'Home' ? 0 : config.options.length - 1); return; }
-    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (listbox.hidden) open(); else choose(activeIndex); return; }
-    if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
-      const key = event.key.toLocaleLowerCase(); const match = config.options.findIndex((option, index) => index > activeIndex && option.label.toLocaleLowerCase().startsWith(key));
-      const wrapped = match >= 0 ? match : config.options.findIndex((option) => option.label.toLocaleLowerCase().startsWith(key));
-      if (wrapped >= 0) { event.preventDefault(); if (listbox.hidden) open(); move(wrapped); }
-    }
-  });
-
-  syncActive(); shell.append(trigger, listbox); return shell;
-}
-
 function setButtonLabel(document: Document, button: HTMLButtonElement, iconName: string, label: string): void {
   const text = document.createElement('span');
   text.textContent = label;
@@ -383,7 +299,7 @@ export class SettingsHost {
     return root;
   }
 
-  register(scope: SessionScope, identity: SettingsPluginIdentity, schema: SettingsSchema, adapter: SettingsAdapter, openPopup: (token: PopupToken, input: PlainData) => void): () => void {
+  register(scope: SessionScope, identity: SettingsPluginIdentity, schema: SettingsSchema, adapter: SettingsAdapter, openPopup: (token: PopupToken, input: PlainData, restoreFocus?: HTMLElement) => void): () => void {
     scope.assertActive();
     validateSchema(identity.id, schema);
     if (this.#contributions.has(identity.id)) throw new SSHelperError('PAYLOAD_INVALID', 'The plugin already registered settings', { reason: 'duplicate_settings' });
@@ -817,7 +733,8 @@ export class SettingsHost {
     const actions = document.createElement('div'); actions.className = 'stx-center-footer-actions';
     for (const field of actionFields(schema).filter((candidate) => candidate.placement !== 'inline')) {
       const action = document.createElement('button'); action.type = 'button'; action.className = `stx-ui-btn stx-ui-btn-${field.tone ?? 'neutral'}`; action.disabled = this.#disabledReason(contribution, field) !== undefined; action.textContent = field.buttonLabel ?? field.label;
-      if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }));
+      action.id = domId(identity.id, field.id);
+      if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }, action));
       actions.append(action);
     }
     const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'stx-ui-btn stx-ui-btn-neutral'; setButtonLabel(document, reset, 'fa-arrow-rotate-left', '恢复默认');
@@ -883,10 +800,11 @@ export class SettingsHost {
 
       if (field.kind === 'action') {
         const action = document.createElement('button'); action.type = 'button'; action.className = `stx-ui-btn stx-ui-btn-${field.tone ?? 'neutral'}`; action.disabled = disabledReason !== undefined; action.textContent = field.buttonLabel ?? field.label;
+        action.id = domId(contribution.identity.id, field.id);
         action.setAttribute('aria-label', field.aria?.label ?? field.buttonLabel ?? field.label);
         if (description.textContent !== '') action.setAttribute('aria-describedby', descriptionId);
         if (action.disabled) action.setAttribute('aria-disabled', 'true');
-        if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }));
+        if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }, action));
         control.append(action);
       } else if (field.kind === 'status') {
         row.setAttribute('role', 'status');
@@ -929,17 +847,17 @@ export class SettingsHost {
           chip.append(text, remove); chips.append(chip);
         }
         const available = field.options.filter((candidate) => !selected.includes(candidate.value));
-        const select = selectControl(document, {
-          id: domId(contribution.identity.id, field.id), label, ariaLabel: field.aria?.label ?? field.label, descriptionId, errorId,
-          invalid: existingError !== undefined, disabledReason, options: available, placeholder: field.placeholder ?? (available.length === 0 ? '已添加全部选项' : '添加选项…'),
+        const select = createSelectControl(document, {
+          id: domId(contribution.identity.id, field.id), label, ariaLabel: field.aria?.label ?? field.label, describedBy: `${descriptionId} ${errorId}`,
+          invalid: existingError !== undefined, disabled: disabledReason !== undefined, options: available, placeholder: field.placeholder ?? (available.length === 0 ? '已添加全部选项' : '添加选项…'),
           onSelect: (value) => this.#commitField(contribution, field, Object.freeze([...selected, value])),
         });
         wrap.append(chips, select); control.append(wrap);
       } else if (field.kind === 'select') {
         const value = this.#fieldValue(contribution, field);
-        control.append(selectControl(document, {
-          id: domId(contribution.identity.id, field.id), label, ariaLabel: field.aria?.label ?? field.label, descriptionId, errorId,
-          invalid: existingError !== undefined, disabledReason, options: field.options, value: typeof value === 'string' ? value : undefined,
+        control.append(createSelectControl(document, {
+          id: domId(contribution.identity.id, field.id), label, ariaLabel: field.aria?.label ?? field.label, describedBy: `${descriptionId} ${errorId}`,
+          invalid: existingError !== undefined, disabled: disabledReason !== undefined, options: field.options, value: typeof value === 'string' ? value : undefined,
           onSelect: (selected) => this.#commitField(contribution, field, selected),
         }));
       } else if (field.kind === 'number') {
@@ -958,11 +876,29 @@ export class SettingsHost {
         if (field.unit !== undefined) { const unit = document.createElement('span'); unit.className = 'stx-ui-unit'; unit.textContent = field.unit; stepper.append(unit); }
         control.append(stepper);
       } else if (field.kind === 'range') {
-        const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.className = 'stx-ui-input'; input.type = 'range'; input.min = String(field.min); input.max = String(field.max); input.step = String(field.step ?? 1);
-        const value = this.#fieldValue(contribution, field); if (typeof value === 'number') input.value = String(value); this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
-        const output = document.createElement('output'); output.className = 'stx-ui-range-output'; output.textContent = input.value; output.setAttribute('for', input.id);
-        input.addEventListener('input', () => { output.textContent = input.value; }); input.addEventListener('change', () => this.#commitField(contribution, field, Number(input.value)));
-        control.append(input, output);
+        const slider = document.createElement('input'); slider.id = domId(contribution.identity.id, field.id); slider.className = 'stx-ui-input'; slider.type = 'range'; slider.min = String(field.min); slider.max = String(field.max); slider.step = String(field.step ?? 1);
+        const value = this.#fieldValue(contribution, field); if (typeof value === 'number') slider.value = String(value); this.#configureInput(slider, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);
+        const number = document.createElement('input'); number.id = `${slider.id}-value`; number.className = 'stx-ui-input stx-ui-range-number'; number.type = 'number'; number.min = slider.min; number.max = slider.max; number.step = slider.step; number.value = slider.value;
+        number.setAttribute('aria-label', `${field.aria?.label ?? field.label} 数值`);
+        number.setAttribute('aria-describedby', `${descriptionId} ${errorId}`);
+        number.disabled = disabledReason !== undefined;
+        if (number.disabled) number.setAttribute('aria-disabled', 'true');
+        if (existingError !== undefined) number.setAttribute('aria-invalid', 'true');
+        slider.addEventListener('input', () => { number.value = slider.value; });
+        slider.addEventListener('change', () => {
+          this.#flushDebouncedSave(contribution.identity.id, field.id, false);
+          number.value = slider.value;
+          this.#commitField(contribution, field, Number(slider.value));
+        });
+        const saveManualValue = (): void => {
+          const manualValue = Number(number.value);
+          if (Number.isFinite(manualValue) && manualValue >= field.min && manualValue <= field.max) slider.value = String(manualValue);
+          this.#scheduleFieldSave(contribution, field, () => number.value.trim() === '' ? Number.NaN : Number(number.value));
+        };
+        number.addEventListener('input', saveManualValue);
+        number.addEventListener('blur', () => this.#flushDebouncedSave(contribution.identity.id, field.id));
+        number.addEventListener('keydown', (event: KeyboardEvent) => { if (event.key === 'Enter') { event.preventDefault(); this.#flushDebouncedSave(contribution.identity.id, field.id); } });
+        control.append(slider, number);
       } else {
         const input = document.createElement('input'); input.id = domId(contribution.identity.id, field.id); input.className = 'stx-ui-input'; input.type = field.secret === true ? 'password' : 'text'; input.placeholder = field.placeholder ?? '';
         const value = this.#fieldValue(contribution, field); if (typeof value === 'string') input.value = value; this.#configureInput(input, label, field, descriptionId, errorId, existingError !== undefined, disabledReason);

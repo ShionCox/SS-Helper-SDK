@@ -1,4 +1,12 @@
-import { SSHelperError, type AnyServiceContract, type CallOptions, type ServiceCallContext } from '@ss-helper/sdk';
+import {
+  SS_HELPER_ERROR_CODES,
+  SSHelperError,
+  type AnyServiceContract,
+  type CallOptions,
+  type ServiceCallContext,
+  type SSHelperErrorCode,
+  type SSHelperErrorDetails,
+} from '@ss-helper/sdk';
 import type { DiagnosticsStore } from '../diagnostics/diagnostics-store.js';
 import type { SessionScope } from '../plugins/session-scope.js';
 import { assertPayload, contractBase, contractKey, validateContract } from './contracts.js';
@@ -7,6 +15,36 @@ type Handler = (request: unknown, context: ServiceCallContext) => unknown | Prom
 interface Exposed { readonly owner: SessionScope; readonly contract: AnyServiceContract; readonly handler: Handler; }
 interface Waiter { readonly owner: SessionScope; readonly key: string; settle(error?: unknown): void; }
 interface Pending { readonly caller: SessionScope; readonly provider: SessionScope; readonly abort: AbortController; settle(error: unknown): void; }
+
+const errorCodes = new Set<string>(SS_HELPER_ERROR_CODES);
+
+function safeErrorDetails(value: unknown): SSHelperErrorDetails | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const details: Record<string, null | boolean | number | string | readonly string[]> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === null || typeof item === 'boolean' || typeof item === 'string') details[key] = item;
+    else if (typeof item === 'number' && Number.isFinite(item)) details[key] = item;
+    else if (Array.isArray(item) && item.every((entry) => typeof entry === 'string')) details[key] = [...item];
+  }
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function retainServiceError(error: unknown): SSHelperError | undefined {
+  if (error instanceof SSHelperError) return error;
+  if (error === null || typeof error !== 'object') return undefined;
+  const candidate = error as Record<string, unknown>;
+  if (
+    candidate.name !== 'SSHelperError'
+    || typeof candidate.code !== 'string'
+    || !errorCodes.has(candidate.code)
+    || typeof candidate.message !== 'string'
+  ) return undefined;
+  return new SSHelperError(
+    candidate.code as SSHelperErrorCode,
+    candidate.message,
+    safeErrorDetails(candidate.details),
+  );
+}
 
 export class ServiceRegistry {
   readonly #handlers = new Map<string, Exposed>();
@@ -132,7 +170,7 @@ export class ServiceRegistry {
           assertPayload(response, exposed.contract.validateResponse, 'response');
           settle(undefined, response);
         } catch (error) { settle(error); }
-      }, (error: unknown) => settle(error instanceof SSHelperError ? error : new SSHelperError(
+      }, (error: unknown) => settle(retainServiceError(error) ?? new SSHelperError(
         'PAYLOAD_INVALID', 'The service handler failed', { phase: 'handler' },
       )));
     });

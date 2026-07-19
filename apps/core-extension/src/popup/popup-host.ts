@@ -2,6 +2,7 @@ import { SSHelperError, type PlainData, type PopupRegistration, type PopupToken 
 import type { SessionScope } from '../plugins/session-scope.js';
 import { assertPayload } from '../communication/contracts.js';
 import { ensureCoreUiStyles } from '../styles/settings-styles.js';
+import { PopupUiController } from './popup-ui-context.js';
 
 function key(token: PopupToken): string { return JSON.stringify([token.provider, token.name, token.version]); }
 
@@ -17,6 +18,7 @@ export class PopupHost {
       registration.token.provider !== scope.id
       || registration.token.kind !== 'popup'
       || registration.title.trim() === ''
+      || (registration.closeLabel !== undefined && registration.closeLabel.trim() === '')
       || (presentation !== 'default' && presentation !== 'workspace')
     ) {
       throw new SSHelperError('PAYLOAD_INVALID', 'The popup registration is invalid', { reason: 'popup_registration' });
@@ -27,7 +29,7 @@ export class PopupHost {
     return scope.addCleanup(() => { this.#open.get(id)?.(); this.#entries.delete(id); });
   }
 
-  open<Input extends PlainData>(scope: SessionScope, token: PopupToken<Input>, input: Input): void {
+  open<Input extends PlainData>(scope: SessionScope, token: PopupToken<Input>, input: Input, restoreFocus?: HTMLElement): void {
     scope.assertActive();
     assertPayload(input, undefined, 'popup_input');
     const id = key(token);
@@ -36,7 +38,9 @@ export class PopupHost {
     const document = this.document;
     if (document === undefined) throw new SSHelperError('BRIDGE_CORRUPTED', 'The popup host has no document');
     this.#open.get(id)?.();
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const activeElement = document.activeElement as HTMLElement | null;
+    const previous = restoreFocus ?? (activeElement !== null && typeof activeElement.focus === 'function' ? activeElement : undefined);
+    const previousId = previous?.id;
     const overlay = document.createElement('div');
     overlay.dataset.ssHelperPopup = id;
     overlay.setAttribute('role', 'presentation');
@@ -49,15 +53,25 @@ export class PopupHost {
     const header = document.createElement('div');
     header.dataset.popupHeader = 'true';
     const heading = document.createElement('h2'); heading.textContent = entry.registration.title;
-    const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.textContent = 'Close'; closeButton.setAttribute('aria-label', `Close ${entry.registration.title}`);
+    const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.setAttribute('aria-label', entry.registration.closeLabel ?? `关闭 ${entry.registration.title}`);
+    const closeIcon = document.createElement('i'); closeIcon.className = 'fa-solid fa-xmark'; closeIcon.setAttribute('aria-hidden', 'true'); closeButton.append(closeIcon);
     header.append(heading, closeButton);
     const content = document.createElement('div');
     content.dataset.popupContent = 'true';
     dialog.append(header, content); overlay.append(dialog); document.body.append(overlay);
+    const popupUi = new PopupUiController(content);
     let active = true;
     let renderCleanup: void | (() => void);
     let removeScopeCleanup = (): void => undefined;
     let onKeyDown: (event: KeyboardEvent) => void = () => undefined;
+    const restorePreviousFocus = (): void => {
+      const target = previous !== undefined && previous.isConnected !== false
+        ? previous
+        : previousId === undefined || previousId === ''
+          ? undefined
+          : document.getElementById(previousId);
+      target?.focus();
+    };
     const close = (): void => {
       if (!active) return;
       active = false;
@@ -66,9 +80,14 @@ export class PopupHost {
       this.#open.delete(id);
       try { if (typeof renderCleanup === 'function') renderCleanup(); }
       finally {
+        popupUi.dispose();
         overlay.remove();
         try { removeScopeCleanup(); }
-        finally { previous?.focus(); }
+        finally {
+          restorePreviousFocus();
+          queueMicrotask(restorePreviousFocus);
+          document.defaultView?.requestAnimationFrame?.(restorePreviousFocus);
+        }
       }
     };
     onKeyDown = (event: KeyboardEvent): void => {
@@ -81,7 +100,8 @@ export class PopupHost {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     try {
-      renderCleanup = entry.registration.render(content, input);
+      renderCleanup = entry.registration.render(content, input, popupUi);
+      popupUi.refreshControls();
       closeButton.addEventListener('click', close, { once: true });
       dialog.addEventListener('keydown', onKeyDown);
       this.#open.set(id, close);

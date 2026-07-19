@@ -35,7 +35,8 @@ export interface WorldbookEntrySnapshot { readonly id: string; readonly keys: re
 export interface WorldbookSnapshot { readonly id: string; readonly name: string; readonly active: boolean; readonly entries?: readonly WorldbookEntrySnapshot[]; }
 export interface GenerationUsageSnapshot { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number; }
 export interface GenerationSnapshot { readonly active: boolean; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
-export interface GenerationRequest { readonly prompt: string; readonly model?: string | undefined; readonly quiet?: boolean; }
+export interface GenerationJsonSchema { readonly name: string; readonly value: Readonly<Record<string, PlainData>>; readonly description?: string | undefined; readonly strict?: boolean; readonly returnInvalid?: boolean; }
+export interface GenerationRequest { readonly prompt: string; readonly model?: string | undefined; readonly quiet?: boolean; readonly contextMode?: 'chat' | 'isolated' | undefined; readonly jsonSchema?: GenerationJsonSchema | undefined; }
 export interface GenerationResult { readonly text: string; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
 export type HostEventName = 'chat-changed' | 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted' | 'generation-started' | 'generation-ended' | 'generation-config-changed' | 'prompt-ready' | 'worldbook-updated' | 'identity-changed';
 export interface PromptMessageSnapshot { readonly role?: string | undefined; readonly name?: string | undefined; readonly content?: PlainData; }

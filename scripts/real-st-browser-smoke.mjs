@@ -246,7 +246,7 @@ async function main() {
   let server;
   let browser;
   let cdp;
-  let serverPluginRoot;
+  const serverPluginRoots = [];
   let jointArtifacts;
   let result;
   let cleanup;
@@ -315,10 +315,19 @@ async function main() {
     const artifactManifest = JSON.parse(readFileSync(path.join(extensionRoot, 'artifact-manifest.json'), 'utf8'));
     assert.equal(artifactManifest.contentDigest, args.contentDigest);
 
-    serverPluginRoot = path.join(st.root, 'plugins', 'ss-helper-gate-binary');
-    rmSync(serverPluginRoot, { recursive: true, force: true });
-    mkdirSync(serverPluginRoot, { recursive: true });
-    writeFileSync(path.join(serverPluginRoot, 'index.mjs'), [
+    if (jointConsumers) {
+      const sdkServerPluginRoot = path.join(st.root, 'plugins', 'ss-helper-sdk');
+      rmSync(sdkServerPluginRoot, { recursive: true, force: true });
+      mkdirSync(sdkServerPluginRoot, { recursive: true });
+      cpSync(path.join(process.cwd(), 'server-plugin', 'index.js'), path.join(sdkServerPluginRoot, 'index.js'));
+      writeFileSync(path.join(sdkServerPluginRoot, 'package.json'), `${JSON.stringify({ name: 'ss-helper-sdk-smoke', private: true, type: 'module', main: 'index.js' }, null, 2)}\n`);
+      serverPluginRoots.push(sdkServerPluginRoot);
+    }
+    const binaryServerPluginRoot = path.join(st.root, 'plugins', 'ss-helper-gate-binary');
+    rmSync(binaryServerPluginRoot, { recursive: true, force: true });
+    mkdirSync(binaryServerPluginRoot, { recursive: true });
+    serverPluginRoots.push(binaryServerPluginRoot);
+    writeFileSync(path.join(binaryServerPluginRoot, 'index.mjs'), [
       "import { createHash } from 'node:crypto';",
       "export const info = { id:'ss-helper-gate-binary', name:'SS Helper binary gate', description:'Ephemeral authenticated SQLite export/import routes for artifact verification' };",
       "const expected = Buffer.from('U1FMaXRlIGZvcm1hdCAzAEcwMTEgYmluYXJ5IGdhdGU=', 'base64');",
@@ -390,6 +399,18 @@ async function main() {
         const discovery = globalThis[discoverySymbol];
         const consumers = globalThis.__SSHelperArtifactConsumers;
         if (discovery?.descriptor?.state !== 'ready' || consumers?.a?.state !== 'ready' || consumers?.b?.state !== 'ready') return null;
+        const tavernContext = globalThis.SillyTavern?.getContext?.();
+        const currentHostSurface = {
+          mainApi: typeof tavernContext?.mainApi === 'string',
+          onlineStatus: typeof tavernContext?.onlineStatus === 'string',
+          chatMetadata: tavernContext?.chatMetadata !== undefined,
+          eventTypes: tavernContext?.eventTypes !== undefined,
+          requiredEventTypes: ['PERSONA_RENAMED', 'PERSONA_DELETED', 'GROUP_UPDATED', 'CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED']
+            .every((key) => typeof tavernContext?.eventTypes?.[key] === 'string'),
+          powerUserSettings: tavernContext?.powerUserSettings !== undefined,
+          chatCompletionSettings: tavernContext?.chatCompletionSettings !== undefined,
+          generateQuietPrompt: typeof tavernContext?.generateQuietPrompt === 'function',
+        };
         const onboardingConfirm = [...document.querySelectorAll('dialog[open] button, .popup button')]
           .find((button) => /^(确定|确认|confirm|ok)$/iu.test(button.textContent?.trim() ?? ''));
         if (onboardingConfirm instanceof HTMLButtonElement) {
@@ -397,6 +418,9 @@ async function main() {
           if (onboardingDialog instanceof HTMLDialogElement && onboardingDialog.open) onboardingDialog.close();
           else onboardingConfirm.click();
           await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
+        for (const openDialog of document.querySelectorAll('dialog[open]')) {
+          try { openDialog.close(); } catch {}
         }
         const launcher = document.querySelector('#ss-helper-open-settings-center');
         if (!(launcher instanceof HTMLButtonElement)) return null;
@@ -413,6 +437,69 @@ async function main() {
           ?? center.querySelector('.stx-center-nav-item[data-plugin-id]:not([data-plugin-id="overview"])');
         targetPlugin?.click();
         const selectedTitle = center.querySelector('.stx-center-page-heading h3')?.textContent;
+        let memoryWorkbench = null;
+        if (${jointConsumers}) {
+          center.querySelector('[data-tab-id="global"]')?.click();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const opener = [...center.querySelectorAll('button')].find((button) => button.textContent?.includes('打开工作台') && button.closest('[hidden]') === null);
+          if (!(opener instanceof HTMLButtonElement)) return null;
+          const openerId = opener.id;
+          const openerStyle = getComputedStyle(opener);
+          const openerVisibility = {
+            disabled: opener.disabled,
+            display: openerStyle.display,
+            visibility: openerStyle.visibility,
+            rects: opener.getClientRects().length,
+            offsetParent: opener.offsetParent !== null,
+            inertAncestor: opener.closest('[inert]') !== null,
+          };
+          let restorationFocusEvents = 0;
+          const countRestorationFocus = (event) => { if (event.target?.id === openerId) restorationFocusEvents += 1; };
+          document.addEventListener('focusin', countRestorationFocus);
+          opener.focus();
+          const focusBeforeOpen = document.activeElement === opener;
+          restorationFocusEvents = 0;
+          opener.click();
+          await new Promise((resolve) => setTimeout(resolve, 180));
+          const popup = document.querySelector('[data-ss-helper-popup]');
+          const dialog = popup?.querySelector('[role="dialog"]');
+          const close = popup?.querySelector('[data-popup-header="true"] button');
+          const nativeSelects = [...(popup?.querySelectorAll('select[data-ss-helper-control="select"]') ?? [])];
+          const triggers = [...(popup?.querySelectorAll('.stx-ui-select-trigger[role="combobox"]') ?? [])];
+          if (!(popup instanceof HTMLElement) || !(dialog instanceof HTMLElement) || !(close instanceof HTMLButtonElement) || nativeSelects.length !== 3 || triggers.length !== 3) return null;
+          const firstTrigger = triggers[0];
+          firstTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+          firstTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+          firstTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const refreshedSelects = [...popup.querySelectorAll('select[data-ss-helper-control="select"]')];
+          memoryWorkbench = {
+            presentation: dialog.dataset.presentation,
+            nativeSelects: refreshedSelects.length,
+            enhancedSelects: popup.querySelectorAll('.stx-ui-select-wrap').length,
+            hiddenNativeSelects: refreshedSelects.filter((select) => select.hidden && select.getAttribute('aria-hidden') === 'true').length,
+            selectedKind: refreshedSelects.find((select) => select.dataset.filter === 'kind')?.value ?? null,
+            labels: refreshedSelects.map((select) => select.getAttribute('aria-label')),
+            closeLabel: close.getAttribute('aria-label'),
+            closeIcon: close.querySelector('.fa-xmark') !== null,
+            publicButtons: popup.querySelectorAll('[data-ss-helper-control="button"]').length,
+            statusControls: popup.querySelectorAll('[data-ss-helper-control="status"]').length,
+            openerId,
+            focusBeforeOpen,
+            openerVisibility,
+          };
+          close.click();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          memoryWorkbench.closed = document.querySelector('[data-ss-helper-popup]') === null;
+          memoryWorkbench.documentHasFocus = document.hasFocus();
+          memoryWorkbench.focusRestored = !memoryWorkbench.documentHasFocus || restorationFocusEvents > 0;
+          document.removeEventListener('focusin', countRestorationFocus);
+          memoryWorkbench.activeAfterClose = {
+            id: document.activeElement?.id ?? null,
+            tag: document.activeElement?.tagName ?? null,
+            ariaLabel: document.activeElement?.getAttribute?.('aria-label') ?? null,
+          };
+        }
         const closeButton = center.querySelector('.stx-center-close');
         closeButton?.click();
         const closed = document.querySelectorAll('#ss-helper-settings-center-overlay').length === 0;
@@ -450,6 +537,8 @@ async function main() {
           worldbooks: consumers.a.host.worldbooks,
           diagnostics: discovery.port.diagnostics(),
           jointConsumers: jointSections,
+          memoryWorkbench,
+          currentHostSurface,
         };
       })()`);
       return value;
@@ -481,6 +570,18 @@ async function main() {
     assert.deepEqual(measured.consumerHostA.requested, ['tavern.context.read', 'tavern.chat.read', 'tavern.chat.events', 'tavern.worldbooks.read', 'tavern.worldbooks.write', 'tavern.generation.read', 'tavern.prompt.contribute', 'tavern.plugin.request', 'tavern.plugin.binary-request.v1']);
     assert.deepEqual(measured.consumerHostA.granted, measured.consumerHostA.requested);
     assert.equal(measured.consumerHostA.events.subscribedAndRemoved, true);
+    assert.equal(typeof measured.consumerHostA.generation.available, 'boolean');
+    assert.equal(typeof measured.consumerHostA.generation.provider, 'string');
+    assert.deepEqual(measured.currentHostSurface, {
+      mainApi: true,
+      onlineStatus: true,
+      chatMetadata: true,
+      eventTypes: true,
+      requiredEventTypes: true,
+      powerUserSettings: true,
+      chatCompletionSettings: true,
+      generateQuietPrompt: true,
+    });
     assert.equal(measured.consumerHostA.prompt.setAndRemoved, true);
     assert.equal(measured.consumerHostA.request.ok, true);
     assert.deepEqual(measured.consumerHostA.binaryRequest, {
@@ -513,15 +614,37 @@ async function main() {
         const runtimeEvents = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown' || event.method === 'Runtime.consoleAPICalled');
         throw new Error(`Joint consumers did not register: ${JSON.stringify(runtimeEvents.slice(-30))}`);
       }
-      if (measured.jointConsumers.some((consumer) => consumer.health !== 'healthy')) {
+      const expectedJointConsumers = [
+        { id: 'ss-helper.llm', health: 'healthy', title: 'AI调度中枢' },
+        { id: 'ss-helper.memory', health: 'healthy', title: '记忆系统' },
+      ];
+      if (JSON.stringify(measured.jointConsumers) !== JSON.stringify(expectedJointConsumers)) {
         const runtimeEvents = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown' || (event.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(event.params?.type)));
-        throw new Error(`Joint consumer settings degraded: ${JSON.stringify({ consumers: measured.jointConsumers, runtimeEvents: runtimeEvents.slice(-30) })}`);
+        throw new Error(`Joint consumer settings mismatch: ${JSON.stringify({ consumers: measured.jointConsumers, generation: measured.consumerHostA.generation, runtimeEvents: runtimeEvents.slice(-30) })}`);
       }
-      assert.deepEqual(measured.jointConsumers, [
-        { id: 'ss-helper.llm', health: 'healthy', title: 'SS-Helper [AI 调度中枢]' },
-        { id: 'ss-helper.memory', health: 'healthy', title: 'SS-Helper [记忆]' },
-      ]);
-      assert.equal(measured.settingsCenter.selectedTitle, 'SS-Helper [记忆]');
+      assert.deepEqual(measured.jointConsumers, expectedJointConsumers);
+      assert.equal(measured.settingsCenter.selectedTitle, '记忆系统');
+      assert.deepEqual(measured.memoryWorkbench, {
+        presentation: 'workspace',
+        nativeSelects: 3,
+        enhancedSelects: 3,
+        hiddenNativeSelects: 3,
+        selectedKind: 'identity',
+        labels: ['事实类型', '事实状态', '排序'],
+        closeLabel: '关闭记忆工作台',
+        closeIcon: true,
+        publicButtons: measured.memoryWorkbench.publicButtons,
+        statusControls: measured.memoryWorkbench.statusControls,
+        openerId: measured.memoryWorkbench.openerId,
+        focusBeforeOpen: measured.memoryWorkbench.focusBeforeOpen,
+        openerVisibility: measured.memoryWorkbench.openerVisibility,
+        documentHasFocus: measured.memoryWorkbench.documentHasFocus,
+        closed: true,
+        focusRestored: measured.memoryWorkbench.focusRestored,
+        activeAfterClose: measured.memoryWorkbench.activeAfterClose,
+      });
+      assert.ok(measured.memoryWorkbench.publicButtons > 0);
+      assert.ok(measured.memoryWorkbench.statusControls > 0);
       assert.equal(measured.diagnostics.plugins, 4);
     } else {
       assert.deepEqual(measured.jointConsumers, []);
@@ -600,14 +723,14 @@ async function main() {
     };
     await stopChildren();
     const cleanupEntries = [
-      ...(serverPluginRoot === undefined ? [] : [{ root: serverPluginRoot, description: 'staged binary server plugin' }]),
+      ...serverPluginRoots.map((root) => ({ root, description: 'staged smoke server plugin' })),
       { root: temporary, description: 'temporary smoke directory' },
     ];
     await removeAfterChildrenStopped(cleanupEntries, stopChildren);
     assert.equal(existsSync(temporary), false);
     assert.equal(profile !== undefined && existsSync(profile), false);
     assert.equal(stagedExtensionRoots.some((root) => existsSync(root)), false);
-    assert.equal(serverPluginRoot !== undefined && existsSync(serverPluginRoot), false);
+    assert.equal(serverPluginRoots.some((root) => existsSync(root)), false);
     cleanup = { browserStopped: !processAlive(browser), serverStopped: !processAlive(server), profileRemoved: true, clientExtensionsRemoved: true, temporaryRemoved: true, serverPluginsRemoved: true };
   }
   console.log(JSON.stringify({ ...result, cleanup }));

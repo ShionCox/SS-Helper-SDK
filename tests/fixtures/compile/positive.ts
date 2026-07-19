@@ -29,7 +29,7 @@ import type { MemoryRecallResponse } from '@ss-helper/sdk/contracts/memory';
 import type { SessionCloseInfo } from '@ss-helper/sdk/contracts/plugin';
 import type { ServiceContract } from '@ss-helper/sdk/contracts/services';
 import type { SettingsAdapter } from '@ss-helper/sdk/contracts/settings';
-import type { PopupToken } from '@ss-helper/sdk/contracts/ui';
+import type { PopupRegistration, PopupToken, PopupUiContext } from '@ss-helper/sdk/contracts/ui';
 import { SSHelperError } from '@ss-helper/sdk/errors';
 import type { ServerPluginSession } from '@ss-helper/sdk/server';
 
@@ -53,6 +53,8 @@ const settings: SettingsSchema = {
   ],
 };
 const popup: PopupToken<{ readonly tab: string }> = { kind: 'popup', provider: 'example.plugin', name: 'workbench', version: 1 };
+const legacyPopupRegistration: PopupRegistration<{ readonly tab: string }> = { token: popup, title: 'Legacy', render: (container, input) => { container.dataset.tab = input.tab; } };
+const enhancedPopupRegistration: PopupRegistration<{ readonly tab: string }> = { token: popup, title: 'Enhanced', closeLabel: 'Close enhanced', render: (container, input, ui?: PopupUiContext) => { container.dataset.tab = input.tab; ui?.refreshControls(container); } };
 
 declare const services: ServicePort;
 declare const events: EventPort;
@@ -66,7 +68,7 @@ declare const adapter: SettingsAdapter;
 const request: LlmCompletionRequest = { messages: [{ role: 'user', content: 'hello' }] };
 const recall: MemoryRecallRequest = { query: 'hello', chatKey: 'chat:1' };
 services.call(LLM_COMPLETION_V1, request);
-services.call(LLM_STRUCTURED_TASK_V1, { task: 'extract', input: { text: 'hello' } });
+services.call(LLM_STRUCTURED_TASK_V1, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } });
 services.call(LLM_EMBEDDING_V1, { input: ['hello'] });
 services.call(LLM_RERANK_V1, { query: 'hello', documents: [{ id: '1', text: 'world' }] });
 services.call(MEMORY_RECALL_V1, recall);
@@ -85,6 +87,8 @@ const acknowledgement = await binaryHost.binaryRequest.send({
 binaryResult.data;
 acknowledgement.body.data;
 session.registerSettings(settings, adapter);
+session.registerPopup(legacyPopupRegistration);
+session.registerPopup(enhancedPopupRegistration);
 session.ui.openPopup(popup, { tab: 'main' });
 
 const serviceToken: ServiceContract<'ss-helper.llm', 'completion', 1, LlmCompletionRequest, LlmCompletionResponse> = LLM_COMPLETION_V1;
@@ -96,4 +100,4 @@ const error = new SSHelperError('CORE_MISSING', 'Core missing');
 const memoryMessage: ChatMessageInput = { role: 'assistant', text: 'state', variables: [{ initialized_lorebooks: { lore: [] }, stat_data: { world: { day: 5 }, inventory: ['core'] } }] };
 const serverSession = null as unknown as ServerPluginSession;
 
-void [descriptor, plugin, axes, popup, serviceToken, eventToken, memoryResponse, closeInfo, capability, error, memoryMessage, serverSession, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY];
+void [descriptor, plugin, axes, popup, legacyPopupRegistration, enhancedPopupRegistration, serviceToken, eventToken, memoryResponse, closeInfo, capability, error, memoryMessage, serverSession, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY];

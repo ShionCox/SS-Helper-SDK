@@ -58,7 +58,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
   try {
     await Promise.all(waits);
     assert.deepEqual(
-      await consumer.services.call(LLM_STRUCTURED_TASK_V1, { task: 'extract', input: { text: 'hello' } }),
+      await consumer.services.call(LLM_STRUCTURED_TASK_V1, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } }),
       {
         output: { task: 'extract', input: { text: 'hello' }, caller: 'fixture.cross-plugin-consumer' },
         route: { route: 'fixture', provider: 'deterministic', model: 'structured-v1' },

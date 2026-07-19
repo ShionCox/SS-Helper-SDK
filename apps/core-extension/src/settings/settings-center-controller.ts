@@ -58,9 +58,21 @@ export class SettingsCenterController {
       ? this.document.activeElement.id
       : '';
     if (dialog === undefined || this.#renderer === undefined) return;
+    // Settings are deliberately re-rendered after adapter updates. Keep each
+    // scroll container at the same position so an autosave never sends users
+    // back to the beginning of a long settings page.
+    const scrollPositions = [...dialog.querySelectorAll<HTMLElement>('.stx-center-scroll')]
+      .map((node) => ({ top: node.scrollTop, left: node.scrollLeft }));
     dialog.replaceChildren();
     this.#renderer(dialog);
     if (activeId !== '') this.document.getElementById(activeId)?.focus();
+    const scrollContainers = [...dialog.querySelectorAll<HTMLElement>('.stx-center-scroll')];
+    for (const [index, position] of scrollPositions.entries()) {
+      const container = scrollContainers[index];
+      if (container === undefined) continue;
+      container.scrollTop = position.top;
+      container.scrollLeft = position.left;
+    }
   }
 
   close = (): void => {

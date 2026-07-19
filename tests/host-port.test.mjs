@@ -47,6 +47,21 @@ test('production SillyTavern bridge feature-detects real seams and keeps request
   assert.equal(unsafeEvents.capabilities.includes('tavern.chat.events'), false);
 });
 
+test('SillyTavern chat snapshots keep distinct file keys when display names are identical', async () => {
+  const context = {
+    chatId: 'Assistant - 2026-07-18@03h29m55s201ms', name1: 'User', name2: 'Assistant', characterId: 0,
+    characters: [{ name: 'Assistant', avatar: 'assistant.png' }], chat: [],
+  };
+  const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => context } });
+  const first = await bridge.hostAdapter.chat.readCurrent();
+  context.chatId = 'Assistant - 2026-07-18@03h30m01s622ms';
+  const second = await bridge.hostAdapter.chat.readCurrent();
+
+  assert.equal(first.name, second.name);
+  assert.notEqual(first.key, second.key);
+  assert.equal(second.key, context.chatId);
+});
+
 test('binary plugin request v1 preserves SQLite bytes and private authentication metadata', async () => {
   const sqlite = Buffer.from('SQLite format 3\0\x00\xffbinary', 'latin1');
   const fetches = [];
@@ -219,6 +234,80 @@ test('production bridge reads and writes worldbook snapshots only when every rea
   const readOnly = createSillyTavernHostBridge({ SillyTavern: { getContext: () => ({ loadWorldInfo: async () => null, getRequestHeaders: () => ({}), executeSlashCommandsWithOptions: async () => ({ pipe: '[]' }) }) }, fetch: target.fetch });
   assert.ok(readOnly.capabilities.includes('tavern.worldbooks.read'));
   assert.equal(readOnly.capabilities.includes('tavern.worldbooks.write'), false);
+});
+
+test('production bridge reads the current SillyTavern camel-case connection and selected chat completion model', async () => {
+  const callbacks = new Map();
+  const removed = [];
+  const quietCalls = [];
+  const rawCalls = [];
+  const context = {
+    chatId: 'current.jsonl',
+    chat: [{ id: 'm1', is_user: true, mes: 'hello' }],
+    name1: 'Current User',
+    chatMetadata: { variables: { chapter: 3 } },
+    powerUserSettings: { persona_description: 'Current persona description' },
+    mainApi: 'openai',
+    onlineStatus: 'Valid',
+    chatCompletionSettings: { chat_completion_source: 'custom', custom_model: 'oracle-model' },
+    eventSource: {
+      on(name, callback) { callbacks.set(name, callback); },
+      off(name, callback) { removed.push([name, callback]); callbacks.delete(name); },
+    },
+    eventTypes: {
+      MAIN_API_CHANGED: 'main-api', ONLINE_STATUS_CHANGED: 'online',
+      CHATCOMPLETION_SOURCE_CHANGED: 'source', CHATCOMPLETION_MODEL_CHANGED: 'model', CONNECTION_PROFILE_LOADED: 'profile', CONNECTION_PROFILE_UPDATED: 'profile-updated', CONNECTION_PROFILE_DELETED: 'profile-deleted',
+      CHARACTER_EDITED: 'character', PERSONA_CHANGED: 'persona', PERSONA_UPDATED: 'persona-updated', PERSONA_RENAMED: 'persona-renamed', PERSONA_DELETED: 'persona-deleted', GROUP_UPDATED: 'group-updated',
+    },
+    generateQuietPrompt: async (options) => { quietCalls.push(options); return 'ok'; },
+    generateRaw: async (options) => { rawCalls.push(options); return 'isolated'; },
+  };
+  const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => context } });
+  assert.ok(bridge.capabilities.includes('tavern.generation.read'));
+  assert.deepEqual(await bridge.hostAdapter.persona.read(), { name: 'Current User', description: 'Current persona description' });
+  assert.deepEqual((await bridge.hostAdapter.chat.readCurrent()).variables, { variables: { chapter: 3 } });
+  assert.equal(await bridge.hostAdapter.generation.available(), true);
+  assert.deepEqual(await bridge.hostAdapter.generation.models(), ['oracle-model']);
+  assert.deepEqual(await bridge.hostAdapter.generation.current(), { active: false, provider: 'custom', model: 'oracle-model' });
+  assert.deepEqual(await bridge.hostAdapter.generation.generate({ prompt: 'non-empty prompt', model: 'ignored-override', quiet: true, jsonSchema: { name: 'memory_extract', value: { type: 'object' }, strict: true, returnInvalid: true } }), { text: 'ok', provider: 'custom', model: 'oracle-model' });
+  assert.deepEqual(quietCalls, [{ quietPrompt: 'non-empty prompt', jsonSchema: { name: 'memory_extract', value: { type: 'object' }, strict: true, returnInvalid: true } }]);
+  assert.deepEqual(await bridge.hostAdapter.generation.generate({ prompt: 'isolated prompt', quiet: true, contextMode: 'isolated' }), { text: 'isolated', provider: 'custom', model: 'oracle-model' });
+  assert.deepEqual(rawCalls, [{ prompt: 'isolated prompt' }]);
+
+  let generationChanges = 0;
+  const unsubscribeGeneration = bridge.hostAdapter.events.subscribe('generation-config-changed', () => { generationChanges += 1; });
+  assert.deepEqual([...callbacks.keys()].sort(), ['main-api', 'model', 'online', 'profile', 'profile-deleted', 'profile-updated', 'source']);
+  for (const callback of callbacks.values()) callback();
+  assert.equal(generationChanges, 7);
+  unsubscribeGeneration();
+  assert.equal(removed.length, 7);
+
+  let identityChanges = 0;
+  const unsubscribeIdentity = bridge.hostAdapter.events.subscribe('identity-changed', (event) => {
+    identityChanges += 1;
+    assert.equal(event.identity.userName, 'Current User');
+  });
+  assert.deepEqual([...callbacks.keys()].sort(), ['character', 'group-updated', 'persona', 'persona-deleted', 'persona-renamed', 'persona-updated']);
+  for (const callback of callbacks.values()) callback();
+  assert.equal(identityChanges, 6);
+  unsubscribeIdentity();
+  assert.equal(removed.length, 13);
+
+  context.onlineStatus = 'no_connection';
+  assert.equal(await bridge.hostAdapter.generation.available(), false);
+});
+
+test('production bridge keeps connected provider-only sources usable through generateQuietPrompt', async () => {
+  const current = {
+    mainApi: 'novel', onlineStatus: 'Opus tier',
+    generateQuietPrompt: async ({ quietPrompt }) => `current:${quietPrompt}`,
+  };
+  const currentBridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => current } });
+  assert.equal(await currentBridge.hostAdapter.generation.available(), true);
+  assert.deepEqual(await currentBridge.hostAdapter.generation.models(), []);
+  assert.deepEqual(await currentBridge.hostAdapter.generation.current(), { active: false, provider: 'novel' });
+  assert.deepEqual(await currentBridge.hostAdapter.generation.test({ prompt: 'ping' }), { text: 'current:ping', provider: 'novel' });
+
 });
 
 test('every retained Tavern capability has an explicit DTO adapter path', async () => {

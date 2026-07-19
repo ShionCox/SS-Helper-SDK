@@ -56,8 +56,8 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.ok(coreStyles);
     assert.match(coreStyles.textContent, /\.stx-ui-control-action \{ justify-content: flex-start; \}/);
     assert.match(coreStyles.textContent, /\.stx-ui-control-status \{ justify-content: flex-start; flex-wrap: wrap; \}/);
-    assert.match(coreStyles.textContent, /\.stx-ui-badge-neutral \{/);
-    assert.match(coreStyles.textContent, /\.stx-ui-status-badge \{/);
+    assert.match(coreStyles.textContent, /\.stx-ui-badge-neutral/);
+    assert.match(coreStyles.textContent, /\.stx-ui-status-badge/);
     assert.match(coreStyles.textContent, /background: color-mix\(in srgb, var\(--ss-theme-text\) 10%, transparent\)/);
     assert.match(coreStyles.textContent, /border-left: 3px solid var\(--stx-status-color\)/);
     assert.match(coreStyles.textContent, /background: color-mix\(in srgb, var\(--stx-status-color\) 16%, var\(--ss-theme-surface\)\)/);
@@ -66,6 +66,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.match(coreStyles.textContent, /\.stx-ui-select-trigger \{/);
     assert.match(coreStyles.textContent, /\.stx-ui-select-arrow \{/);
     assert.match(coreStyles.textContent, /\.stx-ui-select-listbox \{/);
+    assert.match(coreStyles.textContent, /\.stx-ui-select-check\[hidden\] \{ display: none; \}/);
     assert.match(coreStyles.textContent, /background: var\(--ss-theme-surface-3\)/);
     const opener = descendants(container.children[0]).find((node) => node.id === 'ss-helper-open-settings-center');
     opener.focus();
@@ -138,6 +139,8 @@ test('custom select renders its own listbox and supports keyboard selection', as
     center = document.getElementById(SETTINGS_CENTER_ID);
     const trigger = descendants(center).find((node) => node.className === 'stx-ui-select-trigger');
     const listbox = descendants(center).find((node) => node.className === 'stx-ui-select-listbox');
+    const initialChecks = descendants(listbox).filter((node) => node.className === 'stx-ui-select-check');
+    assert.equal(initialChecks.filter((node) => node.hidden === false).length, 1);
     trigger.focus();
     trigger.dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {} });
     assert.equal(trigger.getAttribute('aria-expanded'), 'true');
@@ -219,6 +222,7 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
     const session = runtime.connect(pluginDescriptor('example.legacy-theme'));
     const saved = [];
+    let emitSettings;
     let popupInput;
     const popupToken = { kind: 'popup', provider: 'example.legacy-theme', name: 'tools', version: 1 };
     session.registerPopup({ token: popupToken, title: 'Tools', render: (_popupContainer, input) => { popupInput = input; } });
@@ -242,6 +246,7 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
       load: async () => ({ enabled: true, volume: 3, strict: false, strategy: 'auto', sources: ['chat'], count: 12 }),
       save: async (values) => { saved.push(values); if (values.volume === 10) throw new Error('adapter failed'); },
       reset: async () => ({ enabled: false, volume: 0, strict: false, strategy: 'auto', sources: ['chat'], count: 1 }),
+      subscribe: (listener) => { emitSettings = listener; return () => {}; },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -250,6 +255,11 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     let center = document.getElementById(SETTINGS_CENTER_ID);
     descendants(center).find((node) => node.dataset.pluginId === 'example.legacy-theme').dispatchEvent({ type: 'click' });
     center = document.getElementById(SETTINGS_CENTER_ID);
+    const scrollArea = descendants(center).find((node) => node.classList.contains('stx-center-scroll'));
+    scrollArea.scrollTop = 173;
+    emitSettings({ enabled: true, volume: 3, strict: false, strategy: 'auto', sources: ['chat'], count: 12 });
+    center = document.getElementById(SETTINGS_CENTER_ID);
+    assert.equal(descendants(center).find((node) => node.classList.contains('stx-center-scroll')).scrollTop, 173);
 
     const tabButtons = descendants(center).filter((node) => node.dataset.tabId);
     const tabPanels = descendants(center).filter((node) => node.dataset.tabPanel);
@@ -272,11 +282,15 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     assert.equal(descendants(footerActions).some((node) => node.tagName === 'BUTTON' && node.textContent === '旧版底栏动作'), true);
     const inlineActionButton = descendants(inlineActionRow).find((node) => node.tagName === 'BUTTON');
     assert.equal(inlineActionButton.textContent, '进入工具');
+    assert.equal(inlineActionButton.id, 'ss-helper-example-legacy-theme-open');
     assert.ok(inlineActionButton.getAttribute('aria-describedby'));
     const savesBeforeAction = saved.length;
     inlineActionButton.dispatchEvent({ type: 'click' });
     assert.deepEqual(popupInput, { actionId: 'open' });
     assert.equal(saved.length, savesBeforeAction);
+    const actionPopup = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    actionPopup.children[0].dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    assert.equal(document.activeElement, inlineActionButton);
     const disabledActionButton = descendants(center).find((node) => node.dataset.fieldId === 'danger').children
       .flatMap((node) => [node, ...descendants(node)]).find((node) => node.tagName === 'BUTTON');
     assert.equal(disabledActionButton.disabled, true);
@@ -294,12 +308,21 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
 
     search.value = '预算';
     search.dispatchEvent({ type: 'input' });
-    const volume = descendants(center).find((node) => node.dataset.fieldId === 'volume').children
-      .flatMap((node) => [node, ...descendants(node)]).find((node) => node.tagName === 'INPUT');
-    const output = descendants(center).find((node) => node.tagName === 'OUTPUT');
+    const volumeInputs = descendants(center).find((node) => node.dataset.fieldId === 'volume').children
+      .flatMap((node) => [node, ...descendants(node)]).filter((node) => node.tagName === 'INPUT');
+    const volume = volumeInputs.find((node) => node.type === 'range');
+    const volumeNumber = volumeInputs.find((node) => node.type === 'number');
+    assert.ok(volume);
+    assert.ok(volumeNumber);
+    assert.equal(descendants(center).some((node) => node.tagName === 'OUTPUT'), false);
     volume.value = '7';
     volume.dispatchEvent({ type: 'input' });
-    assert.equal(output.textContent, '7');
+    assert.equal(volumeNumber.value, '7');
+    volumeNumber.value = '8';
+    volumeNumber.dispatchEvent({ type: 'input' });
+    volumeNumber.dispatchEvent({ type: 'blur' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(saved.at(-1).volume, 8);
     volume.value = '10';
     volume.dispatchEvent({ type: 'change' });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -427,6 +450,82 @@ test('workspace popup exposes a stable presentation marker and shared chrome', (
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
     assert.equal(document.activeElement, opener);
     assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 1 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('PAYLOAD_INVALID'));
+  } finally { restore(); }
+});
+
+test('popup restores focus to a rerendered opener with the same stable id', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const opener = document.createElement('button'); opener.id = 'stable-popup-opener'; document.body.append(opener); opener.focus();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.popup-focus'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-focus', name: 'focus', version: 1 });
+    session.registerPopup({ token, title: 'Focus', render: () => {} });
+    session.ui.openPopup(token, {});
+    const replacement = document.createElement('button'); replacement.id = opener.id;
+    opener.remove(); opener.isConnected = false; document.body.append(replacement);
+    const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    overlay.children[0].dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    assert.equal(document.activeElement, replacement);
+  } finally { restore(); }
+});
+
+test('popup public controls share Core styles and enhance native selects idempotently', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.popup-controls'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-controls', name: 'controls', version: 1 });
+    let nativeSelect;
+    let changes = 0;
+    session.registerPopup({
+      token,
+      title: 'Controls',
+      closeLabel: '关闭控件测试',
+      render: (container, _input, ui) => {
+        const label = document.createElement('label'); label.textContent = '模式';
+        nativeSelect = document.createElement('select'); nativeSelect.setAttribute('data-ss-helper-control', 'select'); nativeSelect.setAttribute('aria-label', '模式');
+        const first = document.createElement('option'); first.value = 'a'; first.textContent = 'A'; first.selected = true;
+        const second = document.createElement('option'); second.value = 'b'; second.textContent = 'B';
+        nativeSelect.value = 'a'; nativeSelect.append(first, second); nativeSelect.addEventListener('change', () => { changes += 1; });
+        label.append(nativeSelect); container.append(label);
+        ui?.refreshControls(container); ui?.refreshControls(container);
+      },
+    });
+    session.ui.openPopup(token, {});
+    const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    const dialog = overlay.children[0];
+    const controls = descendants(dialog);
+    const shells = controls.filter((node) => node.className === 'stx-ui-select-wrap');
+    assert.equal(shells.length, 1);
+    assert.equal(nativeSelect.hidden, true);
+    assert.equal(nativeSelect.getAttribute('aria-hidden'), 'true');
+    const trigger = shells[0].children[0];
+    trigger.dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {}, stopPropagation() {} });
+    trigger.dispatchEvent({ type: 'keydown', key: 'ArrowDown', preventDefault() {}, stopPropagation() {} });
+    trigger.dispatchEvent({ type: 'keydown', key: 'Enter', preventDefault() {}, stopPropagation() {} });
+    assert.equal(nativeSelect.value, 'b');
+    assert.equal(changes, 1);
+    assert.equal(shells[0].children[1].children[0].getAttribute('aria-selected'), 'false');
+    assert.equal(shells[0].children[1].children[1].getAttribute('aria-selected'), 'true');
+    assert.equal(shells[0].children[1].children[1].children[1].hidden, false);
+    const closeButton = dialog.children[0].children[1];
+    assert.equal(closeButton.getAttribute('aria-label'), '关闭控件测试');
+    assert.match(closeButton.children[0].className, /fa-xmark/u);
+    dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    assert.equal(nativeSelect.hidden, false);
+    const styles = document.body.children.find((node) => node.dataset.ssHelperStyle === 'core-ui').textContent;
+    assert.match(styles, /\[data-ss-helper-popup\].*--ss-theme-surface/su);
+    assert.match(styles, /padding-inline-start:\s*var\(--ss-control-input-padding-inline-start,\s*11px\)/u);
+    assert.match(styles, /padding-inline-end:\s*var\(--ss-control-input-padding-inline-end,\s*11px\)/u);
+    for (const kind of ['button', 'input', 'textarea', 'checkbox', 'status', 'progress', 'file-trigger']) {
+      assert.ok(styles.includes(`data-ss-helper-control="${kind}"`));
+    }
+    for (const tone of ['neutral', 'primary', 'danger', 'success', 'warning', 'error']) {
+      assert.ok(styles.includes(`data-ss-helper-tone="${tone}"`));
+    }
   } finally { restore(); }
 });
 

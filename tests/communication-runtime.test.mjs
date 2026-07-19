@@ -39,6 +39,27 @@ test('structurally equal service tokens interoperate and late availability has n
   await assert.rejects(caller.services.call(copiedToken, { value: 'no' }), errorCode('UNKNOWN_SERVICE'));
 });
 
+test('service errors from a separately bundled SDK retain their safe code, message, and details', async () => {
+  const { provider, caller } = setup();
+  const token = service('example.provider', 'foreign-error');
+  class ForeignSSHelperError extends Error {
+    constructor() {
+      super('provider returned invalid JSON');
+      this.name = 'SSHelperError';
+      this.code = 'PAYLOAD_INVALID';
+      this.details = { phase: 'handler', reasonCode: 'invalid_json' };
+    }
+  }
+  provider.services.expose(token, async () => { throw new ForeignSSHelperError(); });
+
+  await assert.rejects(
+    caller.services.call(token, {}),
+    (error) => error?.code === 'PAYLOAD_INVALID'
+      && error?.message === 'provider returned invalid JSON'
+      && error?.details?.reasonCode === 'invalid_json',
+  );
+});
+
 test('service version/schema mismatch, namespace, validators, and plain-data boundaries fail closed', async () => {
   const { provider, caller } = setup();
   const token = service('example.provider', 'checked', 1, {

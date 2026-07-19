@@ -1,6 +1,6 @@
 import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES } from '@ss-helper/sdk';
 import type {
-  ChatMessageInput, ChatMessageSnapshot, ChatSnapshot, GenerationResult, GenerationSnapshot,
+  ChatMessageInput, ChatMessageSnapshot, ChatSnapshot, GenerationRequest, GenerationResult, GenerationSnapshot,
   HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName,
   HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse,
   PluginBinaryBodyV1, PluginBinaryRequestV1, PluginBinaryResponseV1, PluginJsonAcknowledgementV1,
@@ -43,6 +43,26 @@ const messageVariables = (value: unknown): MessageVariablesSnapshot | undefined 
 };
 const integer = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 const finite = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+const generationSelection = (context: UnknownRecord): { readonly provider?: string; readonly model?: string; readonly connected: boolean } => {
+  const mainApi = text(context.mainApi) ?? text(context.main_api);
+  const onlineStatus = text(context.onlineStatus) ?? text(context.online_status);
+  const connected = onlineStatus !== undefined && onlineStatus !== 'no_connection';
+  const chatCompletionSettings = record(context.chatCompletionSettings) ?? record(context.chat_completion_settings);
+  if (mainApi === 'openai' && chatCompletionSettings !== undefined) {
+    const provider = text(chatCompletionSettings.chat_completion_source) ?? mainApi;
+    const modelKey = provider === 'makersuite' ? 'google_model' : `${provider}_model`;
+    const model = text(chatCompletionSettings[modelKey]);
+    return { connected, ...(provider === undefined ? {} : { provider }), ...(model === undefined ? {} : { model }) };
+  }
+  const model = mainApi === 'kobold' || mainApi === 'textgenerationwebui' || (mainApi === 'openai' && chatCompletionSettings === undefined)
+    ? onlineStatus
+    : undefined;
+  return { connected, ...(mainApi === undefined ? {} : { provider: mainApi }), ...(model === undefined || !connected ? {} : { model }) };
+};
+const generationSnapshot = (context: UnknownRecord, active = context.is_send_press === true): GenerationSnapshot => {
+  const selected = generationSelection(context);
+  return { active, ...(selected.provider === undefined ? {} : { provider: selected.provider }), ...(selected.model === undefined ? {} : { model: selected.model }) };
+};
 const decodeBase64 = (value: string): Uint8Array<ArrayBuffer> => {
   const decoded = atob(value);
   const output = new Uint8Array(decoded.length);
@@ -109,6 +129,13 @@ const identity = (context: UnknownRecord, characterId?: unknown): HostIdentitySn
   ...(characterId === undefined && context.characterId === undefined ? {} : { characterId: String(characterId ?? context.characterId) }),
   ...(context.groupId === undefined ? {} : { groupId: String(context.groupId) }),
 });
+const persona = (context: UnknownRecord): HostPersonaSnapshot | null => {
+  const name = text(context.name1);
+  if (name === undefined) return null;
+  const settings = record(context.powerUserSettings) ?? record(context.power_user);
+  const description = text(settings?.persona_description) ?? text(context.persona_description);
+  return { name, ...(text(context.user_avatar) === undefined ? {} : { avatar: text(context.user_avatar) }), ...(description === undefined ? {} : { description }) };
+};
 const messageEvent = (name: 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted', context: UnknownRecord, payload: unknown): HostEvent => {
   const item = record(payload);
   const index = integer(payload) ?? integer(item?.index) ?? integer(item?.messageId);
@@ -133,9 +160,10 @@ const generationUsage = (...args: unknown[]): GenerationSnapshot['usage'] => {
 const generationEvent = (name: 'generation-started' | 'generation-ended' | 'generation-config-changed', context: UnknownRecord, args: unknown[]): HostEvent => {
   const usage = generationUsage(...args);
   const key = chatKey(context);
+  const snapshot = generationSnapshot(context, name === 'generation-started');
   return {
     name, ...(key === undefined || name === 'generation-config-changed' ? {} : { chatKey: key }),
-    generation: { active: name === 'generation-started', ...(text(context.main_api) === undefined ? {} : { provider: text(context.main_api) }), ...(text(context.online_status) === undefined ? {} : { model: text(context.online_status) }), ...(usage === undefined ? {} : { usage }) },
+    generation: { ...snapshot, ...(usage === undefined ? {} : { usage }) },
   };
 };
 const promptEvent = (context: UnknownRecord, payload: unknown): HostEvent => {
@@ -185,7 +213,7 @@ const worldbookData = (snapshot: WorldbookSnapshot, current: unknown): UnknownRe
 export interface SillyTavernHostBridge { readonly capabilities: readonly HostCapability[]; readonly hostAdapter: TavernHostAdapter; }
 
 export function createSillyTavernHostBridge(target: typeof globalThis = globalThis): SillyTavernHostBridge {
-  const root = target as typeof globalThis & { SillyTavern?: { getContext?: () => unknown }; eventSource?: unknown; event_types?: unknown; setExtensionPrompt?: unknown; getRequestHeaders?: unknown };
+  const root = target as typeof globalThis & { SillyTavern?: { getContext?: () => unknown }; eventSource?: unknown; eventTypes?: unknown; event_types?: unknown; setExtensionPrompt?: unknown; getRequestHeaders?: unknown };
   const getContext = (): UnknownRecord => record(root.SillyTavern?.getContext?.()) ?? {};
   const initial = getContext();
   const capabilities: HostCapability[] = [];
@@ -196,9 +224,9 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
     adapter.context = { read: async (): Promise<HostContextSnapshot> => { const c = getContext(); const key = chatKey(c); return { ...(key === undefined ? {} : { chatId: key, chatKey: key }), ...(c.characterId === undefined ? {} : { characterId: String(c.characterId) }), ...(c.groupId === undefined ? {} : { groupId: String(c.groupId) }) }; } };
     adapter.identity = { read: async (): Promise<HostIdentitySnapshot> => identity(getContext()) };
     adapter.character = { read: async (): Promise<HostCharacterSnapshot | null> => { const c = getContext(); const chars = Array.isArray(c.characters) ? c.characters : []; const raw = record(chars[Number(c.characterId)]); if (raw === undefined) return null; return { id: text(raw.avatar) ?? String(c.characterId ?? ''), name: text(raw.name) ?? text(c.name2) ?? '', ...(text(raw.avatar) === undefined ? {} : { avatar: text(raw.avatar) }), ...(text(raw.description) === undefined ? {} : { description: text(raw.description) }), ...(text(raw.personality) === undefined ? {} : { personality: text(raw.personality) }), ...(text(raw.scenario) === undefined ? {} : { scenario: text(raw.scenario) }), ...(text(raw.first_mes) === undefined ? {} : { firstMessage: text(raw.first_mes) }), ...(text(raw.mes_example) === undefined ? {} : { exampleMessages: text(raw.mes_example) }) }; } };
-    adapter.persona = { read: async (): Promise<HostPersonaSnapshot | null> => { const c = getContext(); const name = text(c.name1); if (name === undefined) return null; return { name, ...(text(c.user_avatar) === undefined ? {} : { avatar: text(c.user_avatar) }), ...(text(c.persona_description) === undefined ? {} : { description: text(c.persona_description) }) }; } };
+    adapter.persona = { read: async (): Promise<HostPersonaSnapshot | null> => persona(getContext()) };
     adapter.chat = {
-      readCurrent: async (): Promise<ChatSnapshot | null> => { const c = getContext(); const list = Array.isArray(c.chat) ? c.chat : []; const key = text(c.chatId) ?? text(c.chat_id) ?? text(c.chatFile); const name = chatDisplayName(c); const value = retainedPlain(c.chat_metadata); const variables: Readonly<Record<string, PlainData>> | undefined = value !== undefined && !Array.isArray(value) && value !== null && typeof value === 'object' ? value as Readonly<Record<string, PlainData>> : undefined; return key === undefined ? null : { key, messageCount: list.length, messages: list.map(message), ...(name === undefined ? {} : { name }), ...(variables === undefined ? {} : { variables }) }; },
+      readCurrent: async (): Promise<ChatSnapshot | null> => { const c = getContext(); const list = Array.isArray(c.chat) ? c.chat : []; const key = text(c.chatId) ?? text(c.chat_id) ?? text(c.chatFile); const name = chatDisplayName(c); const value = retainedPlain(c.chatMetadata ?? c.chat_metadata); const variables: Readonly<Record<string, PlainData>> | undefined = value !== undefined && !Array.isArray(value) && value !== null && typeof value === 'object' ? value as Readonly<Record<string, PlainData>> : undefined; return key === undefined ? null : { key, messageCount: list.length, messages: list.map(message), ...(name === undefined ? {} : { name }), ...(variables === undefined ? {} : { variables }) }; },
       readMessages: async () => { const c = getContext(); return (Array.isArray(c.chat) ? c.chat : []).map(message); },
       list: async () => [],
       append: async (input: ChatMessageInput) => { const c = getContext(); const add = fn(c.addOneMessage); if (add === undefined) throw new Error('append unavailable'); const raw = { name: input.name ?? (input.role === 'user' ? c.name1 : c.name2), is_user: input.role === 'user', is_system: input.role === 'system', mes: input.text, variables: input.variables }; await add.call(c, raw); const list = Array.isArray(c.chat) ? c.chat : []; return message(list.at(-1) ?? raw, Math.max(0, list.length - 1)); },
@@ -210,26 +238,32 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
   }
 
   const eventSource = record(initial.eventSource) ?? record(root.eventSource);
-  const eventTypes = record(initial.event_types) ?? record(root.event_types) ?? {};
+  const eventTypes = record(initial.eventTypes) ?? record(initial.event_types) ?? record(root.eventTypes) ?? record(root.event_types) ?? {};
   const on = fn(eventSource?.on); const off = fn(eventSource?.off) ?? fn(eventSource?.removeListener);
   if (eventSource !== undefined && on !== undefined && off !== undefined) {
     capabilities.push('tavern.chat.events');
     const names: Record<HostEventName, string> = { 'chat-changed': 'CHAT_CHANGED', 'message-received': 'MESSAGE_RECEIVED', 'message-sent': 'MESSAGE_SENT', 'message-edited': 'MESSAGE_EDITED', 'message-deleted': 'MESSAGE_DELETED', 'generation-started': 'GENERATION_STARTED', 'generation-ended': 'GENERATION_ENDED', 'generation-config-changed': 'GENERATION_CONFIG_CHANGED', 'prompt-ready': 'CHAT_COMPLETION_PROMPT_READY', 'worldbook-updated': 'WORLDINFO_UPDATED', 'identity-changed': 'CHARACTER_EDITED' };
     adapter.events = { subscribe: (name, listener) => {
-      const hostNames = name === 'generation-config-changed'
-        ? ['MAIN_API_CHANGED', 'ONLINE_STATUS_CHANGED'].map((key) => String(eventTypes[key] ?? key))
-        : [String(eventTypes[names[name]] ?? names[name])];
-      const callback = (...args: unknown[]): void => {
+      const primaryKeys = name === 'generation-config-changed' ? ['MAIN_API_CHANGED', 'ONLINE_STATUS_CHANGED'] : [names[name]];
+      const optionalKeys = name === 'generation-config-changed'
+        ? ['CHATCOMPLETION_SOURCE_CHANGED', 'CHATCOMPLETION_MODEL_CHANGED', 'CONNECTION_PROFILE_LOADED', 'CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED']
+        : name === 'identity-changed' ? ['PERSONA_CHANGED', 'PERSONA_UPDATED', 'PERSONA_RENAMED', 'PERSONA_DELETED', 'GROUP_UPDATED'] : [];
+      const keys = [...primaryKeys, ...optionalKeys.filter((key) => text(eventTypes[key]) !== undefined)];
+      const subscriptions = [...new Set(keys.map((key) => `${key}\u0000${String(eventTypes[key] ?? key)}`))].map((entry) => {
+        const [key, hostName] = entry.split('\u0000', 2) as [string, string];
+        const callback = (...args: unknown[]): void => {
         const context = getContext();
         if (name === 'chat-changed') listener({ name, chatKey: text(args[0]) ?? chatKey(context) ?? '' });
         else if (name === 'message-received' || name === 'message-sent' || name === 'message-edited' || name === 'message-deleted') listener(messageEvent(name, context, args[0]));
         else if (name === 'generation-started' || name === 'generation-ended' || name === 'generation-config-changed') listener(generationEvent(name, context, args));
         else if (name === 'prompt-ready') listener(promptEvent(context, args[0]));
         else if (name === 'worldbook-updated') listener(worldbookEvent(context, args[0], args[1]));
-        else { const detail = record(record(args[0])?.detail); listener({ name, identity: identity(context, detail?.id) }); }
-      };
-      hostNames.forEach((hostName) => on.call(eventSource, hostName, callback));
-      return () => { hostNames.forEach((hostName) => off.call(eventSource, hostName, callback)); };
+        else { const detail = key === 'CHARACTER_EDITED' ? record(record(args[0])?.detail) : undefined; listener({ name, identity: identity(context, detail?.id) }); }
+        };
+        on.call(eventSource, hostName, callback);
+        return { hostName, callback };
+      });
+      return () => { subscriptions.forEach(({ hostName, callback }) => off.call(eventSource, hostName, callback)); };
     } };
   }
 
@@ -271,8 +305,29 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
     } };
   }
 
-  const generate = fn(initial.generate) ?? fn(initial.generateQuietPrompt);
-  if (generate !== undefined) { capabilities.push('tavern.generation.read', 'tavern.generation.execute'); adapter.generation = { available: async () => true, models: async () => { const c = getContext(); const model = text(c.online_status) ?? text(c.main_api); return model === undefined ? [] : [model]; }, current: async (): Promise<GenerationSnapshot> => { const c = getContext(); return { active: c.is_send_press === true, ...(text(c.main_api) === undefined ? {} : { provider: text(c.main_api) }), ...(text(c.online_status) === undefined ? {} : { model: text(c.online_status) }) }; }, generate: async (request): Promise<GenerationResult> => ({ text: String(await generate.call(getContext(), request.prompt, request.quiet ?? false)), ...(request.model === undefined ? {} : { model: request.model }) }), test: async (request): Promise<GenerationResult> => ({ text: String(await generate.call(getContext(), request.prompt, true)), ...(request.model === undefined ? {} : { model: request.model }) }) }; }
+  const generateQuietPrompt = fn(initial.generateQuietPrompt);
+  if (generateQuietPrompt !== undefined) {
+    const generateRaw = fn(initial.generateRaw);
+    const execute = async (request: GenerationRequest): Promise<GenerationResult> => {
+      const context = getContext();
+      const result = request.contextMode === 'isolated'
+        ? await (() => {
+          if (generateRaw === undefined) throw new Error('SillyTavern isolated generation is unavailable');
+          return generateRaw.call(context, {
+            prompt: request.prompt,
+            ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
+          });
+        })()
+        : await generateQuietPrompt.call(context, {
+          quietPrompt: request.prompt,
+          ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
+        });
+      const selected = generationSelection(getContext());
+      return { text: String(result ?? ''), ...(selected.provider === undefined ? {} : { provider: selected.provider }), ...(selected.model === undefined ? {} : { model: selected.model }) };
+    };
+    capabilities.push('tavern.generation.read', 'tavern.generation.execute');
+    adapter.generation = { available: async () => generationSelection(getContext()).connected, models: async () => { const model = generationSelection(getContext()).model; return model === undefined ? [] : [model]; }, current: async (): Promise<GenerationSnapshot> => generationSnapshot(getContext()), generate: execute, test: execute };
+  }
 
   const loadWorldInfo = fn(initial.loadWorldInfo);
   const saveWorldInfo = fn(initial.saveWorldInfo);
