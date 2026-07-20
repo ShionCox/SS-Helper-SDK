@@ -5,6 +5,7 @@ import {
   LLM_RERANK_V1,
   LLM_STRUCTURED_TASK_V1,
   MEMORY_RECALL_V1,
+  MEMORY_GRAPH_V1,
   MEMORY_UPDATED_V1,
 } from '../packages/sdk/dist/index.js';
 import { installCoreRuntime } from '../apps/core-extension/dist/index.js';
@@ -29,7 +30,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
     throw new Error('network is forbidden in the deterministic contract fixture');
   };
 
-  const waits = [LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, MEMORY_RECALL_V1]
+  const waits = [LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, MEMORY_RECALL_V1, MEMORY_GRAPH_V1]
     .map((contract) => consumer.services.waitFor(contract, { timeoutMs: 100 }));
   const removers = [
     llm.services.expose(LLM_STRUCTURED_TASK_V1, (request, context) => ({
@@ -52,6 +53,10 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
     })),
     memory.services.expose(MEMORY_RECALL_V1, (request) => ({
       items: [{ id: `${request.chatKey}:1`, text: `remember:${request.query}`, score: 1, source: 'fixture' }],
+    })),
+    memory.services.expose(MEMORY_GRAPH_V1, (request) => ({
+      nodes: [{ id: `${request.chatKey}:node-a`, label: 'A' }, { id: `${request.chatKey}:node-b`, label: 'B' }],
+      edges: [{ id: `${request.chatKey}:edge-a`, from: `${request.chatKey}:node-a`, to: `${request.chatKey}:node-b`, predicate: 'knows', kind: 'relationship', confidence: 0.9, backingFactId: `${request.chatKey}:fact-a` }],
     })),
   ];
 
@@ -86,6 +91,10 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       await consumer.services.call(MEMORY_RECALL_V1, { query: 'name', chatKey: 'chat-a', limit: 1 }),
       { items: [{ id: 'chat-a:1', text: 'remember:name', score: 1, source: 'fixture' }] },
     );
+    assert.deepEqual(
+      await consumer.services.call(MEMORY_GRAPH_V1, { query: 'A', chatKey: 'chat-a', limit: 4 }),
+      { nodes: [{ id: 'chat-a:node-a', label: 'A' }, { id: 'chat-a:node-b', label: 'B' }], edges: [{ id: 'chat-a:edge-a', from: 'chat-a:node-a', to: 'chat-a:node-b', predicate: 'knows', kind: 'relationship', confidence: 0.9, backingFactId: 'chat-a:fact-a' }] },
+    );
 
     const updates = [];
     const unsubscribe = consumer.events.subscribe(MEMORY_UPDATED_V1, (payload) => updates.push(payload));
@@ -96,7 +105,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
     assert.equal(networkCalls, 0);
     assert.deepEqual(
       { handlers: runtime.port.diagnostics().handlers, pending: runtime.port.diagnostics().pending },
-      { handlers: 4, pending: 0 },
+      { handlers: 5, pending: 0 },
     );
   } finally {
     removers.reverse().forEach((remove) => remove());

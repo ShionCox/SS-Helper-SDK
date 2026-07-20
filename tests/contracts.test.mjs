@@ -6,7 +6,7 @@ import {
   API_MAJOR, API_MINOR, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY, CORE_PLUGIN_ID,
   LLM_COMPLETION_V1, LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1,
   LLM_ROUTE_DIAGNOSTICS_V1, LLM_PLUGIN_ID, LLM_ROUTE_CHANGED_V1, MEMORY_PLUGIN_ID, MEMORY_RECALL_V1,
-  MEMORY_UPDATED_V1, PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, SDK_PACKAGE_VERSION, SS_HELPER_ERROR_CODES,
+  MEMORY_UPDATED_V1, MEMORY_GRAPH_V1, PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, SDK_PACKAGE_VERSION, SS_HELPER_ERROR_CODES,
   isPluginBinaryRequestV1, isPluginBinaryResponseV1,
 } from '../packages/sdk/dist/index.js';
 
@@ -36,7 +36,30 @@ test('tokens are structural, frozen contracts', () => {
   assert.equal(Object.isFrozen(LLM_COMPLETION_V1), true);
   assert.equal(Object.isFrozen(LLM_ROUTE_CHANGED_V1), true);
   assert.equal(Object.isFrozen(MEMORY_RECALL_V1), true);
+  assert.equal(Object.isFrozen(MEMORY_GRAPH_V1), true);
   assert.equal(Object.isFrozen(MEMORY_UPDATED_V1), true);
+});
+
+test('memory graph v1 only accepts safe read-only DTOs', () => {
+  const request = { chatKey: 'chat-a', query: '艾琳与雷暴', limit: 12 };
+  const response = {
+    nodes: [{ id: 'graph-node:1', label: '艾琳' }, { id: 'graph-node:2', label: '雷暴' }],
+    edges: [{ id: 'graph-edge:1', from: 'graph-node:1', to: 'graph-node:2', predicate: '害怕', kind: 'relationship', confidence: 0.9, backingFactId: 'fact:1' }],
+  };
+  assert.equal(MEMORY_GRAPH_V1.validateRequest(request), true);
+  assert.equal(MEMORY_GRAPH_V1.validateResponse(response), true);
+  assert.equal(MEMORY_GRAPH_V1.validateRequest({ ...request, limit: 0 }), false);
+  assert.equal(MEMORY_GRAPH_V1.validateRequest({ ...request, evidence: 'secret' }), false);
+  assert.equal(MEMORY_GRAPH_V1.validateResponse({ ...response, edges: [{ ...response.edges[0], evidenceExcerpt: 'chat text' }] }), false);
+  assert.equal(MEMORY_GRAPH_V1.validateResponse({ ...response, nodes: [{ ...response.nodes[0], chatKey: 'chat-a' }] }), false);
+  assert.equal(MEMORY_GRAPH_V1.validateResponse({
+    nodes: Array.from({ length: 100 }, (_, index) => ({ id: `node:${index}`, label: `节点 ${index}` })),
+    edges: response.edges,
+  }), true);
+  assert.equal(MEMORY_GRAPH_V1.validateResponse({
+    nodes: Array.from({ length: 101 }, (_, index) => ({ id: `node:${index}`, label: `节点 ${index}` })),
+    edges: response.edges,
+  }), false);
 });
 
 test('binary plugin request v1 validators keep bytes narrow, canonical, and PlainData-safe', () => {
