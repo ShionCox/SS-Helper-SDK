@@ -49,11 +49,17 @@ health, and reload behavior consistently. A plugin-specific workbench may open
 only through its registered popup/dialog, never through an extra top-level
 settings card or direct legacy-settings-container mount.
 
-Server-side consumers access shared data through `session.workspace`; use
-`open/defineCollection/query/transaction` for records and
-`secretSet/secretGet/secretDelete/secretList` for credentials. The SDK creates
-`data/_ss-helper/ss-helper.sqlite3` and its AES-256-GCM key on first startup.
-Backups never contain Secret values.
+Browser consumers access shared data only through `session.workspace` and the
+capability-gated `session.secrets`; the Core-owned internal bridge is the only
+browser storage transport. Use `open/defineCollection/query/transaction` for
+records and `secrets.set/get/delete/list` for credentials. The server plugin
+creates `data/_ss-helper/ss-helper.sqlite3` and its AES-256-GCM key on first
+startup. Backups never contain Secret values.
+
+SillyTavern extensions share one origin and therefore use a cooperative trust
+model. The internal bridge removes public generic workspace CRUD endpoints,
+headers, and accidental caller spoofing from consumer APIs, but it cannot make
+an actively malicious same-origin extension a fully isolated security subject.
 
 ## Commands
 

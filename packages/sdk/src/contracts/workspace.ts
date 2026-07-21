@@ -3,6 +3,12 @@ import type { PlainData } from './plain-data.js';
 export type WorkspaceAction = 'read' | 'write' | 'vector' | 'backup';
 export interface WorkspaceHealth {
   readonly ready: boolean;
+  /** Older Core releases omit this; use ready for the compatible baseline. */
+  readonly status?: 'ready' | 'degraded';
+  /** Stable safe diagnostic code. Never contains a path or SQLite message. */
+  readonly errorCode?: string;
+  /** Whether an explicit user-confirmed backup and reinitialisation is offered. */
+  readonly recoverable?: boolean;
   readonly database: string;
   readonly schemaVersion: number;
   /** 服务端实际运行的 Node.js 版本。旧版 Core 可能不返回。 */
@@ -55,6 +61,8 @@ export interface WorkspaceOwnerBackup { readonly format: 'ss-helper-workspace-ow
 export interface WorkspaceBackupExportRequest { readonly workspaceId: string; readonly ownerPluginId?: string; }
 export interface WorkspaceBackupImportRequest { readonly workspaceId: string; readonly ownerPluginId?: string; readonly archive: WorkspaceBackup; readonly sha256: string; }
 export interface WorkspaceOwnerBackupImportRequest { readonly archive: WorkspaceOwnerBackup; readonly sha256: string; }
+export interface WorkspaceRecoveryRepairRequest { readonly confirm: true; }
+export interface WorkspaceRecoveryRepairResult { readonly backupId: string; readonly requiresReload: true; }
 
 export interface WorkspacePort {
   health(): Promise<WorkspaceHealth>;
@@ -80,4 +88,5 @@ export interface WorkspacePort {
   import(request: WorkspaceBackupImportRequest): Promise<void>;
   exportAll(): Promise<{ readonly archive: WorkspaceOwnerBackup; readonly sha256: string }>;
   importAll(request: WorkspaceOwnerBackupImportRequest): Promise<void>;
+  repair(request: WorkspaceRecoveryRepairRequest): Promise<WorkspaceRecoveryRepairResult>;
 }

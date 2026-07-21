@@ -18,6 +18,7 @@ import { PopupHost } from '../popup/popup-host.js';
 import { ToastHost } from '../toast/toast-host.js';
 import { SettingsHost } from '../settings/settings-host.js';
 import type { TavernHostAdapter } from '../host/tavern-host-port.js';
+import { InternalBridgeClient } from '../bridge/internal-bridge.js';
 
 export interface CoreRuntimeIdentity {
   readonly coreVersion: string;
@@ -78,10 +79,11 @@ export class CoreRuntime {
     this.settings = new SettingsHost(this.descriptor);
     this.popups = new PopupHost(document);
     this.toasts = new ToastHost(document, this.diagnosticsStore);
+    const bridge = new InternalBridgeClient(options.hostAdapter ?? {});
     this.plugins = new PluginRegistry(
       generation, identity.apiMajor, identity.apiMinor, capabilities,
       () => this.#active, this.services, this.events, this.diagnosticsStore,
-      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts,
+      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, bridge,
     );
     if (options.settingsContainer !== undefined) this.settings.mount(options.settingsContainer);
     this.port = Object.freeze({

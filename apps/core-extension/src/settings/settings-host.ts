@@ -12,7 +12,6 @@ import {
   type SettingsStatusSnapshot,
   type SettingsTone,
   type SettingsValues,
-  type WorkspaceHealth,
 } from '@ss-helper/sdk';
 import type { SessionScope } from '../plugins/session-scope.js';
 import { ensureCoreUiStyles } from '../styles/settings-styles.js';
@@ -71,12 +70,6 @@ interface DebouncedSave {
   readonly flush: () => void;
 }
 
-type WorkspaceHealthState =
-  | { readonly state: 'idle' }
-  | { readonly state: 'loading' }
-  | { readonly state: 'healthy'; readonly value: WorkspaceHealth }
-  | { readonly state: 'degraded'; readonly value?: WorkspaceHealth; readonly message?: string };
-
 const OVERVIEW_ID = 'overview';
 
 function formatReleaseVersion(version: string): string {
@@ -87,6 +80,16 @@ const SETTINGS_FIELD_KINDS = new Set([
   'section', 'toggle', 'checkbox', 'text', 'number', 'range', 'select', 'radio', 'multiSelect', 'action', 'status',
 ]);
 const SETTINGS_TONES = new Set<SettingsTone>(['neutral', 'success', 'warning', 'error']);
+
+/**
+ * Emits static, opt-in checkpoints for the isolated browser smoke fixture.
+ * It deliberately contains no setting values, chat data, or diagnostics.
+ */
+function traceSettingsRender(stage: string): void {
+  const probe = globalThis as typeof globalThis & { __SSHelperMemoryStartupTrace?: unknown };
+  const memoryStage = stage.includes('memory') || stage.endsWith(':ss-helper.memory');
+  if (probe.__SSHelperMemoryStartupTrace === true && memoryStage) console.info(`[SS-Helper Core] 设置检查点：${stage}`);
+}
 
 function settingsValuesEqual(left: SettingsValues, right: SettingsValues): boolean {
   const leftEntries = Object.entries(left);
@@ -272,7 +275,7 @@ export class SettingsHost {
   #root: HTMLElement | undefined;
   #center: SettingsCenterController | undefined;
   #activePluginId = OVERVIEW_ID;
-  #workspaceHealth: WorkspaceHealthState = { state: 'idle' };
+  #renderFrame: number | undefined;
 
   constructor(readonly core: CoreDescriptor) {}
 
@@ -323,7 +326,7 @@ export class SettingsHost {
             contribution.values = validated;
             contribution.committedValues = validated;
             contribution.health = 'healthy';
-            this.#renderAll();
+            this.#syncValuesUi(contribution);
           } catch { this.#degrade(contribution); }
         });
       } catch { this.#degrade(contribution); }
@@ -345,7 +348,7 @@ export class SettingsHost {
           try {
             contribution.fieldState = validateFieldStateMap(contribution.schema, state, 'settings_field_state_subscribe');
             contribution.fieldStateRevision += 1;
-            this.#renderAll();
+            this.#syncFieldStateUi(contribution);
           } catch { this.#degrade(contribution); }
         });
       } catch { this.#degrade(contribution); }
@@ -365,7 +368,7 @@ export class SettingsHost {
       this.#fieldErrors.delete(identity.id);
       this.#cancelDebouncedSaves(identity.id);
       if (this.#activePluginId === identity.id) this.#activePluginId = OVERVIEW_ID;
-      this.#renderAll();
+      this.#scheduleRender();
     });
   }
 
@@ -379,7 +382,7 @@ export class SettingsHost {
       contribution.health = 'healthy';
       contribution.saveState = 'idle';
       delete contribution.lastError;
-      this.#renderAll();
+      this.#syncValuesUi(contribution);
     } catch { if (contribution.active) this.#degrade(contribution); }
   }
 
@@ -401,7 +404,7 @@ export class SettingsHost {
       const state = validateFieldStateMap(contribution.schema, await contribution.adapter.loadFieldState(), 'settings_field_state_load');
       if (!contribution.active || revision !== contribution.fieldStateRevision) return;
       contribution.fieldState = state;
-      this.#renderAll();
+      this.#syncFieldStateUi(contribution);
     } catch { if (contribution.active) this.#degrade(contribution); }
   }
 
@@ -498,6 +501,8 @@ export class SettingsHost {
   dispose(): void {
     for (const pending of this.#debouncedSaves.values()) clearTimeout(pending.timer);
     this.#debouncedSaves.clear();
+    if (this.#renderFrame !== undefined) this.#root?.ownerDocument.defaultView?.cancelAnimationFrame?.(this.#renderFrame);
+    this.#renderFrame = undefined;
     this.#center?.dispose();
     this.#center = undefined;
     this.#root?.remove();
@@ -507,6 +512,16 @@ export class SettingsHost {
   #renderAll(): void {
     this.#renderRoot();
     this.#renderCenter();
+  }
+
+  #scheduleRender(): void {
+    if (this.#renderFrame !== undefined) return;
+    const view = this.#root?.ownerDocument.defaultView;
+    if (view === undefined || view === null || typeof view.requestAnimationFrame !== 'function') { this.#renderAll(); return; }
+    this.#renderFrame = view.requestAnimationFrame(() => {
+      this.#renderFrame = undefined;
+      this.#renderAll();
+    });
   }
 
   #renderRoot(): void {
@@ -547,15 +562,17 @@ export class SettingsHost {
     const center = this.#center;
     if (center === undefined) return;
     center.show((dialog) => this.#renderCenterContent(dialog), () => this.#flushDebouncedSaves());
-    void this.#refreshWorkspaceHealth();
   }
 
   #renderCenter(): void {
     if (this.#center?.open !== true) return;
+    traceSettingsRender(`center-render-begin:${this.#activePluginId}`);
     this.#center.render((dialog) => this.#renderCenterContent(dialog));
+    traceSettingsRender(`center-render-complete:${this.#activePluginId}`);
   }
 
   #renderCenterContent(dialog: HTMLElement): void {
+    traceSettingsRender(`center-content-begin:${this.#activePluginId}`);
     const document = dialog.ownerDocument;
     const header = document.createElement('header'); header.className = 'stx-center-header';
     const brand = document.createElement('div'); brand.className = 'stx-center-brand';
@@ -590,6 +607,7 @@ export class SettingsHost {
     }
     body.append(sidebar, main);
     dialog.append(header, body);
+    traceSettingsRender(`center-content-complete:${this.#activePluginId}`);
   }
 
   #renderNavButton(document: Document, id: string, label: string, iconName: string, detail: string, health: 'healthy' | 'degraded'): HTMLButtonElement {
@@ -606,7 +624,11 @@ export class SettingsHost {
     copy.append(name, meta);
     const dot = document.createElement('span'); dot.className = `stx-health-dot stx-health-dot-${health}`; dot.dataset.healthBadge = 'true'; dot.setAttribute('aria-label', health === 'healthy' ? '正常' : '需检查');
     button.append(itemIcon, copy, dot);
-    button.addEventListener('click', () => { this.#activePluginId = id; this.#renderCenter(); });
+    button.addEventListener('click', () => {
+      traceSettingsRender(`nav-click:${id}`);
+      this.#activePluginId = id;
+      this.#renderCenter();
+    });
     return button;
   }
 
@@ -623,7 +645,6 @@ export class SettingsHost {
     const grid = document.createElement('div'); grid.className = 'stx-overview-grid';
     grid.append(
       this.#renderOverviewCard(document, 'Core Runtime', formatReleaseVersion(this.core.coreVersion), `API ${this.core.apiMajor}.${this.core.apiMinor} · generation ${this.core.generation}`, 'fa-microchip', 'healthy'),
-      this.#renderWorkspaceCard(document),
       this.#renderOverviewCard(document, '已注册插件', String(this.#contributions.size), '设置会自动出现在左侧菜单', 'fa-plug', this.#contributions.size > 0 ? 'healthy' : 'degraded'),
     );
     const list = document.createElement('section'); list.className = 'stx-overview-list';
@@ -655,48 +676,10 @@ export class SettingsHost {
     return card;
   }
 
-  #renderWorkspaceCard(document: Document): HTMLElement {
-    const health = this.#workspaceHealth;
-    if (health.state === 'idle' || health.state === 'loading') return this.#renderOverviewCard(document, 'SQLite Workspace', '检测中', '正在连接 SDK 通用存储服务', 'fa-database', 'degraded');
-    if (health.state === 'degraded') return this.#renderOverviewCard(document, 'SQLite Workspace', '不可用', health.message ?? health.value?.error ?? '请检查 SDK 服务端插件', 'fa-database', 'degraded');
-    return this.#renderOverviewCard(document, 'SQLite Workspace', '已连接', `Schema ${health.value?.schemaVersion ?? '-'} · ${health.value?.walMode ?? 'WAL'}`, 'fa-database', 'healthy');
-  }
-
-  async #refreshWorkspaceHealth(): Promise<void> {
-    this.#workspaceHealth = { state: 'loading' };
-    if (this.#activePluginId === OVERVIEW_ID) this.#renderCenter();
-    try {
-      const global = globalThis as typeof globalThis & {
-        getRequestHeaders?: () => Record<string, string>;
-        SillyTavern?: { getContext?: () => { getRequestHeaders?: () => Record<string, string> } };
-      };
-      const headers = {
-        ...(global.SillyTavern?.getContext?.()?.getRequestHeaders?.() ?? global.getRequestHeaders?.() ?? {}),
-        Accept: 'application/json',
-        'X-SS-Helper-Plugin': this.core.id,
-      };
-      const response = await fetch('/api/plugins/ss-helper-sdk/v2/workspaces/health', { headers });
-      const payload = await response.json() as Record<string, unknown>;
-      if (!response.ok || payload.ok !== true) throw new Error(String(payload.error ?? 'WORKSPACE_UNAVAILABLE'));
-      const value: WorkspaceHealth = {
-        ready: payload.ready === true,
-        database: String(payload.database ?? ''),
-        schemaVersion: Number(payload.schemaVersion ?? 0),
-        ...(typeof payload.sqliteVersion === 'string' ? { sqliteVersion: payload.sqliteVersion } : {}),
-        ...(typeof payload.walMode === 'string' ? { walMode: payload.walMode } : {}),
-        ...(typeof payload.error === 'string' ? { error: payload.error } : {}),
-      };
-      this.#workspaceHealth = value.ready
-        ? { state: 'healthy', value }
-        : { state: 'degraded', value, ...(value.error === undefined ? {} : { message: value.error }) };
-    } catch (error) {
-      this.#workspaceHealth = { state: 'degraded', message: error instanceof Error ? error.message : 'WORKSPACE_UNAVAILABLE' };
-    }
-    if (this.#activePluginId === OVERVIEW_ID) this.#renderCenter();
-  }
-
   #renderContribution(document: Document, main: HTMLElement, contribution: Contribution): void {
     const { identity, schema } = contribution;
+    const traceMemory = identity.id === 'ss-helper.memory';
+    if (traceMemory) traceSettingsRender('memory-contribution-begin');
     main.dataset.pluginId = identity.id;
     main.dataset.health = contribution.health;
     const heading = document.createElement('div'); heading.className = 'stx-center-page-heading';
@@ -741,9 +724,11 @@ export class SettingsHost {
     reset.addEventListener('click', () => void this.#resetWithConfirmation(contribution));
     actions.append(reset); footer.append(status, actions);
     main.append(heading, content, footer);
+    if (traceMemory) traceSettingsRender('memory-contribution-complete');
   }
 
   #renderTabs(document: Document, parent: HTMLElement, contribution: Contribution, sections: readonly Extract<SettingsField, { kind: 'section' }>[]): void {
+    const traceMemory = contribution.identity.id === 'ss-helper.memory';
     const tabs = document.createElement('div'); tabs.className = 'stx-ui-tabs'; tabs.setAttribute('role', 'tablist');
     const panels = document.createElement('div'); panels.className = 'stx-ui-panels';
     const activeId = sections.some((section) => section.id === this.#activeTabs.get(contribution.identity.id)) ? this.#activeTabs.get(contribution.identity.id)! : sections[0]?.id ?? '';
@@ -759,7 +744,9 @@ export class SettingsHost {
     sections.forEach((section, index) => {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'stx-ui-tab'; button.dataset.tabId = section.id; button.setAttribute('role', 'tab'); button.textContent = section.label;
       const panel = document.createElement('div'); panel.className = 'stx-ui-panel'; panel.dataset.tabPanel = section.id; panel.setAttribute('role', 'tabpanel');
+      if (traceMemory) traceSettingsRender(`memory-tab-begin:${section.id}`);
       this.#renderFields(document, panel, parent, contribution, section.children);
+      if (traceMemory) traceSettingsRender(`memory-tab-complete:${section.id}`);
       button.addEventListener('click', () => activate(index));
       button.addEventListener('keydown', (event: KeyboardEvent) => {
         let next = index;
@@ -777,12 +764,16 @@ export class SettingsHost {
   }
 
   #renderFields(document: Document, parent: HTMLElement, searchRoot: HTMLElement, contribution: Contribution, entries: readonly SettingsField[]): void {
+    const traceMemory = contribution.identity.id === 'ss-helper.memory';
     for (const field of entries) {
+      if (traceMemory) traceSettingsRender(`memory-field-begin:${field.id}:${field.kind}`);
       if (field.kind === 'action' && field.placement !== 'inline') continue;
       if (field.kind === 'section') {
         const group = document.createElement('fieldset'); group.className = 'stx-ui-fieldset';
         const legend = document.createElement('legend'); legend.textContent = field.label; group.append(legend);
-        this.#renderFields(document, group, searchRoot, contribution, field.children); parent.append(group); continue;
+        this.#renderFields(document, group, searchRoot, contribution, field.children); parent.append(group);
+        if (traceMemory) traceSettingsRender(`memory-field-complete:${field.id}:${field.kind}`);
+        continue;
       }
       const row = document.createElement('div'); row.className = `stx-ui-field-row stx-ui-field-${field.kind}`; row.dataset.fieldId = field.id; row.dataset.fieldKind = field.kind; row.dataset.searchText = searchText(field);
       const labelCell = document.createElement('div'); labelCell.className = 'stx-ui-field-label';
@@ -908,6 +899,7 @@ export class SettingsHost {
       valueCell.append(control);
       if (description.textContent !== '') (field.kind === 'action' ? labelCell : valueCell).append(description);
       valueCell.append(error); row.append(labelCell, valueCell); parent.append(row);
+      if (traceMemory) traceSettingsRender(`memory-field-complete:${field.id}:${field.kind}`);
     }
   }
 
@@ -968,7 +960,7 @@ export class SettingsHost {
   #syncStatusUi(contribution: Contribution): void {
     const document = this.#root?.ownerDocument;
     if (document === undefined) return;
-    const main = [...document.querySelectorAll<HTMLElement>('main[data-plugin-id]')].find((node) => node.dataset.pluginId === contribution.identity.id);
+    const main = this.#contributionMain(contribution);
     if (main === undefined) return;
     for (const field of statusFields(contribution.schema)) {
       const row = [...main.querySelectorAll<HTMLElement>('[data-field-id]')].find((node) => node.dataset.fieldId === field.id);
@@ -994,6 +986,65 @@ export class SettingsHost {
     }
     const container = main.querySelector<HTMLElement>('.stx-ui-fields');
     if (container !== null) this.#applySearch(container, this.#searchQueries.get(contribution.identity.id) ?? '', contribution.identity.id);
+  }
+
+  #contributionMain(contribution: Contribution): HTMLElement | undefined {
+    const document = this.#root?.ownerDocument;
+    if (document === undefined) return undefined;
+    return [...document.querySelectorAll<HTMLElement>('main[data-plugin-id]')]
+      .find((node) => node.tagName === 'MAIN' && node.dataset.pluginId === contribution.identity.id);
+  }
+
+  #syncValuesUi(contribution: Contribution): void {
+    const main = this.#contributionMain(contribution);
+    if (main === undefined) { this.#syncContributionUi(contribution); return; }
+    const active = main.ownerDocument.activeElement;
+    let needsStructuralRender = false;
+    for (const field of fields(contribution.schema)) {
+      if (field.kind === 'section' || field.kind === 'action' || field.kind === 'status') continue;
+      const row = [...main.querySelectorAll<HTMLElement>('[data-field-id]')].find((node) => node.dataset.fieldId === field.id);
+      if (row === undefined) continue;
+      const value = this.#fieldValue(contribution, field);
+      if (field.kind === 'toggle' || field.kind === 'checkbox') {
+        const input = row.querySelector<HTMLInputElement>('input[type="checkbox"]');
+        if (input !== null && active !== input) input.checked = Boolean(value);
+      } else if (field.kind === 'radio') {
+        for (const input of Array.from(row.querySelectorAll<HTMLInputElement>('input[type="radio"]'))) input.checked = input.value === value;
+      } else if (field.kind === 'number' || field.kind === 'text') {
+        const input = row.querySelector<HTMLInputElement>('input');
+        if (input !== null && active !== input && (typeof value === 'string' || typeof value === 'number')) input.value = String(value);
+      } else if (field.kind === 'range') {
+        const inputs = Array.from(row.querySelectorAll<HTMLInputElement>('input'));
+        if (typeof value === 'number') for (const input of inputs) if (active !== input) input.value = String(value);
+      } else {
+        // Custom select and chip controls have option-dependent structure. Keep
+        // this rare path frame-coalesced rather than replacing the settings tree
+        // for every ordinary scalar/status update.
+        needsStructuralRender = true;
+      }
+    }
+    this.#syncContributionUi(contribution);
+    if (needsStructuralRender) this.#scheduleRender();
+  }
+
+  #syncFieldStateUi(contribution: Contribution): void {
+    const main = this.#contributionMain(contribution);
+    if (main === undefined) { this.#syncContributionUi(contribution); return; }
+    for (const field of fields(contribution.schema)) {
+      if (field.kind === 'section' || field.kind === 'status') continue;
+      const row = [...main.querySelectorAll<HTMLElement>('[data-field-id]')].find((node) => node.dataset.fieldId === field.id);
+      if (row === undefined) continue;
+      const reason = this.#disabledReason(contribution, field);
+      const controls = ['input', 'button', 'select', 'textarea']
+        .flatMap((selector) => Array.from(row.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>(selector)));
+      for (const control of controls) {
+        control.disabled = reason !== undefined;
+        if (reason !== undefined) control.setAttribute('aria-disabled', 'true'); else control.removeAttribute('aria-disabled');
+      }
+      const description = row.querySelector<HTMLElement>('.stx-ui-item-desc');
+      if (description !== null) description.textContent = reason ?? field.description ?? '';
+    }
+    this.#syncContributionUi(contribution);
   }
 
   #disabledReason(contribution: Contribution, field: SettingsField): string | undefined {

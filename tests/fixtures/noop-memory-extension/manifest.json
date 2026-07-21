@@ -1,0 +1,11 @@
+{
+  "display_name": "SS Helper No-op Memory Fixture",
+  "loading_order": -9,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "SS-Helper test fixture",
+  "version": "0.0.0",
+  "auto_update": false,
+  "homePage": "https://example.invalid/ss-helper-fixture",
+  "minimum_client_version": "1.18.0"
+}

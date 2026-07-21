@@ -59,7 +59,8 @@ export class PopupHost {
     const content = document.createElement('div');
     content.dataset.popupContent = 'true';
     dialog.append(header, content); overlay.append(dialog); document.body.append(overlay);
-    const popupUi = new PopupUiController(content);
+    let close: () => void = () => undefined;
+    const popupUi = new PopupUiController(content, () => close());
     let active = true;
     let renderCleanup: void | (() => void);
     let removeScopeCleanup = (): void => undefined;
@@ -72,7 +73,7 @@ export class PopupHost {
           : document.getElementById(previousId);
       target?.focus();
     };
-    const close = (): void => {
+    close = (): void => {
       if (!active) return;
       active = false;
       dialog.removeEventListener('keydown', onKeyDown);

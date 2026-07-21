@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -17,6 +18,7 @@ import path from 'node:path';
 const ST_TAG = '1.18.0';
 const ST_COMMIT = '51ad27fb86d39a3daca3adaa970375c9670c12df';
 const ST_REPOSITORY = 'https://github.com/SillyTavern/SillyTavern.git';
+const CDP_COMMAND_TIMEOUT_MS = 15_000;
 
 function fail(message, processResult) {
   const detail = processResult === undefined ? '' : `\n${processResult.error?.stack || processResult.stderr || processResult.stdout || ''}`;
@@ -82,6 +84,7 @@ function prepareOfficialSillyTavern() {
 }
 
 function browserExecutable() {
+  const requestedBrowser = process.env.SS_HELPER_BROWSER?.trim().toLowerCase();
   const candidates = process.platform === 'win32' ? [
     ['Chrome', path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe')],
     ['Chrome', path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe')],
@@ -97,8 +100,8 @@ function browserExecutable() {
     ['Chromium', '/usr/bin/chromium'],
     ['Edge', '/usr/bin/microsoft-edge'],
   ];
-  const found = candidates.find(([, executable]) => executable !== '' && existsSync(executable));
-  if (found === undefined) throw new Error('No approved Chrome or Edge executable was found');
+  const found = candidates.find(([name, executable]) => executable !== '' && existsSync(executable) && (requestedBrowser === undefined || name.toLowerCase() === requestedBrowser));
+  if (found === undefined) throw new Error(`No approved ${requestedBrowser === undefined ? 'Chrome or Edge' : requestedBrowser} executable was found`);
   return { name: found[0], executable: found[1] };
 }
 
@@ -113,7 +116,7 @@ async function freePort() {
   });
 }
 
-async function waitFor(description, callback, timeoutMs = 120_000) {
+async function waitFor(description, callback, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
@@ -203,23 +206,39 @@ class CdpSession {
         const pending = this.pending.get(message.id);
         if (pending === undefined) return;
         this.pending.delete(message.id);
+        clearTimeout(pending.timer);
         if (message.error !== undefined) pending.reject(new Error(message.error.message));
         else pending.resolve(message.result);
       });
     });
   }
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error(`CDP ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
-  close() { this.socket.close(); }
+  close() {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('CDP session closed'));
+    }
+    this.pending.clear();
+    this.socket.close();
+  }
 }
 
-async function evaluate(session, expression) {
-  const result = await session.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+async function evaluate(session, expression, label = 'page evaluation') {
+  let result;
+  try {
+    result = await session.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  } catch (error) {
+    throw new Error(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (result.exceptionDetails !== undefined) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
   return result.result.value;
 }
@@ -266,6 +285,11 @@ async function main() {
     cpSync(path.resolve(args.consumerB), consumerBRoot, { recursive: true });
     stagedExtensionRoots.push(extensionRoot, consumerARoot, consumerBRoot);
     const jointConsumers = args.llmRoot !== undefined;
+    // The no-op LLM fixture intentionally verifies that Memory can start
+    // independently. It is a staged extension but does not register settings.
+    const llmRegistersSettings = jointConsumers && existsSync(path.join(path.resolve(args.llmRoot), 'plugin.config.json'));
+    const expectedSettingsContributions = jointConsumers ? 1 + Number(llmRegistersSettings) : 0;
+    const expectedDiagnosticPlugins = 2 + expectedSettingsContributions;
     if (jointConsumers) {
       const llmRoot = path.resolve(args.llmRoot);
       const memoryRoot = path.resolve(args.memoryRoot);
@@ -320,6 +344,9 @@ async function main() {
       rmSync(sdkServerPluginRoot, { recursive: true, force: true });
       mkdirSync(sdkServerPluginRoot, { recursive: true });
       cpSync(path.join(process.cwd(), 'server-plugin', 'index.js'), path.join(sdkServerPluginRoot, 'index.js'));
+      const sdkServerBrowserRoot = path.join(sdkServerPluginRoot, 'browser');
+      cpSync(extensionRoot, sdkServerBrowserRoot, { recursive: true });
+      copyFileSync(path.join(sdkServerBrowserRoot, 'index.js'), path.join(sdkServerBrowserRoot, 'core.js'));
       writeFileSync(path.join(sdkServerPluginRoot, 'package.json'), `${JSON.stringify({ name: 'ss-helper-sdk-smoke', private: true, type: 'module', main: 'index.js' }, null, 2)}\n`);
       serverPluginRoots.push(sdkServerPluginRoot);
     }
@@ -392,13 +419,137 @@ async function main() {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1488, height: 1057, deviceScaleFactor: 1, mobile: false });
     const browserVersion = await cdp.send('Browser.getVersion');
     let measured;
+    let memoryWorkbench = null;
+    let finalSettingsCenterProbe = null;
     try {
+    await waitFor('Core and artifact consumers in SillyTavern', async () => await evaluate(cdp, `(async () => {
+      const onboarding = [...document.querySelectorAll('.popup')]
+        .find((popup) => /(?:welcome to|欢迎来到).*sillytavern/iu.test(popup.textContent ?? ''));
+      const onboardingConfirm = onboarding?.querySelector('.popup-button-ok');
+      if (onboardingConfirm instanceof HTMLElement) {
+        if (globalThis.__SSHelperSmokeOnboardingDismissed !== true) {
+          globalThis.__SSHelperSmokeOnboardingDismissed = true;
+          onboardingConfirm.click();
+        }
+        return false;
+      }
+      const discovery = globalThis[Symbol.for('@ss-helper/core.discovery')];
+      const consumers = globalThis.__SSHelperArtifactConsumers;
+      return discovery?.descriptor?.state === 'ready' && consumers?.a?.state === 'ready' && consumers?.b?.state === 'ready';
+    })()`, 'Core and consumer readiness'));
+    if (jointConsumers) {
+      await waitFor('Memory settings center', async () => await evaluate(cdp, `(() => {
+        const launcher = document.querySelector('#ss-helper-open-settings-center');
+        if (!(launcher instanceof HTMLButtonElement)) return null;
+        if (!(document.querySelector('#ss-helper-settings-center') instanceof HTMLElement)) launcher.click();
+        const center = document.querySelector('#ss-helper-settings-center');
+        return center instanceof HTMLElement;
+      })()`, 'open Memory settings center'));
+      await waitFor('Memory settings page', async () => await evaluate(cdp, `(() => {
+        const center = document.querySelector('#ss-helper-settings-center');
+        if (!(center instanceof HTMLElement)) return null;
+        const memoryNav = center.querySelector('.stx-center-nav-item[data-plugin-id="ss-helper.memory"]');
+        if (!(memoryNav instanceof HTMLElement)) return null;
+        if (memoryNav.getAttribute('aria-current') !== 'page') memoryNav.click();
+        const opener = [...center.querySelectorAll('button')].find((button) => button.textContent?.includes('打开工作台') && button.closest('[hidden]') === null);
+        return opener instanceof HTMLButtonElement;
+      })()`, 'open Memory settings page'));
+      await waitFor('Memory workbench popup', async () => await evaluate(cdp, `(() => {
+        const center = document.querySelector('#ss-helper-settings-center');
+        if (!(center instanceof HTMLElement)) return null;
+        let popup = document.querySelector('[data-ss-helper-popup]');
+        if (!(popup instanceof HTMLElement)) {
+          const opener = [...center.querySelectorAll('button')].find((button) => button.textContent?.includes('打开工作台') && button.closest('[hidden]') === null);
+          if (!(opener instanceof HTMLButtonElement)) return null;
+          const focus = { openerId: opener.id, focusBeforeOpen: false, restorationFocusEvents: 0 };
+          const countRestore = (event) => { if (event.target?.id === focus.openerId) focus.restorationFocusEvents += 1; };
+          globalThis.__SSHelperMemoryWorkbenchFocus = { focus, countRestore };
+          document.addEventListener('focusin', countRestore);
+          opener.focus();
+          focus.focusBeforeOpen = document.activeElement === opener;
+          focus.restorationFocusEvents = 0;
+          opener.click();
+        }
+        return true;
+      })()`, 'open Memory workbench popup'));
+      await waitFor('Memory workbench controls', async () => await evaluate(cdp, `(() => {
+        const popup = document.querySelector('[data-ss-helper-popup]');
+        const sort = popup?.querySelector('select[data-ss-helper-control="select"][data-filter="sort"]');
+        const multiFilters = [...(popup?.querySelectorAll('[data-multi-filter]') ?? [])];
+        const triggers = [...(popup?.querySelectorAll('[data-action="toggle-filter-menu"]') ?? [])];
+        return popup instanceof HTMLElement && sort instanceof HTMLSelectElement && multiFilters.length === 2 && triggers.length === 2;
+      })()`, 'inspect Memory workbench controls'));
+      memoryWorkbench = await evaluate(cdp, `(async () => {
+        const popup = document.querySelector('[data-ss-helper-popup]');
+        const dialog = popup?.querySelector('[role="dialog"]');
+        const close = popup?.querySelector('[data-popup-header="true"] button');
+        const nativeSelects = [...(popup?.querySelectorAll('select[data-ss-helper-control="select"]') ?? [])];
+        const multiFilterTriggers = [...(popup?.querySelectorAll('[data-action="toggle-filter-menu"]') ?? [])];
+        const sort = nativeSelects.find((select) => select.dataset.filter === 'sort');
+        if (!(popup instanceof HTMLElement) || !(dialog instanceof HTMLElement) || !(close instanceof HTMLButtonElement) || !(sort instanceof HTMLSelectElement) || nativeSelects.length !== 1 || multiFilterTriggers.length !== 2) throw new Error('Memory workbench controls disappeared');
+        sort.value = 'confidence_desc';
+        sort.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const kindTrigger = popup.querySelector('[data-action="toggle-filter-menu"][data-filter-menu="kind"]');
+        if (!(kindTrigger instanceof HTMLButtonElement)) throw new Error('Memory kind filter trigger disappeared');
+        kindTrigger.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const identityKind = popup.querySelector('input[data-filter-option="kind"][value="identity"]');
+        if (!(identityKind instanceof HTMLInputElement)) throw new Error('Memory kind filter option disappeared');
+        identityKind.checked = false;
+        identityKind.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const refreshedSelects = [...popup.querySelectorAll('select[data-ss-helper-control="select"]')];
+        const refreshedSort = refreshedSelects.find((select) => select.dataset.filter === 'sort');
+        const refreshedIdentityKind = popup.querySelector('input[data-filter-option="kind"][value="identity"]');
+        const focusState = globalThis.__SSHelperMemoryWorkbenchFocus;
+        const opener = document.getElementById(focusState?.focus?.openerId ?? '');
+        const openerStyle = opener instanceof HTMLElement ? getComputedStyle(opener) : undefined;
+        const result = {
+          presentation: dialog.dataset.presentation,
+          nativeSelects: refreshedSelects.length,
+          multiFilters: popup.querySelectorAll('[data-multi-filter]').length,
+          selectedSort: refreshedSort instanceof HTMLSelectElement ? refreshedSort.value : null,
+          identityKindSelected: refreshedIdentityKind instanceof HTMLInputElement ? refreshedIdentityKind.checked : null,
+          labels: refreshedSelects.map((select) => select.getAttribute('aria-label')),
+          closeLabel: close.getAttribute('aria-label'),
+          closeIcon: close.querySelector('.fa-xmark') !== null,
+          publicButtons: popup.querySelectorAll('[data-ss-helper-control="button"]').length,
+          statusControls: popup.querySelectorAll('[data-ss-helper-control="status"]').length,
+          openerId: focusState?.focus?.openerId ?? null,
+          focusBeforeOpen: focusState?.focus?.focusBeforeOpen ?? false,
+          openerVisibility: openerStyle === undefined ? null : { disabled: opener.disabled, display: openerStyle.display, visibility: openerStyle.visibility, rects: opener.getClientRects().length, offsetParent: opener.offsetParent !== null, inertAncestor: opener.closest('[inert]') !== null },
+        };
+        close.click();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        result.closed = document.querySelector('[data-ss-helper-popup]') === null;
+        result.documentHasFocus = document.hasFocus();
+        result.focusRestored = !result.documentHasFocus || (focusState?.focus?.restorationFocusEvents ?? 0) > 0;
+        if (typeof focusState?.countRestore === 'function') document.removeEventListener('focusin', focusState.countRestore);
+        delete globalThis.__SSHelperMemoryWorkbenchFocus;
+        result.activeAfterClose = { id: document.activeElement?.id ?? null, tag: document.activeElement?.tagName ?? null, ariaLabel: document.activeElement?.getAttribute?.('aria-label') ?? null };
+        return result;
+      })()`, 'exercise and close Memory workbench');
+    }
       measured = await waitFor('Core and artifact consumers in SillyTavern', async () => {
-      const value = await evaluate(cdp, `(async () => {
+      const probe = await evaluate(cdp, `(async () => {
+        const onboarding = [...document.querySelectorAll('.popup')]
+          .find((popup) => /(?:welcome to|欢迎来到).*sillytavern/iu.test(popup.textContent ?? ''));
+        const onboardingConfirm = onboarding?.querySelector('.popup-button-ok');
+        if (onboardingConfirm instanceof HTMLElement) {
+          onboardingConfirm.click();
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
         const discoverySymbol = Symbol.for('@ss-helper/core.discovery');
         const discovery = globalThis[discoverySymbol];
         const consumers = globalThis.__SSHelperArtifactConsumers;
-        if (discovery?.descriptor?.state !== 'ready' || consumers?.a?.state !== 'ready' || consumers?.b?.state !== 'ready') return null;
+        if (discovery?.descriptor?.state !== 'ready' || consumers?.a?.state !== 'ready' || consumers?.b?.state !== 'ready') return {
+          ready: false,
+          reason: 'runtime-not-ready',
+          discoveryState: discovery?.descriptor?.state ?? null,
+          consumerAState: consumers?.a?.state ?? null,
+          consumerBState: consumers?.b?.state ?? null,
+        };
         const tavernContext = globalThis.SillyTavern?.getContext?.();
         const currentHostSurface = {
           mainApi: typeof tavernContext?.mainApi === 'string',
@@ -411,95 +562,25 @@ async function main() {
           chatCompletionSettings: tavernContext?.chatCompletionSettings !== undefined,
           generateQuietPrompt: typeof tavernContext?.generateQuietPrompt === 'function',
         };
-        const onboardingConfirm = [...document.querySelectorAll('dialog[open] button, .popup button')]
-          .find((button) => /^(确定|确认|confirm|ok)$/iu.test(button.textContent?.trim() ?? ''));
-        if (onboardingConfirm instanceof HTMLButtonElement) {
-          const onboardingDialog = onboardingConfirm.closest('dialog');
-          if (onboardingDialog instanceof HTMLDialogElement && onboardingDialog.open) onboardingDialog.close();
-          else onboardingConfirm.click();
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        }
         for (const openDialog of document.querySelectorAll('dialog[open]')) {
           try { openDialog.close(); } catch {}
         }
         const launcher = document.querySelector('#ss-helper-open-settings-center');
-        if (!(launcher instanceof HTMLButtonElement)) return null;
-        launcher.click();
+        if (!(launcher instanceof HTMLButtonElement)) return { ready: false, reason: 'launcher-missing' };
+        if (!(document.querySelector('#ss-helper-settings-center') instanceof HTMLElement)) launcher.click();
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         let center = document.querySelector('#ss-helper-settings-center');
-        if (!(center instanceof HTMLElement)) return null;
+        if (!(center instanceof HTMLElement)) return { ready: false, reason: 'center-missing' };
         const jointSections = [...center.querySelectorAll('.stx-center-nav-item[data-plugin-id]')]
           .filter((section) => section.dataset.pluginId === 'ss-helper.llm' || section.dataset.pluginId === 'ss-helper.memory')
           .map((section) => ({ id: section.dataset.pluginId, health: section.dataset.health, title: section.querySelector('strong')?.textContent }));
-        if (${jointConsumers} && jointSections.length !== 2) return null;
+        if (jointSections.length !== ${expectedSettingsContributions}) return { ready: false, reason: 'joint-sections-missing', jointSections };
         const targetPlugin = center.querySelector('.stx-center-nav-item[data-plugin-id="ss-helper.memory"]')
           ?? center.querySelector('.stx-center-nav-item[data-plugin-id="ss-helper.llm"]')
           ?? center.querySelector('.stx-center-nav-item[data-plugin-id]:not([data-plugin-id="overview"])');
         targetPlugin?.click();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
         const selectedTitle = center.querySelector('.stx-center-page-heading h3')?.textContent;
-        let memoryWorkbench = null;
-        if (${jointConsumers}) {
-          center.querySelector('[data-tab-id="global"]')?.click();
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          const opener = [...center.querySelectorAll('button')].find((button) => button.textContent?.includes('打开工作台') && button.closest('[hidden]') === null);
-          if (!(opener instanceof HTMLButtonElement)) return null;
-          const openerId = opener.id;
-          const openerStyle = getComputedStyle(opener);
-          const openerVisibility = {
-            disabled: opener.disabled,
-            display: openerStyle.display,
-            visibility: openerStyle.visibility,
-            rects: opener.getClientRects().length,
-            offsetParent: opener.offsetParent !== null,
-            inertAncestor: opener.closest('[inert]') !== null,
-          };
-          let restorationFocusEvents = 0;
-          const countRestorationFocus = (event) => { if (event.target?.id === openerId) restorationFocusEvents += 1; };
-          document.addEventListener('focusin', countRestorationFocus);
-          opener.focus();
-          const focusBeforeOpen = document.activeElement === opener;
-          restorationFocusEvents = 0;
-          opener.click();
-          await new Promise((resolve) => setTimeout(resolve, 180));
-          const popup = document.querySelector('[data-ss-helper-popup]');
-          const dialog = popup?.querySelector('[role="dialog"]');
-          const close = popup?.querySelector('[data-popup-header="true"] button');
-          const nativeSelects = [...(popup?.querySelectorAll('select[data-ss-helper-control="select"]') ?? [])];
-          const triggers = [...(popup?.querySelectorAll('.stx-ui-select-trigger[role="combobox"]') ?? [])];
-          if (!(popup instanceof HTMLElement) || !(dialog instanceof HTMLElement) || !(close instanceof HTMLButtonElement) || nativeSelects.length !== 3 || triggers.length !== 3) return null;
-          const firstTrigger = triggers[0];
-          firstTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-          firstTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-          firstTrigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          const refreshedSelects = [...popup.querySelectorAll('select[data-ss-helper-control="select"]')];
-          memoryWorkbench = {
-            presentation: dialog.dataset.presentation,
-            nativeSelects: refreshedSelects.length,
-            enhancedSelects: popup.querySelectorAll('.stx-ui-select-wrap').length,
-            hiddenNativeSelects: refreshedSelects.filter((select) => select.hidden && select.getAttribute('aria-hidden') === 'true').length,
-            selectedKind: refreshedSelects.find((select) => select.dataset.filter === 'kind')?.value ?? null,
-            labels: refreshedSelects.map((select) => select.getAttribute('aria-label')),
-            closeLabel: close.getAttribute('aria-label'),
-            closeIcon: close.querySelector('.fa-xmark') !== null,
-            publicButtons: popup.querySelectorAll('[data-ss-helper-control="button"]').length,
-            statusControls: popup.querySelectorAll('[data-ss-helper-control="status"]').length,
-            openerId,
-            focusBeforeOpen,
-            openerVisibility,
-          };
-          close.click();
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          memoryWorkbench.closed = document.querySelector('[data-ss-helper-popup]') === null;
-          memoryWorkbench.documentHasFocus = document.hasFocus();
-          memoryWorkbench.focusRestored = !memoryWorkbench.documentHasFocus || restorationFocusEvents > 0;
-          document.removeEventListener('focusin', countRestorationFocus);
-          memoryWorkbench.activeAfterClose = {
-            id: document.activeElement?.id ?? null,
-            tag: document.activeElement?.tagName ?? null,
-            ariaLabel: document.activeElement?.getAttribute?.('aria-label') ?? null,
-          };
-        }
         const closeButton = center.querySelector('.stx-center-close');
         closeButton?.click();
         const closed = document.querySelectorAll('#ss-helper-settings-center-overlay').length === 0;
@@ -507,6 +588,7 @@ async function main() {
         await new Promise((resolve) => requestAnimationFrame(resolve));
         center = document.querySelector('#ss-helper-settings-center');
         return {
+          ready: true,
           pageTitle: document.title,
           userAgent: navigator.userAgent,
           discovery: discovery.descriptor,
@@ -537,24 +619,90 @@ async function main() {
           worldbooks: consumers.a.host.worldbooks,
           diagnostics: discovery.port.diagnostics(),
           jointConsumers: jointSections,
-          memoryWorkbench,
           currentHostSurface,
         };
-      })()`);
-      return value;
+      })()`, 'settings center smoke');
+      finalSettingsCenterProbe = probe;
+      return probe?.ready === true ? probe : null;
       });
+      measured.memoryWorkbench = memoryWorkbench;
     } catch (error) {
-      const debugState = await evaluate(cdp, `(() => ({
+      let pausedStack;
+      try {
+        await cdp.send('Debugger.enable', {}, 5_000);
+        await cdp.send('Debugger.pause', {}, 5_000);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        const paused = [...cdp.events].reverse().find((event) => event.method === 'Debugger.paused');
+        pausedStack = paused === undefined
+          ? { unavailable: 'no debugger pause event' }
+          : paused.params?.callFrames?.slice(0, 12).map((frame) => ({
+            functionName: frame.functionName || '<anonymous>',
+            url: frame.url,
+            lineNumber: frame.location?.lineNumber,
+            columnNumber: frame.location?.columnNumber,
+          }));
+        await cdp.send('Debugger.resume', {}, 5_000).catch(() => undefined);
+      } catch (debuggerError) {
+        pausedStack = { unavailable: debuggerError instanceof Error ? debuggerError.message : String(debuggerError) };
+      }
+      let debugState;
+      try {
+        debugState = await evaluate(cdp, `(() => ({
         readyState: document.readyState,
         discovery: globalThis[Symbol.for('@ss-helper/core.discovery')]?.descriptor ?? null,
         consumers: globalThis.__SSHelperArtifactConsumers ?? null,
         settingsRoot: document.querySelectorAll('#ss-helper-settings-root').length,
+        lifecycle: (() => {
+          const context = globalThis.SillyTavern?.getContext?.();
+          const source = context?.eventSource;
+          const types = context?.eventTypes;
+          return {
+            appInitialized: source?.autoFireLastArgs?.has?.(types?.APP_INITIALIZED) ?? false,
+            appReady: source?.autoFireLastArgs?.has?.(types?.APP_READY) ?? false,
+          };
+        })(),
+        dialogs: [...document.querySelectorAll('dialog, .popup')].slice(0, 8).map((dialog) => ({
+          open: dialog instanceof HTMLDialogElement ? dialog.open : getComputedStyle(dialog).display !== 'none',
+          role: dialog.getAttribute('role'),
+          text: (dialog.textContent ?? '').trim().replace(/\s+/gu, ' ').slice(0, 240),
+          buttons: [...dialog.querySelectorAll('button, .result-control')].slice(0, 8).map((button) => (button.textContent ?? '').trim().replace(/\s+/gu, ' ').slice(0, 80)),
+        })),
+        loaderVisible: (() => {
+          const loader = document.querySelector('#init-loader, .init_loader, .loader-overlay');
+          return loader instanceof HTMLElement && getComputedStyle(loader).display !== 'none';
+        })(),
         extensionScripts: [...document.scripts].map((script) => script.src).filter((src) => src.includes('SS-Helper')),
-      }))()`);
+        }))()`, 'smoke failure diagnostics');
+      } catch (diagnosticError) {
+        debugState = { unavailable: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError) };
+      }
       const runtimeEvents = cdp.events
         .filter((event) => event.method === 'Runtime.exceptionThrown' || event.method === 'Runtime.consoleAPICalled')
+        .slice(-40)
+        .map((event) => ({
+          method: event.method,
+          type: event.params?.type,
+          text: event.method === 'Runtime.consoleAPICalled'
+            ? (event.params?.args ?? []).map((argument) => typeof argument?.value === 'string' ? argument.value : '').filter(Boolean).join(' ').slice(0, 320)
+            : String(event.params?.exceptionDetails?.text ?? event.params?.exceptionDetails?.exception?.description ?? '').slice(0, 320),
+        }));
+      const memoryStartupTrace = cdp.events
+        .filter((event) => event.method === 'Runtime.consoleAPICalled')
+        .flatMap((event) => event.params?.args ?? [])
+        .map((argument) => argument?.value)
+        .filter((value) => typeof value === 'string' && (value.includes('[Memory] 启动检查点：') || value.includes('[SS-Helper Core] 设置检查点：')))
         .slice(-40);
-      throw new Error(`${error instanceof Error ? error.message : String(error)}\nDEBUG ${JSON.stringify(debugState)}\nBROWSER ${JSON.stringify(runtimeEvents)}\nSERVER ${serverOutput.join('').slice(-6000)}`);
+      let failureScreenshot;
+      try {
+        const capture = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false });
+        const screenshotPath = path.join(process.cwd(), 'artifacts', 'settings-center-smoke-failure.png');
+        mkdirSync(path.dirname(screenshotPath), { recursive: true });
+        writeFileSync(screenshotPath, Buffer.from(capture.data, 'base64'));
+        failureScreenshot = screenshotPath;
+      } catch (screenshotError) {
+        failureScreenshot = `unavailable: ${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}`;
+      }
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\nFINAL_PROBE ${JSON.stringify(finalSettingsCenterProbe)}\nPAUSED_STACK ${JSON.stringify(pausedStack)}\nDEBUG ${JSON.stringify(debugState)}\nMEMORY_TRACE ${JSON.stringify(memoryStartupTrace)}\nBROWSER ${JSON.stringify(runtimeEvents)}\nSCREENSHOT ${failureScreenshot}\nSERVER ${serverOutput.join('').slice(-6000)}`);
     }
     assert.equal(measured.discovery.artifact.contentDigest, args.contentDigest);
     assert.equal(measured.discovery.state, 'ready');
@@ -600,7 +748,7 @@ async function main() {
     assert.equal(measured.settingsCenter.overlays, 1);
     assert.equal(measured.settingsCenter.dialogs, 1);
     assert.equal(measured.settingsCenter.closed, true);
-    assert.ok(measured.settingsCenter.navItems >= (jointConsumers ? 3 : 1));
+    assert.ok(measured.settingsCenter.navItems >= (1 + expectedSettingsContributions));
     assert.equal(measured.coreInstances, 1);
     assert.ok(measured.diagnostics.events.length <= 256);
     const diagnosticsEvidence = JSON.stringify(measured.diagnostics);
@@ -610,12 +758,12 @@ async function main() {
       'apiKey', 'prompt', 'cookie', 'csrf', 'authorization', 'sqliteBase64', 'userContent',
     ]) assert.equal(diagnosticsEvidence.includes(forbidden), false);
     if (jointConsumers) {
-      if (measured.jointConsumers.length !== 2) {
+      if (measured.jointConsumers.length !== expectedSettingsContributions) {
         const runtimeEvents = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown' || event.method === 'Runtime.consoleAPICalled');
         throw new Error(`Joint consumers did not register: ${JSON.stringify(runtimeEvents.slice(-30))}`);
       }
       const expectedJointConsumers = [
-        { id: 'ss-helper.llm', health: 'healthy', title: 'AI调度中枢' },
+        ...(llmRegistersSettings ? [{ id: 'ss-helper.llm', health: 'healthy', title: 'AI调度中枢' }] : []),
         { id: 'ss-helper.memory', health: 'healthy', title: '记忆系统' },
       ];
       if (JSON.stringify(measured.jointConsumers) !== JSON.stringify(expectedJointConsumers)) {
@@ -626,11 +774,11 @@ async function main() {
       assert.equal(measured.settingsCenter.selectedTitle, '记忆系统');
       assert.deepEqual(measured.memoryWorkbench, {
         presentation: 'workspace',
-        nativeSelects: 3,
-        enhancedSelects: 3,
-        hiddenNativeSelects: 3,
-        selectedKind: 'identity',
-        labels: ['事实类型', '事实状态', '排序'],
+        nativeSelects: 1,
+        multiFilters: 2,
+        selectedSort: 'confidence_desc',
+        identityKindSelected: false,
+        labels: ['排序'],
         closeLabel: '关闭记忆工作台',
         closeIcon: true,
         publicButtons: measured.memoryWorkbench.publicButtons,
@@ -645,10 +793,10 @@ async function main() {
       });
       assert.ok(measured.memoryWorkbench.publicButtons > 0);
       assert.ok(measured.memoryWorkbench.statusControls > 0);
-      assert.equal(measured.diagnostics.plugins, 4);
+      assert.equal(measured.diagnostics.plugins, expectedDiagnosticPlugins);
     } else {
       assert.deepEqual(measured.jointConsumers, []);
-      assert.equal(measured.diagnostics.plugins, 2);
+      assert.equal(measured.diagnostics.plugins, expectedDiagnosticPlugins);
     }
     assert.ok(measured.capabilities.length > 0);
     assert.deepEqual(measured.worldbooks, {
@@ -668,7 +816,7 @@ async function main() {
       }
       for (const popup of document.querySelectorAll('.popup, .popup_background')) popup.style.display = 'none';
       document.querySelector('#ss-helper-settings-center .stx-ui-select-trigger')?.click();
-    })()`);
+    })()`, 'settings visual setup');
     await new Promise((resolve) => setTimeout(resolve, 100));
     const visualMetrics = await evaluate(cdp, `(() => {
       const overlay = document.querySelector('#ss-helper-settings-center-overlay');
@@ -678,7 +826,7 @@ async function main() {
       const selectListbox = dialog?.querySelector('.stx-ui-select-listbox');
       const styles = (node) => node ? ((value) => ({ display:value.display, visibility:value.visibility, opacity:value.opacity, color:value.color, background:value.backgroundColor, width:value.width, height:value.height, zIndex:value.zIndex }))(getComputedStyle(node)) : null;
       return { overlay: styles(overlay), dialog: styles(dialog), heading: styles(heading), select:{ trigger:styles(selectTrigger), listbox:styles(selectListbox), expanded:selectTrigger?.getAttribute('aria-expanded') ?? null, options:selectListbox?.querySelectorAll('[role="option"]').length ?? 0 }, text: dialog?.innerText?.slice(0, 1200) ?? '', childCount: dialog?.querySelectorAll('*').length ?? 0 };
-    })()`);
+    })()`, 'settings visual metrics');
     assert.equal(visualMetrics.select.expanded, 'true');
     assert.ok(visualMetrics.select.options > 0);
     assert.notEqual(visualMetrics.select.listbox?.display, 'none');
@@ -689,7 +837,7 @@ async function main() {
     mkdirSync(path.dirname(screenshotPath), { recursive: true });
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'));
     writeFileSync(path.join(process.cwd(), 'artifacts', 'settings-center-smoke.json'), `${JSON.stringify(visualMetrics, null, 2)}\n`);
-    await evaluate(cdp, 'globalThis.__SSHelperSmokeBeforeReload = true');
+    await evaluate(cdp, 'globalThis.__SSHelperSmokeBeforeReload = true', 'mark reload state');
     await cdp.send('Page.reload', { ignoreCache: true });
     const reload = await waitFor('clean Core/consumer reload', async () => evaluate(cdp, `(() => {
       if (globalThis.__SSHelperSmokeBeforeReload === true) return null;
@@ -697,7 +845,7 @@ async function main() {
       const consumers = globalThis.__SSHelperArtifactConsumers;
       if (discovery?.descriptor?.state !== 'ready' || consumers?.a?.state !== 'ready' || consumers?.b?.state !== 'ready') return null;
       const plugins = discovery.port.diagnostics().plugins;
-      if (${jointConsumers} && plugins !== 4) return null;
+      if (plugins !== ${expectedDiagnosticPlugins}) return null;
       return {
         generation: discovery.descriptor.generation,
         plugins,
@@ -706,8 +854,8 @@ async function main() {
         settingsCenters: document.querySelectorAll('#ss-helper-settings-center').length,
         coreInstances: Object.getOwnPropertySymbols(globalThis).filter((symbol) => Symbol.keyFor(symbol) === '@ss-helper/core.discovery').length,
       };
-    })()`));
-    assert.deepEqual(reload, { generation: 1, plugins: jointConsumers ? 4 : 2, settingsRoots: 1, settingsLaunchers: 1, settingsCenters: 0, coreInstances: 1 });
+    })()`, 'reload state'));
+    assert.deepEqual(reload, { generation: 1, plugins: expectedDiagnosticPlugins, settingsRoots: 1, settingsLaunchers: 1, settingsCenters: 0, coreInstances: 1 });
     const npm = npmInvocation(['--version']);
     const npmVersion = run(npm.command, npm.args);
     result = {

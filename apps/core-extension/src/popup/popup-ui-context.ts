@@ -42,7 +42,11 @@ export class PopupUiController implements PopupUiContext {
   readonly #enhanced = new Map<HTMLSelectElement, EnhancedSelect>();
   #active = true;
 
-  constructor(private readonly container: HTMLElement) {}
+  constructor(private readonly container: HTMLElement, private readonly requestClose: () => void = () => undefined) {}
+
+  close(): void {
+    if (this.#active) this.requestClose();
+  }
 
   refreshControls(root: HTMLElement = this.container): void {
     if (!this.#active || (root !== this.container && !this.container.contains(root))) return;

@@ -125,11 +125,15 @@ test('version axes are not conflated by exported metadata', () => {
   assert.match(SDK_PACKAGE_VERSION, /^\d+\.\d+\.\d+$/u);
   assert.equal(SDK_PACKAGE_VERSION, sdkPackage.version);
   assert.equal(API_MAJOR, 2);
-  assert.equal(API_MINOR, 1);
+  assert.equal(API_MINOR, 2);
 });
 
 test('the complete frozen error-code set is exported', () => {
-  assert.equal(SS_HELPER_ERROR_CODES.length, 17);
-  assert.ok(SS_HELPER_ERROR_CODES.includes('CORE_MISSING'));
-  assert.ok(SS_HELPER_ERROR_CODES.includes('SETTINGS_ADAPTER_ERROR'));
+  assert.deepEqual(SS_HELPER_ERROR_CODES, [
+    'CORE_MISSING', 'CORE_TIMEOUT', 'API_INCOMPATIBLE', 'CORE_ALREADY_ACTIVE', 'CORE_DISPOSED',
+    'CORE_RECONNECT_EXHAUSTED', 'BRIDGE_CORRUPTED', 'STALE_SESSION', 'CAPABILITY_NOT_GRANTED',
+    'DUPLICATE_PLUGIN_ID', 'UNKNOWN_SERVICE', 'SERVICE_VERSION_MISMATCH', 'PAYLOAD_INVALID',
+    'CALL_TIMEOUT', 'CALL_ABORTED', 'PLUGIN_DISPOSED', 'SETTINGS_ADAPTER_ERROR',
+    'HOST_NOT_READY', 'BOOTSTRAP_CALLBACK_TIMEOUT',
+  ]);
 });

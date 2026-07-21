@@ -55,6 +55,7 @@ function command(commandName, args, options = {}) {
   const result = spawnSync(direct.commandName, direct.args, {
     cwd,
     encoding: 'utf8',
+    env: options.env === undefined ? process.env : { ...process.env, ...options.env },
     shell: false,
     stdio: options.capture === true ? 'pipe' : 'inherit',
   });
@@ -191,6 +192,11 @@ function buildCoreArtifact() {
     libraryRoot,
     (source, output) => rewriteSdkImports(source, output, sdkRoot),
   );
+  mkdirSync(path.join(libraryRoot, 'bridge'), { recursive: true });
+  copyFileSync(
+    path.join(root, 'apps/core-extension/src/bridge/bridge-policy.json'),
+    path.join(libraryRoot, 'bridge', 'bridge-policy.json'),
+  );
 
   const baseManifest = JSON.parse(readFileSync(path.join(root, 'apps/core-extension/manifest.json'), 'utf8'));
   const extensionManifest = { ...baseManifest, js: 'index.js', css: 'styles.css' };
@@ -199,20 +205,50 @@ function buildCoreArtifact() {
   writeFileSync(path.join(extensionRoot, 'index.js'), [
     "import { installCoreRuntime } from './lib/runtime/install-core-runtime.js';",
     "import { createSillyTavernHostBridge } from './lib/host/silly-tavern-adapter.js';",
-    "const response = await fetch(new URL('./artifact-manifest.json', import.meta.url));",
-    "if (!response.ok) throw new Error(`SS-Helper Core artifact manifest could not be loaded (${response.status})`);",
-    'const artifact = await response.json();',
-    'const host = createSillyTavernHostBridge(globalThis);',
-    'if (host.capabilities.length === 0) throw new Error("SS-Helper Core found no supported SillyTavern host capabilities");',
-    'export const coreRuntime = installCoreRuntime({',
-    '  coreVersion: artifact.coreVersion,',
-    '  sdkPackageVersion: artifact.sdkPackageVersion,',
-    '  apiMajor: artifact.apiMajor,',
-    '  apiMinor: artifact.apiMinor,',
-    '  buildId: artifact.buildId,',
-    '  contentDigest: artifact.contentDigest,',
-    '  capabilities: host.capabilities,',
-    "}, globalThis, { hostAdapter: host.hostAdapter, document: globalThis.document, settingsContainer: globalThis.document?.querySelector?.('#extensions_settings') ?? globalThis.document?.body });",
+    "import { CORE_DISCOVERY_SYMBOL } from './vendor/sdk/contracts/core.js';",
+    "import { SSHelperError } from './vendor/sdk/errors.js';",
+    "import { waitForTavernReady } from './vendor/sdk/client/tavern-ready.js';",
+    'export let coreRuntime;',
+    'let loading;',
+    'function activeCoreSnapshot() {',
+    '  const candidate = Reflect.get(globalThis, CORE_DISCOVERY_SYMBOL);',
+    "  if (candidate?.kind !== 'ss-helper-core-discovery' || candidate.descriptor?.state !== 'ready') return undefined;",
+    "  if (candidate.descriptor.id !== 'ss-helper.core' || typeof candidate.port?.connect !== 'function') return undefined;",
+    '  return candidate;',
+    '}',
+    'async function loadArtifact() {',
+    "  const response = await fetch(new URL('./artifact-manifest.json', import.meta.url));",
+    "  if (!response.ok) throw new SSHelperError('HOST_NOT_READY', `SS-Helper Core artifact manifest could not be loaded (${response.status})`);",
+    '  return response.json();',
+    '}',
+    'export function ensureCoreReady() {',
+    '  const active = activeCoreSnapshot();',
+    '  if (active !== undefined) return Promise.resolve(active);',
+    '  if (coreRuntime?.active) return Promise.resolve(coreRuntime);',
+    '  if (loading !== undefined) return loading;',
+    '  const attempt = (async () => {',
+    '    await waitForTavernReady({ timeoutMs: 15_000 });',
+    '    const published = activeCoreSnapshot();',
+    '    if (published !== undefined) return published;',
+    '    const [artifact, host] = await Promise.all([loadArtifact(), Promise.resolve(createSillyTavernHostBridge(globalThis))]);',
+    "    if (host.capabilities.length === 0) throw new SSHelperError('HOST_NOT_READY', 'SillyTavern host capabilities are not available yet');",
+    '    const runtime = installCoreRuntime({',
+    '      coreVersion: artifact.coreVersion,',
+    '      sdkPackageVersion: artifact.sdkPackageVersion,',
+    '      apiMajor: artifact.apiMajor,',
+    '      apiMinor: artifact.apiMinor,',
+    '      buildId: artifact.buildId,',
+    '      contentDigest: artifact.contentDigest,',
+    "      capabilities: [...host.capabilities, 'workspace.recovery', 'secrets.read', 'secrets.write'],",
+    "    }, globalThis, { hostAdapter: host.hostAdapter, document: globalThis.document, settingsContainer: globalThis.document?.querySelector?.('#extensions_settings') ?? globalThis.document?.body });",
+    '    coreRuntime = runtime;',
+    '    return runtime;',
+    '  })();',
+    '  loading = attempt;',
+    '  return attempt.finally(() => { if (loading === attempt) loading = undefined; });',
+    '}',
+    'export const coreReady = ensureCoreReady();',
+    'void coreReady.catch(() => undefined);',
   ].join('\n'));
 
   const packageJson = JSON.parse(readFileSync(path.join(root, 'packages/sdk/package.json'), 'utf8'));
@@ -231,8 +267,8 @@ function buildCoreArtifact() {
     coreVersion: extensionManifest.version,
     sdkPackageVersion: packageJson.version,
     apiMajor: 2,
-    apiMinor: 1,
-    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-2.1`,
+    apiMinor: 2,
+    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-2.2`,
     contentDigest: contentDigest(files),
     toolchain,
     files,
@@ -277,6 +313,19 @@ function makeConsumerBundle(name, installedSdk, source) {
   return bundle;
 }
 
+function requiredBrowsers() {
+  const configured = process.env.SS_HELPER_BROWSERS?.trim();
+  const requested = configured === undefined || configured.length === 0
+    ? ['chrome', 'edge']
+    : configured.split(',').map((name) => name.trim().toLowerCase()).filter(Boolean);
+  if (requested.length === 0) throw new Error('SS_HELPER_BROWSERS must include at least one browser');
+  if (new Set(requested).size !== requested.length) throw new Error('SS_HELPER_BROWSERS must not contain duplicate browser names');
+  for (const browser of requested) {
+    if (browser !== 'chrome' && browser !== 'edge') throw new Error(`Unsupported required browser: ${browser}`);
+  }
+  return requested;
+}
+
 function artifactSmoke(core, sdk) {
   const installed = path.join(externalRoot, 'core-install');
   extractArchive(core.zipFile, installed);
@@ -292,62 +341,70 @@ function artifactSmoke(core, sdk) {
     "const discoverySymbol = Symbol.for('@ss-helper/core.discovery');",
     'globalThis.__SSHelperArtifactConsumers ??= {};',
     'const state = globalThis.__SSHelperArtifactConsumers.a = { id: "fixture.consumer-a", state: "loading" };',
-    'try {',
-    '  const discoveryBefore = globalThis[discoverySymbol];',
-    '  state.discoveryBefore = discoveryBefore?.descriptor;',
-    '  state.generationBefore = discoveryBefore?.descriptor?.generation;',
-    "  const requested = ['tavern.context.read','tavern.chat.read','tavern.chat.events','tavern.worldbooks.read','tavern.worldbooks.write','tavern.generation.read','tavern.prompt.contribute','tavern.plugin.request','tavern.plugin.binary-request.v1'];",
-    `  const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'1.0.0', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiMajor:2, minApiMinor:1, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
-    '  const context = await session.host.context.read();',
-    '  const chat = await session.host.chat.readCurrent();',
-    '  const unsubscribe = session.host.events.subscribe("chat-changed", () => {}); unsubscribe();',
-    "  const worldbookName = 'SS Helper Gate Worldbook';",
-    "  await session.host.worldbooks.save({ id:worldbookName, name:worldbookName, active:false, entries:[{ id:'1', keys:['gate'], secondaryKeys:['proof'], content:'created', enabled:true, position:0, order:10 }] });",
-    '  const worldbookListed = (await session.host.worldbooks.list()).some((book) => book.id === worldbookName);',
-    '  const worldbookLoaded = await session.host.worldbooks.load(worldbookName);',
-    '  await session.host.worldbooks.setActive(worldbookName, true);',
-    '  const worldbookActive = (await session.host.worldbooks.active()).some((book) => book.id === worldbookName);',
-    "  await session.host.worldbooks.save({ id:worldbookName, name:worldbookName, active:true, entries:[{ id:'1', keys:['gate'], secondaryKeys:['proof'], content:'updated', enabled:false, position:0, order:10 }] });",
-    '  const worldbookUpdated = await session.host.worldbooks.load(worldbookName);',
-    '  await session.host.worldbooks.setActive(worldbookName, false); await session.host.worldbooks.delete(worldbookName);',
-    '  const worldbookDeleted = !(await session.host.worldbooks.list()).some((book) => book.id === worldbookName);',
-    '  const generation = await session.host.generation.current();',
-    '  const generationAvailable = await session.host.generation.available();',
-    "  await session.host.prompt.set({ id:'fixture.consumer-a.gate', content:'artifact gate' }); await session.host.prompt.remove('fixture.consumer-a.gate');",
-    "  const requestResponse = await session.host.request.send({ path:'/api/settings/get', method:'POST', body:{} });",
-    "  const binaryBody = { encoding:'base64', contentType:'application/vnd.sqlite3', data:'U1FMaXRlIGZvcm1hdCAzAEcwMTEgYmluYXJ5IGdhdGU=', byteLength:32, sha256:'0c05ece4802d8aba9072dcd878fcf3ba519e67c66c82ff0754e6749ca87216c1' };",
-    "  const binaryExport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/export', method:'POST', responseMode:'binary' });",
-    "  const binaryImport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/import', method:'POST', responseMode:'json', body:binaryBody });",
-    "  const legacyMemoryRoute = await session.host.request.send({ path:'/api/plugins/ss-helper-sdk/v1/memory/health', method:'GET' });",
-    '  state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } }, legacyMemoryRoute:{ status:legacyMemoryRoute.status, ok:legacyMemoryRoute.ok } };',
-    "  const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
-    "  session.registerSettings({ id:'fixture.consumer-a', title:'A', fields:[{ kind:'select', id:'mode', label:'模式', options:[{value:'balanced',label:'均衡'},{value:'precise',label:'精确'},{value:'creative',label:'创意'},{value:'economy',label:'省用'}] }] }, { load:()=>({mode:'balanced'}), save:()=>{}, reset:()=>({mode:'balanced'}) });",
-    '  session.services.expose(contract, (request) => ({ value:request.value }));',
-    '  state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
-    '  state.sameDiscovery = globalThis[discoverySymbol] === discoveryBefore;',
-    '  state.generationAfter = globalThis[discoverySymbol].descriptor.generation;',
-    '  state.state = "ready";',
-    '} catch (error) { state.state = "failed"; state.error = String(error?.stack ?? error); throw error; }',
+    'const start = async () => {',
+    '  try {',
+    '    await sdk.waitForTavernReady({ timeoutMs: 15_000 });',
+    "    const requested = ['tavern.context.read','tavern.chat.read','tavern.chat.events','tavern.worldbooks.read','tavern.worldbooks.write','tavern.generation.read','tavern.prompt.contribute','tavern.plugin.request','tavern.plugin.binary-request.v1'];",
+    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'1.0.0', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiMajor:2, minApiMinor:2, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
+    '    const discoveryBefore = globalThis[discoverySymbol];',
+    '    state.discoveryBefore = discoveryBefore?.descriptor;',
+    '    state.generationBefore = discoveryBefore?.descriptor?.generation;',
+    '    const context = await session.host.context.read();',
+    '    const chat = await session.host.chat.readCurrent();',
+    '    const unsubscribe = session.host.events.subscribe("chat-changed", () => {}); unsubscribe();',
+    "    const worldbookName = 'SS Helper Gate Worldbook';",
+    "    await session.host.worldbooks.save({ id:worldbookName, name:worldbookName, active:false, entries:[{ id:'1', keys:['gate'], secondaryKeys:['proof'], content:'created', enabled:true, position:0, order:10 }] });",
+    '    const worldbookListed = (await session.host.worldbooks.list()).some((book) => book.id === worldbookName);',
+    '    const worldbookLoaded = await session.host.worldbooks.load(worldbookName);',
+    '    await session.host.worldbooks.setActive(worldbookName, true);',
+    '    const worldbookActive = (await session.host.worldbooks.active()).some((book) => book.id === worldbookName);',
+    "    await session.host.worldbooks.save({ id:worldbookName, name:worldbookName, active:true, entries:[{ id:'1', keys:['gate'], secondaryKeys:['proof'], content:'updated', enabled:false, position:0, order:10 }] });",
+    '    const worldbookUpdated = await session.host.worldbooks.load(worldbookName);',
+    '    await session.host.worldbooks.setActive(worldbookName, false); await session.host.worldbooks.delete(worldbookName);',
+    '    const worldbookDeleted = !(await session.host.worldbooks.list()).some((book) => book.id === worldbookName);',
+    '    const generation = await session.host.generation.current();',
+    '    const generationAvailable = await session.host.generation.available();',
+    "    await session.host.prompt.set({ id:'fixture.consumer-a.gate', content:'artifact gate' }); await session.host.prompt.remove('fixture.consumer-a.gate');",
+    "    const requestResponse = await session.host.request.send({ path:'/api/settings/get', method:'POST', body:{} });",
+    "    const binaryBody = { encoding:'base64', contentType:'application/vnd.sqlite3', data:'U1FMaXRlIGZvcm1hdCAzAEcwMTEgYmluYXJ5IGdhdGU=', byteLength:32, sha256:'0c05ece4802d8aba9072dcd878fcf3ba519e67c66c82ff0754e6749ca87216c1' };",
+    "    const binaryExport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/export', method:'POST', responseMode:'binary' });",
+    "    const binaryImport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/import', method:'POST', responseMode:'json', body:binaryBody });",
+    "    const legacyMemoryRoute = await session.host.request.send({ path:'/api/plugins/ss-helper-sdk/v1/memory/health', method:'GET' });",
+    '    state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } }, legacyMemoryRoute:{ status:legacyMemoryRoute.status, ok:legacyMemoryRoute.ok } };',
+    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
+    "    session.registerSettings({ id:'fixture.consumer-a', title:'A', fields:[{ kind:'select', id:'mode', label:'模式', options:[{value:'balanced',label:'均衡'},{value:'precise',label:'精确'},{value:'creative',label:'创意'},{value:'economy',label:'省用'}] }] }, { load:()=>({mode:'balanced'}), save:()=>{}, reset:()=>({mode:'balanced'}) });",
+    '    session.services.expose(contract, (request) => ({ value:request.value }));',
+    '    state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
+    '    state.sameDiscovery = globalThis[discoverySymbol] === discoveryBefore;',
+    '    state.generationAfter = globalThis[discoverySymbol].descriptor.generation;',
+    '    state.state = "ready";',
+    '  } catch (error) { state.state = "failed"; state.error = String(error?.stack ?? error); }',
+    '};',
+    'void start();',
   ].join('\n'));
   const consumerB = makeConsumerBundle('gate-consumer-b', sdk.installedSdk, [
     "import * as sdk from './sdk/index.js';",
     "const discoverySymbol = Symbol.for('@ss-helper/core.discovery');",
     'globalThis.__SSHelperArtifactConsumers ??= {};',
     'const state = globalThis.__SSHelperArtifactConsumers.b = { id: "fixture.consumer-b", state: "loading" };',
-    'try {',
-    '  const discoveryBefore = globalThis[discoverySymbol];',
-    '  state.discoveryBefore = discoveryBefore?.descriptor;',
-    "  const requested = ['tavern.context.read'];",
-    `  const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'1.0.0', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiMajor:2, minApiMinor:1, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
-    '  const context = await session.host.context.read(); state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey } };',
-    "  const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
-    '  await session.services.waitFor(contract, { timeoutMs:10000 });',
-    "  state.response = await session.services.call(contract, { value:'artifact', apiKey:'GATE_API_KEY_SENTINEL', prompt:'GATE_PROMPT_SENTINEL', cookie:'GATE_COOKIE_SENTINEL', csrf:'GATE_CSRF_SENTINEL', authorization:'Bearer GATE_AUTH_SENTINEL', sqliteBase64:'U1FMaXRlIEdBVEVfU1FMSVRFX1NFTlRJTkVM', userContent:'GATE_USER_CONTENT_SENTINEL' }, { timeoutMs:10000 });",
-    '  state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
-    '  state.sameDiscovery = globalThis[discoverySymbol] === discoveryBefore;',
-    '  state.generationAfter = globalThis[discoverySymbol].descriptor.generation;',
-    '  state.state = "ready";',
-    '} catch (error) { state.state = "failed"; state.error = String(error?.stack ?? error); throw error; }',
+    'const start = async () => {',
+    '  try {',
+    '    await sdk.waitForTavernReady({ timeoutMs: 15_000 });',
+    "    const requested = ['tavern.context.read'];",
+    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'1.0.0', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiMajor:2, minApiMinor:2, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
+    '    const discoveryBefore = globalThis[discoverySymbol];',
+    '    state.discoveryBefore = discoveryBefore?.descriptor;',
+    '    const context = await session.host.context.read(); state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey } };',
+    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
+    '    await session.services.waitFor(contract, { timeoutMs:10000 });',
+    "    state.response = await session.services.call(contract, { value:'artifact', apiKey:'GATE_API_KEY_SENTINEL', prompt:'GATE_PROMPT_SENTINEL', cookie:'GATE_COOKIE_SENTINEL', csrf:'GATE_CSRF_SENTINEL', authorization:'Bearer GATE_AUTH_SENTINEL', sqliteBase64:'U1FMaXRlIEdBVEVfU1FMSVRFX1NFTlRJTkVM', userContent:'GATE_USER_CONTENT_SENTINEL' }, { timeoutMs:10000 });",
+    '    state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
+    '    state.sameDiscovery = globalThis[discoverySymbol] === discoveryBefore;',
+    '    state.generationAfter = globalThis[discoverySymbol].descriptor.generation;',
+    '    state.state = "ready";',
+    '  } catch (error) { state.state = "failed"; state.error = String(error?.stack ?? error); }',
+    '};',
+    'void start();',
   ].join('\n'));
 
   const browserSmokeArgs = [
@@ -363,8 +420,21 @@ function artifactSmoke(core, sdk) {
   if (llmRoot !== undefined && memoryRoot !== undefined) {
     browserSmokeArgs.push(`--llmRoot=${path.resolve(llmRoot)}`, `--memoryRoot=${path.resolve(memoryRoot)}`);
   }
-  const output = command('node', browserSmokeArgs, { capture: true });
-  return JSON.parse(output.split(/\r?\n/u).at(-1));
+  let primary;
+  const browsers = {};
+  for (const requestedBrowser of requiredBrowsers()) {
+    const output = command('node', browserSmokeArgs, {
+      capture: true,
+      env: { SS_HELPER_BROWSER: requestedBrowser },
+    });
+    const smoke = JSON.parse(output.split(/\r?\n/u).at(-1));
+    if (smoke.browser?.requested?.toLowerCase() !== requestedBrowser) {
+      throw new Error(`Browser smoke selected ${String(smoke.browser?.requested)} instead of required ${requestedBrowser}`);
+    }
+    browsers[requestedBrowser] = smoke.browser;
+    primary ??= smoke;
+  }
+  return { ...primary, browsers };
 }
 
 try {
@@ -403,12 +473,14 @@ try {
       coreOnlySmoke: smoke.coreOnly,
       officialSillyTavern: smoke.st,
       browser: smoke.browser,
+      browsers: smoke.browsers,
     },
     dualConsumer: smoke,
     commands: commandLog,
   };
   writeFileSync(path.join(artifactDirectory, 'g009-release-evidence.json'), `${JSON.stringify(sanitizeEvidenceValue(evidence), null, 2)}\n`);
-  writeFileSync(path.join(artifactDirectory, 'README.md'), `# G009 artifact gate\n\nStatus: PASS\n\n- Host capabilities: ${smoke.discovery.capabilities.join(', ')}\n- LLM contracts: completion, structured-task, embedding, rerank, route-diagnostics\n- SDK: \`${relativeArtifact(sdk.tarball)}\`\n  - SHA-256: \`${sdk.sha256}\`\n- Core: \`${relativeArtifact(core.zipFile)}\`\n  - archive SHA-256: \`${core.archiveSha256}\`\n  - contentDigest: \`${core.manifest.contentDigest}\`\n- Fresh install: PASS (NodeNext + Bundler + runtime)\n- Core-only smoke: PASS (official SillyTavern ${smoke.st.tag} at ${smoke.st.commit})\n- Real browser: ${smoke.browser.product}\n- Dual-consumer smoke: PASS (generation ${smoke.discovery.generation}, settings roots ${smoke.settingsRoots}, Core instances ${smoke.coreInstances})\n\nReproduce from the repository root with \`pnpm artifact:gate\`.\n`);
+  const browserSummary = Object.values(smoke.browsers).map((browser) => `${browser.requested}: ${browser.product}`).join(', ');
+  writeFileSync(path.join(artifactDirectory, 'README.md'), `# G009 artifact gate\n\nStatus: PASS\n\n- Host capabilities: ${smoke.discovery.capabilities.join(', ')}\n- LLM contracts: completion, structured-task, embedding, rerank, route-diagnostics\n- SDK: \`${relativeArtifact(sdk.tarball)}\`\n  - SHA-256: \`${sdk.sha256}\`\n- Core: \`${relativeArtifact(core.zipFile)}\`\n  - archive SHA-256: \`${core.archiveSha256}\`\n  - contentDigest: \`${core.manifest.contentDigest}\`\n- Fresh install: PASS (NodeNext + Bundler + runtime)\n- Core-only smoke: PASS (official SillyTavern ${smoke.st.tag} at ${smoke.st.commit})\n- Real browsers: ${browserSummary}\n- Dual-consumer smoke: PASS (generation ${smoke.discovery.generation}, settings roots ${smoke.settingsRoots}, Core instances ${smoke.coreInstances})\n\nReproduce from the repository root with \`pnpm artifact:gate\`.\n`);
   console.log(`PASS G009 artifact gate\nSDK ${relativeArtifact(sdk.tarball)} ${sdk.sha256}\nCore ${relativeArtifact(core.zipFile)} ${core.archiveSha256}\ncontentDigest ${core.manifest.contentDigest}`);
 } finally {
   rmSync(externalRoot, { recursive: true, force: true });

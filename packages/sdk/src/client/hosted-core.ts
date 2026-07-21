@@ -7,7 +7,12 @@ export async function ensureHostedCore(modulePath = '/api/plugins/ss-helper-sdk/
   if (current?.descriptor.state === 'ready') return current;
   loading ??= (async () => {
     const url = new URL(modulePath, globalThis.location?.href ?? 'http://localhost/').href;
-    const module = await import(/* @vite-ignore */ url) as { coreReady?: Promise<unknown>; coreRuntime?: unknown };
+    const module = await import(/* @vite-ignore */ url) as {
+      ensureCoreReady?: () => Promise<unknown>;
+      coreReady?: Promise<unknown>;
+      coreRuntime?: unknown;
+    };
+    if (typeof module.ensureCoreReady === 'function') return await module.ensureCoreReady();
     return module.coreReady === undefined ? module.coreRuntime : await module.coreReady;
   })();
   try { return await loading; } finally { loading = undefined; }

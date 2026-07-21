@@ -1,0 +1,10 @@
+{
+  "display_name": "SS Helper No-op LLM Fixture",
+  "loading_order": -900,
+  "js": "index.js",
+  "author": "SS-Helper test fixture",
+  "version": "0.0.0",
+  "auto_update": false,
+  "homePage": "https://example.invalid/ss-helper-fixture",
+  "minimum_client_version": "1.18.0"
+}

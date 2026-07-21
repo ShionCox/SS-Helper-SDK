@@ -3,6 +3,7 @@ import type { HostCapability, HostPort } from './host.js';
 import type { ServicePort } from './services.js';
 import type { SettingsAdapter, SettingsSchema } from './settings.js';
 import type { PopupRegistration, UiPort } from './ui.js';
+import type { SecretPort } from './secrets.js';
 import type { WorkspacePort } from './workspace.js';
 
 export type PluginId = `${string}.${string}`;
@@ -34,6 +35,7 @@ export interface PluginSession<Capabilities extends HostCapability = HostCapabil
   readonly events: EventPort;
   readonly ui: UiPort;
   readonly workspace: WorkspacePort;
+  readonly secrets: SecretPort;
   readonly closed: Promise<SessionCloseInfo>;
   registerSettings(schema: SettingsSchema, adapter: SettingsAdapter): () => void;
   registerPopup(registration: PopupRegistration): () => void;

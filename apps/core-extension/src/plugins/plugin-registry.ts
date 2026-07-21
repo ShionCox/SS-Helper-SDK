@@ -28,6 +28,9 @@ import type { SettingsHost } from '../settings/settings-host.js';
 import type { PopupHost } from '../popup/popup-host.js';
 import type { ToastHost } from '../toast/toast-host.js';
 import { createWorkspacePort } from '../workspace/workspace-port.js';
+import { createSecretPort } from '../workspace/secret-port.js';
+import type { InternalBridgeClient } from '../bridge/internal-bridge.js';
+import { MANAGED_BRIDGE_CAPABILITIES, policyAllows } from '../bridge/bridge-policy.js';
 
 export interface PluginSnapshot {
   readonly id: string;
@@ -50,6 +53,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   readonly host: HostPort<Capabilities>;
   readonly ui: UiPort;
   readonly workspace: import('@ss-helper/sdk').WorkspacePort;
+  readonly secrets: import('@ss-helper/sdk').SecretPort;
   #closed = false;
 
   constructor(
@@ -64,6 +68,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     private readonly settingsHost: SettingsHost,
     private readonly popupHost: PopupHost,
     private readonly toastHost: ToastHost,
+    bridge: InternalBridgeClient,
   ) {
     this.#scope = new ResourceScope(descriptor.id, generation, coreActive);
     let close!: (info: SessionCloseInfo) => void;
@@ -79,7 +84,8 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
       subscribe: (contract: AnyEventContract, listener: (payload: unknown) => void) => events.subscribe(this.#scope, contract, listener),
     }) as EventPort;
     this.host = createTavernHostPort(this.#scope, granted, hostAdapter);
-    this.workspace = createWorkspacePort(this.#scope, descriptor.id);
+    this.workspace = createWorkspacePort(this.#scope, descriptor.id, granted, bridge);
+    this.secrets = createSecretPort(this.#scope, descriptor.id, granted, bridge);
     this.ui = Object.freeze({
       openPopup: <Input extends PlainData>(token: PopupToken<Input>, input: Input) => this.popupHost.open(this.#scope, token, input),
       showToast: (notification: ToastNotification) => {
@@ -150,6 +156,7 @@ export class PluginRegistry {
     private readonly settingsHost: SettingsHost,
     private readonly popupHost: PopupHost,
     private readonly toastHost: ToastHost,
+    private readonly bridge: InternalBridgeClient,
   ) {}
 
   register<Capabilities extends HostCapability>(descriptor: PluginDescriptor<Capabilities>): PluginSession<Capabilities> {
@@ -162,7 +169,11 @@ export class PluginRegistry {
       throw new SSHelperError('DUPLICATE_PLUGIN_ID', 'The plugin ID is already registered', { pluginId: descriptor.id });
     }
     const frozenDescriptor = Object.freeze({ ...descriptor, capabilities: Object.freeze([...descriptor.capabilities]) });
-    const granted = Object.freeze(descriptor.capabilities.filter((capability) => this.capabilities.includes(capability))) as readonly Capabilities[];
+    const granted = Object.freeze(descriptor.capabilities.filter((capability) => {
+      if (!this.capabilities.includes(capability)) return false;
+      return !(MANAGED_BRIDGE_CAPABILITIES as readonly HostCapability[]).includes(capability)
+        || policyAllows(descriptor.id, capability);
+    })) as readonly Capabilities[];
     const session = new PluginSessionImpl(
       frozenDescriptor,
       this.generation,
@@ -175,6 +186,7 @@ export class PluginRegistry {
       this.settingsHost,
       this.popupHost,
       this.toastHost,
+      this.bridge,
     );
     this.#sessions.set(descriptor.id, session as unknown as PluginSessionImpl<HostCapability>);
     this.diagnostics.increment('plugins', 1);

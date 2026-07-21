@@ -72,7 +72,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     opener.focus();
     opener.dispatchEvent({ type: 'click' });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.deepEqual(fetched, ['/api/plugins/ss-helper-sdk/v2/workspaces/health']);
+    assert.deepEqual(fetched, [], 'the Core settings center must not use a legacy workspace health HTTP route');
     assert.ok(document.getElementById(SETTINGS_CENTER_OVERLAY_ID));
     assert.ok(document.getElementById(SETTINGS_CENTER_ID));
     assert.equal(document.body.style.overflow, 'hidden');

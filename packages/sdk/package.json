@@ -1,6 +1,6 @@
 {
   "name": "@ss-helper/sdk",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Stateless public contracts for SS-Helper plugins",
   "type": "module",
   "sideEffects": false,

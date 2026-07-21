@@ -1,127 +1,193 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('SDK server plugin creates a shared database and enforces workspace ownership', async () => {
+const BRIDGE_ROUTE = '/internal/bridge/v1/call';
+
+function createRouter() {
+  const routes = new Map();
+  return {
+    routes,
+    router: {
+      get(route, handler) { routes.set(`GET ${route}`, handler); },
+      post(route, handler) { routes.set(`POST ${route}`, handler); },
+    },
+  };
+}
+
+async function invoke(routes, method, route, request) {
+  let status = 200; let payload;
+  const response = {
+    status(code) { status = code; return response; },
+    json(value) { payload = value; return response; },
+    sendFile() { return response; },
+  };
+  const handler = routes.get(`${method} ${route}`);
+  assert.ok(handler, `missing ${method} ${route}`);
+  await handler(request, response);
+  return { status, payload };
+}
+
+async function bridge(routes, pluginId, operation, input = {}, headers = {}) {
+  return invoke(routes, 'POST', BRIDGE_ROUTE, {
+    headers,
+    body: { version: 1, pluginId, operation, input },
+  });
+}
+
+function restoreEnv(name, previous) {
+  if (previous === undefined) delete process.env[name]; else process.env[name] = previous;
+}
+
+test('SDK internal bridge owns all browser workspace CRUD and rejects old public routes', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-'));
   const previous = process.env.SS_HELPER_ST_ROOT;
   process.env.SS_HELPER_ST_ROOT = root;
+  let module;
   try {
-    const routes = new Map();
-    const router = {
-      get(route, handler) { routes.set(`GET ${route}`, handler); },
-      post(route, handler) { routes.set(`POST ${route}`, handler); },
-    };
-    const module = await import(`../server-plugin/index.js?test=${Date.now()}`);
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?bridge=${Date.now()}`);
     assert.equal(module.__test.resolveDatabasePath({ stRoot: null, dataRoot: path.join(root, 'isolated-data') }), path.join(root, 'isolated-data', '_ss-helper', 'ss-helper.sqlite3'));
     await module.init(router);
-    const invoke = async (method, route, request) => {
-      let status = 200; let payload;
-      const response = { status(code) { status = code; return response; }, json(value) { payload = value; return response; }, sendFile() { return response; } };
-      await routes.get(`${method} ${route}`)(request, response);
-      return { status, payload };
-    };
-    const caller = (plugin) => ({ headers: { 'x-ss-helper-plugin': plugin }, body: {} });
-    let result = await invoke('POST', '/v2/workspaces/open', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', create: true } });
+    assert.equal(routes.has('POST /v2/workspaces/open'), false);
+    assert.equal(routes.has('GET /v2/health'), false);
+    assert.equal(routes.has(`POST ${BRIDGE_ROUTE}`), true);
+
+    let result = await bridge(routes, 'ss-helper.memory', 'workspace.open', { workspaceId: 'character:hero', create: true }, { 'x-ss-helper-plugin': 'forged.plugin' });
     assert.equal(result.status, 200);
-    result = await invoke('POST', '/v2/workspaces/open', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:中文 角色/测试', create: true } });
+    assert.equal(result.payload.data.ownerPluginId, 'ss-helper.memory');
+    assert.equal(result.payload.data.created, true);
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.open', { workspaceId: 'character:中文 角色/测试', create: true });
     assert.equal(result.status, 200);
-    result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', recordId: 'fact-1', value: { text: 'shared' }, action: 'upsert' } });
-    assert.equal(result.status, 200);
-    const encodedSlotId = `fact-slot:${encodeURIComponent('同名聊天 - 2026-07-18@03h29m55s201ms')}:${encodeURIComponent('人物::位置')}`;
-    result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', recordId: encodedSlotId, value: { chatKey: '同名聊天', slotKey: '人物::位置', factId: 'fact-1' }, action: 'upsert' } });
-    assert.equal(result.status, 200);
-    assert.equal(result.payload.record.recordId, encodedSlotId);
-    result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.llm'), body: { ownerPluginId: 'ss-helper.memory', workspaceId: 'character:hero', recordId: 'fact-1', action: 'get' } });
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.upsert', { workspaceId: 'character:hero', recordId: 'fact-1', value: { text: 'shared' } });
+    assert.equal(result.payload.data.recordId, 'fact-1');
+
+    result = await bridge(routes, 'ss-helper.llm', 'workspace.get', { ownerPluginId: 'ss-helper.memory', workspaceId: 'character:hero', recordId: 'fact-1' });
     assert.equal(result.status, 403);
-    result = await invoke('POST', '/v2/workspaces/grant', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', granteePluginId: 'ss-helper.llm', actions: ['read'] } });
+    assert.equal(result.payload.error, 'WORKSPACE_ACCESS_DENIED');
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.grant', { workspaceId: 'character:hero', granteePluginId: 'ss-helper.llm', actions: ['read'] });
     assert.equal(result.status, 200);
-    result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.llm'), body: { ownerPluginId: 'ss-helper.memory', workspaceId: 'character:hero', recordId: 'fact-1', action: 'get' } });
+    result = await bridge(routes, 'ss-helper.llm', 'workspace.get', { ownerPluginId: 'ss-helper.memory', workspaceId: 'character:hero', recordId: 'fact-1' });
+    assert.equal(result.payload.data.value.text, 'shared');
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.revoke', { workspaceId: 'character:hero', granteePluginId: 'ss-helper.llm' });
     assert.equal(result.status, 200);
-    result = await invoke('POST', '/v2/workspaces/grant', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', granteePluginId: 'ss-helper.llm', action: 'revoke' } });
-    assert.equal(result.status, 200);
-    result = await invoke('POST', '/v2/workspaces/transaction', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', idempotencyKey: 'tx-1', operations: [{ action: 'upsert', recordId: 'fact-2', value: { text: 'once' } }] } });
-    assert.equal(result.status, 200);
-    const replay = await invoke('POST', '/v2/workspaces/transaction', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', idempotencyKey: 'tx-1', operations: [{ action: 'upsert', recordId: 'fact-2', value: { text: 'twice' } }] } });
-    assert.deepEqual({ ...replay.payload, replayed: false }, result.payload);
-    result = await invoke('POST', '/v2/workspaces/collection', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', name: 'facts', indexes: ['sourceChatKey', 'priority'] } });
+
+    const first = await bridge(routes, 'ss-helper.memory', 'workspace.transaction', { workspaceId: 'character:hero', idempotencyKey: 'tx-1', operations: [{ action: 'upsert', recordId: 'fact-2', value: { text: 'once' } }] });
+    const replay = await bridge(routes, 'ss-helper.memory', 'workspace.transaction', { workspaceId: 'character:hero', idempotencyKey: 'tx-1', operations: [{ action: 'upsert', recordId: 'fact-2', value: { text: 'twice' } }] });
+    assert.deepEqual({ ...replay.payload.data, replayed: false }, first.payload.data);
+
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.defineCollection', { workspaceId: 'character:hero', name: 'facts', indexes: ['sourceChatKey', 'priority'] });
     assert.equal(result.status, 200);
     for (const [recordId, sourceChatKey, priority] of [['fact-a', 'chat:a', 2], ['fact-b', 'chat:a', 1], ['fact-c', 'chat:b', 3]]) {
-      result = await invoke('POST', '/v2/workspaces/record', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', collection: 'facts', recordId, value: { sourceChatKey, priority }, action: 'upsert' } });
+      result = await bridge(routes, 'ss-helper.memory', 'workspace.upsert', { workspaceId: 'character:hero', collection: 'facts', recordId, value: { sourceChatKey, priority } });
       assert.equal(result.status, 200);
     }
-    result = await invoke('POST', '/v2/workspaces/query', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', collection: 'facts', filter: { sourceChatKey: 'chat:a' }, orderBy: { field: 'priority', direction: 'asc' }, limit: 1 } });
-    assert.equal(result.payload.records[0].recordId, 'fact-b');
-    assert.equal(typeof result.payload.nextCursor, 'string');
-    const secondPage = await invoke('POST', '/v2/workspaces/query', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', collection: 'facts', filter: { sourceChatKey: 'chat:a' }, orderBy: { field: 'priority', direction: 'asc' }, cursor: result.payload.nextCursor, limit: 1 } });
-    assert.equal(secondPage.payload.records[0].recordId, 'fact-a');
-    const unindexed = await invoke('POST', '/v2/workspaces/query', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', collection: 'facts', filter: { text: 'no index' } } });
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.query', { workspaceId: 'character:hero', collection: 'facts', filter: { sourceChatKey: 'chat:a' }, orderBy: { field: 'priority', direction: 'asc' }, limit: 1 });
+    assert.equal(result.payload.data.records[0].recordId, 'fact-b');
+    const secondPage = await bridge(routes, 'ss-helper.memory', 'workspace.query', { workspaceId: 'character:hero', collection: 'facts', filter: { sourceChatKey: 'chat:a' }, orderBy: { field: 'priority', direction: 'asc' }, cursor: result.payload.data.nextCursor, limit: 1 });
+    assert.equal(secondPage.payload.data.records[0].recordId, 'fact-a');
+    const unindexed = await bridge(routes, 'ss-helper.memory', 'workspace.query', { workspaceId: 'character:hero', collection: 'facts', filter: { text: 'no index' } });
     assert.equal(unindexed.payload.error, 'WORKSPACE_INDEX_REQUIRED');
-    result = await invoke('POST', '/v2/workspaces/vector', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', recordId: 'fact-1', vector: [1, 0], model: 'test', metadata: { source: 'chat:a' } } });
+
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.vectorUpsert', { workspaceId: 'character:hero', recordId: 'fact-1', vector: [1, 0], model: 'test', metadata: { source: 'chat:a' } });
     assert.equal(result.status, 200);
-    result = await invoke('POST', '/v2/workspaces/vector/search', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', vector: [1, 0], limit: 1 } });
-    assert.equal(result.payload.hits[0].recordId, 'fact-1');
-    assert.deepEqual(result.payload.hits[0].metadata, { source: 'chat:a' });
-    const vectors = await invoke('POST', '/v2/workspaces/vector/list', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', metadata: { source: 'chat:a' } } });
-    assert.equal(vectors.payload.vectors.length, 1);
-    const exported = await invoke('POST', '/v2/workspaces/backup/export', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero' } });
-    assert.equal(exported.status, 200);
-    assert.equal(exported.payload.archive.format, 'ss-helper-workspace');
-    result = await invoke('POST', '/v2/workspaces/backup/import', { ...caller('ss-helper.memory'), body: { workspaceId: 'character:hero', archive: exported.payload.archive, sha256: exported.payload.sha256 } });
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.vectorSearch', { workspaceId: 'character:hero', vector: [1, 0], limit: 1 });
+    assert.equal(result.payload.data[0].recordId, 'fact-1');
+    assert.deepEqual(result.payload.data[0].metadata, { source: 'chat:a' });
+
+    const exported = await bridge(routes, 'ss-helper.memory', 'workspace.export', { workspaceId: 'character:hero' });
+    assert.equal(exported.payload.data.archive.format, 'ss-helper-workspace');
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.import', { workspaceId: 'character:hero', archive: exported.payload.data.archive, sha256: exported.payload.data.sha256 });
     assert.equal(result.status, 200);
-    const exportedAll = await invoke('GET', '/v2/workspaces/backup/export-all', caller('ss-helper.memory'));
-    assert.equal(exportedAll.payload.archive.ownerPluginId, 'ss-helper.memory');
-    assert.equal(exportedAll.payload.archive.workspaces.length, 2);
-    result = await invoke('POST', '/v2/workspaces/clear-owned', { ...caller('ss-helper.memory'), body: { preserveWorkspaceIds: ['character:hero'] } });
-    assert.equal(result.payload.removed, 1);
-    const listed = await invoke('POST', '/v2/workspaces/list', caller('ss-helper.memory'));
-    assert.deepEqual(listed.payload.workspaces.map((item) => item.workspaceId), ['character:hero']);
-    const health = await invoke('GET', '/v2/workspaces/health', caller('ss-helper.memory'));
-    assert.match(health.payload.nodeVersion, /^v\d+/u);
-    assert.equal(Number.isSafeInteger(health.payload.databaseSizeBytes), true);
-    assert.equal(health.payload.databaseSizeBytes > 0, true);
-    assert.equal(routes.has('GET /v1/memory/health'), false);
-    module.exit();
+    result = await bridge(routes, 'ss-helper.memory', 'workspace.clearOwned', { preserveWorkspaceIds: ['character:hero'] });
+    assert.equal(result.payload.data, 1);
+    const health = await bridge(routes, 'ss-helper.memory', 'workspace.health');
+    assert.equal(health.payload.data.ready, true);
+    assert.match(health.payload.data.nodeVersion, /^v\d+/u);
+    assert.equal(Number.isSafeInteger(health.payload.data.databaseSizeBytes), true);
+    const forged = await invoke(routes, 'POST', BRIDGE_ROUTE, { headers: { 'x-ss-helper-plugin': 'ss-helper.memory' }, body: { version: 1, pluginId: 'forged.plugin', operation: 'workspace.health', input: {} } });
+    assert.equal(forged.status, 403);
+    assert.equal(forged.payload.error, 'SERVER_CAPABILITY_DENIED');
   } finally {
-    if (previous === undefined) delete process.env.SS_HELPER_ST_ROOT;
-    else process.env.SS_HELPER_ST_ROOT = previous;
-    try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* Windows may retain SQLite WAL handles until process exit. */ }
+    module?.exit();
+    restoreEnv('SS_HELPER_ST_ROOT', previous);
+    try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* Windows may retain SQLite handles briefly. */ }
   }
 });
 
-test('SDK server bridge encrypts secrets while browser secret routes stay gone', async () => {
+test('SDK bridge health and confirmed recovery work when SQLite is corrupt', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-recovery-'));
+  const previous = process.env.SS_HELPER_ST_ROOT;
+  process.env.SS_HELPER_ST_ROOT = root;
+  const workspace = path.join(root, 'data', '_ss-helper');
+  const corruptDatabase = Buffer.from('not a sqlite database', 'utf8');
+  const originalKey = Buffer.alloc(32, 7);
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(path.join(workspace, 'ss-helper.sqlite3'), corruptDatabase);
+  writeFileSync(path.join(workspace, 'ss-helper-secrets.key'), originalKey);
+  let module;
+  try {
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?recovery=${Date.now()}`);
+    await module.init(router);
+    const health = await bridge(routes, 'ss-helper.memory', 'workspace.health');
+    assert.equal(health.status, 200);
+    assert.equal(health.payload.data.ready, false);
+    assert.equal(health.payload.data.status, 'degraded');
+    assert.equal(health.payload.data.errorCode, 'WORKSPACE_DATABASE_UNAVAILABLE');
+    assert.equal(health.payload.data.recoverable, true);
+    assert.equal(JSON.stringify(health.payload).includes(root), false);
+    assert.equal(JSON.stringify(health.payload).includes('not a sqlite database'), false);
+    const denied = await bridge(routes, 'ss-helper.llm', 'workspace.repair', { confirm: true });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.payload.error, 'SERVER_CAPABILITY_DENIED');
+    const unconfirmed = await bridge(routes, 'ss-helper.memory', 'workspace.repair', {});
+    assert.equal(unconfirmed.status, 400);
+    assert.equal(unconfirmed.payload.error, 'WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED');
+    const repaired = await bridge(routes, 'ss-helper.memory', 'workspace.repair', { confirm: true });
+    assert.equal(repaired.status, 200);
+    assert.equal(repaired.payload.data.requiresReload, true);
+    assert.match(repaired.payload.data.backupId, /^ss-helper-recovery-/u);
+    const backup = path.join(root, 'backups', repaired.payload.data.backupId);
+    assert.equal(existsSync(path.join(backup, 'ss-helper-recovery-manifest.json')), true);
+    assert.deepEqual(readFileSync(path.join(backup, 'ss-helper.sqlite3')), corruptDatabase);
+    assert.deepEqual(readFileSync(path.join(backup, 'ss-helper-secrets.key')), originalKey);
+    const manifest = JSON.parse(readFileSync(path.join(backup, 'ss-helper-recovery-manifest.json'), 'utf8'));
+    assert.equal(manifest.files.some((file) => file.path === 'ss-helper.sqlite3' && file.sha256.length === 64), true);
+    const healthy = await bridge(routes, 'ss-helper.memory', 'workspace.health');
+    assert.equal(healthy.payload.data.ready, true);
+    assert.equal(healthy.payload.data.status, 'ready');
+  } finally {
+    module?.exit();
+    restoreEnv('SS_HELPER_ST_ROOT', previous);
+    try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore Windows SQLite handles */ }
+  }
+});
+
+test('SDK bridge stores secrets encrypted and limits them to the LLM policy entry', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-secret-'));
   const previous = process.env.SS_HELPER_ST_ROOT;
   process.env.SS_HELPER_ST_ROOT = root;
-  process.env.SS_HELPER_SDK_SERVER_CAPABILITIES = JSON.stringify({ 'ss-helper.sdk.test': ['workspace.read', 'workspace.write', 'secrets.read', 'secrets.write'] });
+  let module;
   try {
-    const routes = new Map();
-    const router = { get(route, handler) { routes.set(`GET ${route}`, handler); }, post(route, handler) { routes.set(`POST ${route}`, handler); } };
-    const module = await import(`../server-plugin/index.js?secret-test=${Date.now()}`);
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?secret=${Date.now()}`);
     await module.init(router);
-    const invoke = async (method, route, request) => { let status = 200; let payload; const response = { status(code) { status = code; return response; }, json(value) { payload = value; return response; }, sendFile() { return response; } }; await routes.get(`${method} ${route}`)(request, response); return { status, payload }; };
-    const legacy = await invoke('POST', '/v1/workspaces/secret', { headers: {}, body: {} });
-    assert.equal(legacy.status, 410); assert.equal(legacy.payload.error, 'SECRET_API_REMOVED');
-    const { connectServerPlugin } = await import(`../packages/sdk/dist/server.js?secret-client=${Date.now()}`);
-    const server = await connectServerPlugin({ pluginId: 'ss-helper.sdk.test', capabilities: ['workspace.read', 'workspace.write', 'secrets.read', 'secrets.write'] });
-    await server.workspace.open({ workspaceId: 'llm:global', create: true });
-    const health = await server.workspace.health();
-    assert.match(health.nodeVersion, /^v\d+/u);
-    assert.equal(health.databaseSizeBytes > 0, true);
-    const metadata = await server.secrets.set({ workspaceId: 'llm:global', secretId: 'resource:demo:api-key', value: 'sk-test-secret', metadata: { label: 'Demo' } });
-    assert.equal(metadata.maskedValue, 'sk-t***cret');
-    assert.equal((await server.secrets.get({ workspaceId: 'llm:global', secretId: 'resource:demo:api-key' })).value, 'sk-test-secret');
-    assert.equal(JSON.stringify(await server.workspace.exportAll()).includes('sk-test-secret'), false);
-    assert.throws(() => globalThis[Symbol.for('@ss-helper/sdk.server.v2')].connect({ pluginId: 'other.plugin', capabilities: ['secrets.read'] }), { code: 'SERVER_CAPABILITY_DENIED' });
+    await bridge(routes, 'ss-helper.llm', 'workspace.open', { workspaceId: 'llm:global', create: true });
+    const metadata = await bridge(routes, 'ss-helper.llm', 'secrets.set', { workspaceId: 'llm:global', secretId: 'resource:demo:api-key', value: 'sk-test-secret', metadata: { label: 'Demo' } });
+    assert.equal(metadata.payload.data.maskedValue, 'sk-t***cret');
+    const value = await bridge(routes, 'ss-helper.llm', 'secrets.get', { workspaceId: 'llm:global', secretId: 'resource:demo:api-key' });
+    assert.equal(value.payload.data.value, 'sk-test-secret');
+    const denied = await bridge(routes, 'ss-helper.memory', 'secrets.get', { workspaceId: 'llm:global', secretId: 'resource:demo:api-key' });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.payload.error, 'SERVER_CAPABILITY_DENIED');
     const dbBytes = readFileSync(path.join(root, 'data', '_ss-helper', 'ss-helper.sqlite3'));
     assert.equal(dbBytes.includes(Buffer.from('sk-test-secret')), false);
-    server.dispose(); module.exit();
   } finally {
-    if (previous === undefined) delete process.env.SS_HELPER_ST_ROOT; else process.env.SS_HELPER_ST_ROOT = previous;
-    delete process.env.SS_HELPER_SDK_SERVER_CAPABILITIES;
-    try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore Windows sqlite handles */ }
+    module?.exit();
+    restoreEnv('SS_HELPER_ST_ROOT', previous);
+    try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore Windows SQLite handles */ }
   }
 });

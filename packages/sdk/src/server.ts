@@ -8,12 +8,14 @@ import type {
   WorkspaceQueryRequest,
   WorkspaceRecord,
   WorkspaceRecordRequest,
+  WorkspaceRecoveryRepairRequest,
+  WorkspaceRecoveryRepairResult,
   WorkspaceSecretMetadata,
   WorkspaceTransactionRequest,
   WorkspaceTransactionResult,
 } from './contracts/workspace.js';
 
-export type ServerCapability = 'workspace.read' | 'workspace.write' | 'secrets.read' | 'secrets.write' | 'services.register';
+export type ServerCapability = 'workspace.read' | 'workspace.write' | 'workspace.recovery' | 'secrets.read' | 'secrets.write' | 'services.register';
 
 export interface ServerSecretRecord extends WorkspaceSecretMetadata { readonly value: string; }
 export interface ServerWorkspacePort {
@@ -28,6 +30,7 @@ export interface ServerWorkspacePort {
   clearOwned(request?: { readonly preserveWorkspaceIds?: readonly string[]; readonly idempotencyKey?: string }): Promise<number>;
   exportAll(): Promise<{ readonly archive: PlainData; readonly sha256: string }>;
   importAll(request: { readonly archive: PlainData; readonly sha256: string }): Promise<void>;
+  repair(request: WorkspaceRecoveryRepairRequest): Promise<WorkspaceRecoveryRepairResult>;
 }
 
 export interface ServerSecretPort {

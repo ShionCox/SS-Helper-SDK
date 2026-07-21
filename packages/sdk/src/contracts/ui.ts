@@ -17,6 +17,8 @@ export type UiControlTone = 'neutral' | 'primary' | 'danger' | 'success' | 'warn
 export interface PopupUiContext {
   /** Re-applies Core-owned component behavior after a plugin replaces popup DOM. */
   refreshControls(root?: HTMLElement): void;
+  /** Closes the current Core-owned popup without relying on its internal DOM. */
+  close(): void;
 }
 
 export interface PopupRegistration<Input extends PlainData = PlainData> {

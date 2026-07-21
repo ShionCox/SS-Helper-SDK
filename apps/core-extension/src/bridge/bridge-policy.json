@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "plugins": {
+    "ss-helper.llm": ["workspace.read", "workspace.write", "secrets.read", "secrets.write"],
+    "ss-helper.memory": ["workspace.read", "workspace.write", "workspace.recovery"]
+  }
+}

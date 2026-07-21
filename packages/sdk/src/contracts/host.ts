@@ -20,7 +20,12 @@ export type HostCapability =
   | 'tavern.metadata.write'
   | 'tavern.settings.write'
   | 'tavern.macros.execute'
-  | 'tavern.systemMessage.write';
+  | 'tavern.systemMessage.write'
+  /** Core-owned, destructive workspace recovery. Granted only to Memory. */
+  | 'workspace.recovery'
+  /** Encryption keys remain in the server workspace and are granted only to LLM. */
+  | 'secrets.read'
+  | 'secrets.write';
 
 export interface HostIdentitySnapshot { readonly userId?: string | undefined; readonly userName?: string | undefined; readonly characterId?: string | undefined; readonly groupId?: string | undefined; }
 export interface HostContextSnapshot { readonly chatId?: string | undefined; readonly chatKey?: string | undefined; readonly characterId?: string | undefined; readonly groupId?: string | undefined; }

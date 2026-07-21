@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -58,6 +59,12 @@ export function packSdkPackage({ packageDirectory, artifactDirectory }) {
     const packageJson = JSON.parse(readFileSync(path.join(packageDirectory, 'package.json'), 'utf8'));
     writeFileSync(path.join(stage, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
     mkdirSync(artifactDirectory, { recursive: true });
+    const archivePrefix = `${packageJson.name.replace(/^@/u, '').replace('/', '-')}-`;
+    for (const entry of readdirSync(artifactDirectory, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.startsWith(archivePrefix) && entry.name.endsWith('.tgz')) {
+        rmSync(path.join(artifactDirectory, entry.name), { force: true });
+      }
+    }
     const pnpm = directPnpm(['--dir', stage, 'pack', '--pack-destination', artifactDirectory]);
     const result = spawnSync(pnpm.command, pnpm.args, { encoding: 'utf8', shell: false });
     if (result.status !== 0) {
