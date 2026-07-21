@@ -22,6 +22,7 @@ import {
   SettingsCenterController,
 } from './settings-center-controller.js';
 import { createSelectControl } from '../ui/select-control.js';
+import { createIconElement } from '../ui/icon-element.js';
 
 export const SETTINGS_ROOT_ID = 'ss-helper-settings-root';
 export { SETTINGS_CENTER_ID, SETTINGS_CENTER_OVERLAY_ID };
@@ -253,10 +254,7 @@ function domId(pluginId: string, suffix: string): string {
 }
 
 function icon(document: Document, name: string): HTMLElement {
-  const node = document.createElement('i');
-  node.className = `fa-solid ${name}`;
-  node.setAttribute('aria-hidden', 'true');
-  return node;
+  return createIconElement(document, name, { decorative: true });
 }
 
 function setButtonLabel(document: Document, button: HTMLButtonElement, iconName: string, label: string): void {
@@ -542,7 +540,7 @@ export class SettingsHost {
     launcher.className = 'stx-launcher-card';
     launcher.dataset.pluginId = this.core.id;
     launcher.dataset.health = 'healthy';
-    const mark = document.createElement('div'); mark.className = 'stx-launcher-icon'; mark.append(icon(document, 'fa-puzzle-piece'));
+    const mark = document.createElement('div'); mark.className = 'stx-launcher-icon'; mark.append(icon(document, 'puzzle-piece'));
     const copy = document.createElement('div'); copy.className = 'stx-launcher-copy';
     const name = document.createElement('strong'); name.textContent = 'SS-Helper 设置中心';
     const details = document.createElement('small');
@@ -552,7 +550,7 @@ export class SettingsHost {
     open.id = 'ss-helper-open-settings-center';
     open.type = 'button';
     open.className = 'stx-ui-btn stx-ui-btn-primary';
-    setButtonLabel(document, open, 'fa-sliders', '打开设置中心');
+    setButtonLabel(document, open, 'sliders', '打开设置中心');
     open.addEventListener('click', () => this.#openSettingsCenter());
     launcher.append(mark, copy, open);
     root.append(heading, launcher);
@@ -576,13 +574,13 @@ export class SettingsHost {
     const document = dialog.ownerDocument;
     const header = document.createElement('header'); header.className = 'stx-center-header';
     const brand = document.createElement('div'); brand.className = 'stx-center-brand';
-    const brandIcon = document.createElement('div'); brandIcon.className = 'stx-center-brand-icon'; brandIcon.append(icon(document, 'fa-puzzle-piece'));
+    const brandIcon = document.createElement('div'); brandIcon.className = 'stx-center-brand-icon'; brandIcon.append(icon(document, 'puzzle-piece'));
     const brandCopy = document.createElement('div');
     const title = document.createElement('h2'); title.textContent = 'SS-Helper 设置中心';
     const subtitle = document.createElement('small'); subtitle.textContent = '管理插件、连接与通用服务';
     brandCopy.append(title, subtitle); brand.append(brandIcon, brandCopy);
     const close = document.createElement('button');
-    close.type = 'button'; close.className = 'stx-center-close'; close.setAttribute('aria-label', '关闭设置中心'); close.append(icon(document, 'fa-xmark'));
+    close.type = 'button'; close.className = 'stx-center-close'; close.setAttribute('aria-label', '关闭设置中心'); close.append(icon(document, 'xmark'));
     close.addEventListener('click', this.#center!.close);
     header.append(brand, close);
 
@@ -590,9 +588,9 @@ export class SettingsHost {
     const sidebar = document.createElement('aside'); sidebar.className = 'stx-center-sidebar';
     const navLabel = document.createElement('small'); navLabel.className = 'stx-center-nav-label'; navLabel.textContent = '设置';
     const nav = document.createElement('nav'); nav.className = 'stx-center-nav'; nav.setAttribute('aria-label', 'SS-Helper 插件');
-    nav.append(this.#renderNavButton(document, OVERVIEW_ID, '概览', 'fa-gauge-high', 'Core 与服务状态', 'healthy'));
+    nav.append(this.#renderNavButton(document, OVERVIEW_ID, '概览', 'gauge-high', 'Core 与服务状态', 'healthy'));
     for (const contribution of this.#contributions.values()) {
-      nav.append(this.#renderNavButton(document, contribution.identity.id, contribution.identity.displayName, 'fa-puzzle-piece', formatReleaseVersion(contribution.identity.pluginVersion), contribution.health));
+      nav.append(this.#renderNavButton(document, contribution.identity.id, contribution.identity.displayName, 'puzzle-piece', formatReleaseVersion(contribution.identity.pluginVersion), contribution.health));
     }
     const sidebarMeta = document.createElement('div'); sidebarMeta.className = 'stx-center-sidebar-meta';
     sidebarMeta.textContent = `Core ${formatReleaseVersion(this.core.coreVersion)} · generation ${this.core.generation}`;
@@ -644,8 +642,8 @@ export class SettingsHost {
     const content = document.createElement('div'); content.className = 'stx-center-scroll';
     const grid = document.createElement('div'); grid.className = 'stx-overview-grid';
     grid.append(
-      this.#renderOverviewCard(document, 'Core Runtime', formatReleaseVersion(this.core.coreVersion), `API ${this.core.apiMajor}.${this.core.apiMinor} · generation ${this.core.generation}`, 'fa-microchip', 'healthy'),
-      this.#renderOverviewCard(document, '已注册插件', String(this.#contributions.size), '设置会自动出现在左侧菜单', 'fa-plug', this.#contributions.size > 0 ? 'healthy' : 'degraded'),
+      this.#renderOverviewCard(document, 'Core Runtime', formatReleaseVersion(this.core.coreVersion), `API ${this.core.apiMajor}.${this.core.apiMinor} · generation ${this.core.generation}`, 'microchip', 'healthy'),
+      this.#renderOverviewCard(document, '已注册插件', String(this.#contributions.size), '设置会自动出现在左侧菜单', 'plug', this.#contributions.size > 0 ? 'healthy' : 'degraded'),
     );
     const list = document.createElement('section'); list.className = 'stx-overview-list';
     const listTitle = document.createElement('h4'); listTitle.textContent = '插件状态'; list.append(listTitle);
@@ -693,7 +691,7 @@ export class SettingsHost {
     badges.append(version, health); heading.append(headingCopy, badges);
 
     const searchBar = document.createElement('div'); searchBar.className = 'stx-center-searchbar';
-    const searchIcon = icon(document, 'fa-magnifying-glass');
+    const searchIcon = icon(document, 'magnifying-glass');
     const search = document.createElement('input');
     search.type = 'search'; search.className = 'stx-ui-search'; search.placeholder = '搜索当前插件设置…'; search.setAttribute('aria-label', `${identity.displayName} 设置搜索`); search.value = this.#searchQueries.get(identity.id) ?? '';
     searchBar.append(searchIcon, search);
@@ -711,7 +709,7 @@ export class SettingsHost {
 
     const footer = document.createElement('footer'); footer.className = 'stx-center-footer';
     const status = document.createElement('div'); status.className = `stx-save-state stx-save-state-${contribution.saveState}`; status.dataset.saveStatus = identity.id;
-    status.append(icon(document, contribution.saveState === 'error' ? 'fa-circle-exclamation' : contribution.saveState === 'saving' ? 'fa-rotate' : 'fa-circle-check'));
+    status.append(icon(document, contribution.saveState === 'error' ? 'circle-exclamation' : contribution.saveState === 'saving' ? 'rotate' : 'circle-check'));
     const statusText = document.createElement('span'); statusText.textContent = this.#saveStateText(contribution); status.append(statusText);
     const actions = document.createElement('div'); actions.className = 'stx-center-footer-actions';
     for (const field of actionFields(schema).filter((candidate) => candidate.placement !== 'inline')) {
@@ -720,7 +718,7 @@ export class SettingsHost {
       if (field.popup !== undefined) action.addEventListener('click', () => contribution.openPopup(field.popup!, { actionId: field.actionId }, action));
       actions.append(action);
     }
-    const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'stx-ui-btn stx-ui-btn-neutral'; setButtonLabel(document, reset, 'fa-arrow-rotate-left', '恢复默认');
+    const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'stx-ui-btn stx-ui-btn-neutral'; setButtonLabel(document, reset, 'arrow-rotate-left', '恢复默认');
     reset.addEventListener('click', () => void this.#resetWithConfirmation(contribution));
     actions.append(reset); footer.append(status, actions);
     main.append(heading, content, footer);
@@ -833,7 +831,7 @@ export class SettingsHost {
           const option = field.options.find((candidate) => candidate.value === selectedValue); if (option === undefined) continue;
           const chip = document.createElement('span'); chip.className = 'stx-ui-chip';
           const text = document.createElement('span'); text.textContent = option.label;
-          const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'stx-ui-chip-remove'; remove.setAttribute('aria-label', `移除 ${option.label}`); remove.disabled = disabledReason !== undefined; remove.append(icon(document, 'fa-xmark'));
+          const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'stx-ui-chip-remove'; remove.setAttribute('aria-label', `移除 ${option.label}`); remove.disabled = disabledReason !== undefined; remove.append(icon(document, 'xmark'));
           remove.addEventListener('click', () => this.#commitField(contribution, field, Object.freeze(selected.filter((value) => value !== selectedValue))));
           chip.append(text, remove); chips.append(chip);
         }
@@ -860,7 +858,7 @@ export class SettingsHost {
         const flush = (): void => this.#scheduleFieldSave(contribution, field, () => input.value.trim() === '' ? Number.NaN : Number(input.value));
         input.addEventListener('input', flush); input.addEventListener('blur', () => this.#flushDebouncedSave(contribution.identity.id, field.id)); input.addEventListener('keydown', (event: KeyboardEvent) => { if (event.key === 'Enter') this.#flushDebouncedSave(contribution.identity.id, field.id); });
         if (field.showStepper !== false) {
-          const minus = this.#stepButton(document, 'fa-minus', `减少${field.label}`); const plus = this.#stepButton(document, 'fa-plus', `增加${field.label}`);
+          const minus = this.#stepButton(document, 'minus', `减少${field.label}`); const plus = this.#stepButton(document, 'plus', `增加${field.label}`);
           minus.disabled = disabledReason !== undefined; plus.disabled = disabledReason !== undefined;
           minus.addEventListener('click', () => this.#stepNumber(contribution, field, input, -1)); plus.addEventListener('click', () => this.#stepNumber(contribution, field, input, 1)); stepper.append(minus, input, plus);
         } else stepper.append(input);

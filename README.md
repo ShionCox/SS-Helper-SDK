@@ -40,6 +40,11 @@ See [plugin authoring](docs/plugin-authoring.md), the
 [public API](docs/public-api.md), [settings schema](docs/settings-schema.md),
 [compatibility](docs/compatibility.md), and [migration](docs/migration.md).
 
+Shared browser icons use the Core-owned `<ss-helper-icon>` element documented in
+[plugin authoring](docs/plugin-authoring.md#icons). Its local Font Awesome Solid
+font is isolated from SillyTavern and consumer plugins must not load their own
+copy.
+
 ## Settings and custom UI
 
 Register normal settings as a schema plus load/save/reset adapter. Core owns the

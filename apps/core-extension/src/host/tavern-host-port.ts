@@ -3,6 +3,7 @@ import {
   type ChatSnapshot,
   type ChatMessageInput,
   type ChatMessageSnapshot,
+  type ChatNavigationTarget,
   type GenerationRequest,
   type GenerationResult,
   type GenerationSnapshot,
@@ -35,7 +36,7 @@ export interface TavernHostAdapter {
   readonly identity?: { read(): Promise<HostIdentitySnapshot> };
   readonly character?: { read(): Promise<HostCharacterSnapshot | null> };
   readonly persona?: { read(): Promise<HostPersonaSnapshot | null> };
-  readonly chat?: { readCurrent(): Promise<ChatSnapshot | null>; readMessages(): Promise<readonly ChatMessageSnapshot[]>; list(): Promise<readonly ChatSnapshot[]>; append(message: ChatMessageInput): Promise<ChatMessageSnapshot>; edit(messageId: string, message: ChatMessageInput): Promise<ChatMessageSnapshot>; delete(messageId: string): Promise<void> };
+  readonly chat?: { readCurrent(): Promise<ChatSnapshot | null>; readMessages(): Promise<readonly ChatMessageSnapshot[]>; list(): Promise<readonly ChatSnapshot[]>; append(message: ChatMessageInput): Promise<ChatMessageSnapshot>; edit(messageId: string, message: ChatMessageInput): Promise<ChatMessageSnapshot>; delete(messageId: string): Promise<void>; navigate(target: ChatNavigationTarget): Promise<void> };
   readonly events?: { subscribe(name: HostEventName, listener: (event: HostEvent) => void): () => void };
   readonly worldbooks?: {
     list(): Promise<readonly WorldbookSnapshot[]>;
@@ -272,7 +273,7 @@ const deniedTopLevel: Readonly<Record<string, object>> = Object.freeze({
   identity: deniedSurface('tavern.identity.read', ['read']),
   character: deniedSurface('tavern.character.read', ['read']),
   persona: deniedSurface('tavern.persona.read', ['read']),
-  chat: deniedSurface('tavern.chat.read', ['readCurrent', 'readMessages', 'list', 'append', 'edit', 'delete']),
+  chat: deniedSurface('tavern.chat.read', ['readCurrent', 'readMessages', 'list', 'append', 'edit', 'delete', 'navigate']),
   events: deniedSurface('tavern.chat.events', ['subscribe']),
   worldbooks: deniedSurface('tavern.worldbooks.read', ['list', 'load', 'save', 'delete', 'setActive']),
   generation: deniedSurface('tavern.generation.read', ['available', 'models', 'current', 'generate', 'test']),
@@ -292,11 +293,12 @@ export function createTavernHostPort<Granted extends HostCapability>(scope: Sess
   if (has('tavern.identity.read')) port.identity = { read: guarded(scope, () => requireAdapter(adapter.identity, 'tavern.identity.read').read()) };
   if (has('tavern.character.read')) port.character = { read: guarded(scope, () => requireAdapter(adapter.character, 'tavern.character.read').read()) };
   if (has('tavern.persona.read')) port.persona = { read: guarded(scope, () => requireAdapter(adapter.persona, 'tavern.persona.read').read()) };
-  if (has('tavern.chat.read') || has('tavern.chat.list') || has('tavern.chat.write')) {
+  if (has('tavern.chat.read') || has('tavern.chat.list') || has('tavern.chat.write') || has('tavern.chat.navigate')) {
     const chat: Record<string, unknown> = {};
     if (has('tavern.chat.read')) { chat.readCurrent = guarded(scope, () => requireAdapter(adapter.chat, 'tavern.chat.read').readCurrent()); chat.readMessages = guarded(scope, () => requireAdapter(adapter.chat, 'tavern.chat.read').readMessages()); }
     if (has('tavern.chat.list')) chat.list = guarded(scope, () => requireAdapter(adapter.chat, 'tavern.chat.list').list());
     if (has('tavern.chat.write')) { chat.append = guarded(scope, (message: ChatMessageInput) => requireAdapter(adapter.chat, 'tavern.chat.write').append(message)); chat.edit = guarded(scope, (id: string, message: ChatMessageInput) => requireAdapter(adapter.chat, 'tavern.chat.write').edit(id, message)); chat.delete = guarded(scope, (id: string) => requireAdapter(adapter.chat, 'tavern.chat.write').delete(id)); }
+    if (has('tavern.chat.navigate')) chat.navigate = guarded(scope, (target: ChatNavigationTarget) => requireAdapter(adapter.chat, 'tavern.chat.navigate').navigate(target));
     port.chat = Object.freeze(new Proxy(chat, { get: (target, property, receiver) => Reflect.has(target, property) ? Reflect.get(target, property, receiver) : () => unavailable('tavern.chat.list') }));
   }
   if (has('tavern.chat.events')) port.events = { subscribe: (name: HostEventName, listener: (event: HostEvent) => void) => subscribeToChatEvents(scope, adapter, name, listener) };

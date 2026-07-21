@@ -9,6 +9,7 @@ export type HostCapability =
   | 'tavern.chat.read'
   | 'tavern.chat.list'
   | 'tavern.chat.write'
+  | 'tavern.chat.navigate'
   | 'tavern.chat.events'
   | 'tavern.worldbooks.read'
   | 'tavern.worldbooks.write'
@@ -36,6 +37,8 @@ export type MessageVariablesSnapshot = MessageVariableEntry | readonly MessageVa
 export interface ChatMessageSnapshot { readonly id: string; readonly index: number; readonly role: 'system' | 'user' | 'assistant'; readonly name?: string | undefined; readonly text: string; readonly createdAt?: string | undefined; readonly variables?: MessageVariablesSnapshot; }
 export interface ChatSnapshot { readonly key: string; readonly id?: string | undefined; readonly name?: string | undefined; readonly messageCount: number; readonly messages?: readonly ChatMessageSnapshot[]; readonly variables?: Readonly<Record<string, PlainData>>; }
 export interface ChatMessageInput { readonly role: 'system' | 'user' | 'assistant'; readonly text: string; readonly name?: string | undefined; readonly variables?: MessageVariablesSnapshot; }
+/** Core-owned navigation target used by read-only UI references. */
+export interface ChatNavigationTarget { readonly messageId?: string | undefined; readonly index?: number | undefined; }
 export interface WorldbookEntrySnapshot { readonly id: string; readonly keys: readonly string[]; readonly secondaryKeys?: readonly string[]; readonly content: string; readonly enabled: boolean; readonly position?: number; readonly order?: number; }
 export interface WorldbookSnapshot { readonly id: string; readonly name: string; readonly active: boolean; readonly entries?: readonly WorldbookEntrySnapshot[]; }
 export interface GenerationUsageSnapshot { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number; }
@@ -167,10 +170,11 @@ type GrantedSlice<G extends HostCapability, R extends HostCapability, S> = [Extr
 type GrantedSurface<G extends HostCapability, R extends HostCapability, N extends PropertyKey, S> = GrantedSlice<G, R, { readonly [K in N]: S }>;
 interface HostPortBase<G extends HostCapability> { readonly capabilities: readonly G[]; has<C extends HostCapability>(capability: C): capability is Extract<G, C>; }
 
-type HostChatPort<G extends HostCapability> = GrantedSurface<G, 'tavern.chat.read' | 'tavern.chat.list' | 'tavern.chat.write', 'chat',
+type HostChatPort<G extends HostCapability> = GrantedSurface<G, 'tavern.chat.read' | 'tavern.chat.list' | 'tavern.chat.write' | 'tavern.chat.navigate', 'chat',
   GrantedSlice<G, 'tavern.chat.read', { readCurrent(): Promise<ChatSnapshot | null>; readMessages(): Promise<readonly ChatMessageSnapshot[]> }>
   & GrantedSlice<G, 'tavern.chat.list', { list(): Promise<readonly ChatSnapshot[]> }>
-  & GrantedSlice<G, 'tavern.chat.write', { append(message: ChatMessageInput): Promise<ChatMessageSnapshot>; edit(messageId: string, message: ChatMessageInput): Promise<ChatMessageSnapshot>; delete(messageId: string): Promise<void> }>>;
+  & GrantedSlice<G, 'tavern.chat.write', { append(message: ChatMessageInput): Promise<ChatMessageSnapshot>; edit(messageId: string, message: ChatMessageInput): Promise<ChatMessageSnapshot>; delete(messageId: string): Promise<void> }>
+  & GrantedSlice<G, 'tavern.chat.navigate', { navigate(target: ChatNavigationTarget): Promise<void> }>>;
 type HostWorldbooksPort<G extends HostCapability> = GrantedSurface<G, 'tavern.worldbooks.read' | 'tavern.worldbooks.write', 'worldbooks',
   GrantedSlice<G, 'tavern.worldbooks.read', { list(): Promise<readonly WorldbookSnapshot[]>; load(id: string): Promise<WorldbookSnapshot | null>; active(): Promise<readonly WorldbookSnapshot[]> }>
   & GrantedSlice<G, 'tavern.worldbooks.write', { save(worldbook: WorldbookSnapshot): Promise<void>; delete(id: string): Promise<void>; setActive(id: string, active: boolean): Promise<void> }>>;

@@ -3,6 +3,7 @@ import { assertPayload } from '../communication/contracts.js';
 import type { DiagnosticsStore } from '../diagnostics/diagnostics-store.js';
 import type { SessionScope } from '../plugins/session-scope.js';
 import { ensureCoreUiStyles } from '../styles/settings-styles.js';
+import { createIconElement } from '../ui/icon-element.js';
 
 const MAX_TOASTS = 5;
 const DEFAULT_DURATIONS: Readonly<Record<ToastLevel, number>> = Object.freeze({
@@ -12,10 +13,10 @@ const DEFAULT_DURATIONS: Readonly<Record<ToastLevel, number>> = Object.freeze({
   error: 0,
 });
 const ICONS: Readonly<Record<ToastLevel, string>> = Object.freeze({
-  info: 'fa-circle-info',
-  success: 'fa-circle-check',
-  warning: 'fa-triangle-exclamation',
-  error: 'fa-circle-exclamation',
+  info: 'circle-info',
+  success: 'circle-check',
+  warning: 'triangle-exclamation',
+  error: 'circle-exclamation',
 });
 
 interface ToastEntry {
@@ -68,14 +69,12 @@ export class ToastHost {
     if (input.code !== undefined) element.dataset.toastCode = input.code;
     element.setAttribute('role', input.level === 'warning' || input.level === 'error' ? 'alert' : 'status');
 
-    const icon = document.createElement('i');
-    icon.className = `fa-solid ${ICONS[input.level]} stx-toast-icon`;
-    icon.setAttribute('aria-hidden', 'true');
+    const icon = createIconElement(document, ICONS[input.level], { decorative: true, className: 'stx-toast-icon' });
     const content = document.createElement('div'); content.className = 'stx-toast-content';
     if (input.title !== undefined) { const title = document.createElement('strong'); title.className = 'stx-toast-title'; title.textContent = input.title; content.append(title); }
     const message = document.createElement('p'); message.className = 'stx-toast-message'; message.textContent = input.message; content.append(message);
     const close = document.createElement('button'); close.type = 'button'; close.className = 'stx-toast-close'; close.setAttribute('aria-label', '关闭通知');
-    const closeIcon = document.createElement('i'); closeIcon.className = 'fa-solid fa-xmark'; closeIcon.setAttribute('aria-hidden', 'true'); close.append(closeIcon);
+    close.append(createIconElement(document, 'xmark', { decorative: true }));
     element.append(icon, content, close);
 
     const durationMs = input.durationMs ?? DEFAULT_DURATIONS[input.level];

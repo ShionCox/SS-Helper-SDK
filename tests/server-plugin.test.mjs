@@ -22,7 +22,7 @@ async function invoke(routes, method, route, request) {
   const response = {
     status(code) { status = code; return response; },
     json(value) { payload = value; return response; },
-    sendFile() { return response; },
+    sendFile(file) { payload = { file }; return response; },
   };
   const handler = routes.get(`${method} ${route}`);
   assert.ok(handler, `missing ${method} ${route}`);
@@ -54,6 +54,9 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
     assert.equal(routes.has('POST /v2/workspaces/open'), false);
     assert.equal(routes.has('GET /v2/health'), false);
     assert.equal(routes.has(`POST ${BRIDGE_ROUTE}`), true);
+    assert.equal(routes.has('GET /artifact-manifest.json'), true);
+    const manifest = await invoke(routes, 'GET', '/artifact-manifest.json', {});
+    assert.equal(path.basename(manifest.payload.file), 'artifact-manifest.json');
 
     let result = await bridge(routes, 'ss-helper.memory', 'workspace.open', { workspaceId: 'character:hero', create: true }, { 'x-ss-helper-plugin': 'forged.plugin' });
     assert.equal(result.status, 200);

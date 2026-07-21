@@ -398,6 +398,7 @@ test('HostPort rejects invalid DTOs before sync or async adapters and preserves 
     },
     events: { subscribe: (name, listener) => { eventCalls += 1; listener({ name, chatKey: () => 'invalid' }); return () => {}; } },
   } });
+  const coreEventCalls = eventCalls;
   const session = runtime.connect(pluginDescriptor('example.dto-guard', { capabilities: ALL_CAPABILITIES }));
   assert.throws(() => session.host.generation.generate({ prompt: () => 'invalid' }), errorCode('PAYLOAD_INVALID'));
   assert.throws(() => session.host.worldbooks.save({ id: 'wb', name: 'World', active: () => true }), errorCode('PAYLOAD_INVALID'));
@@ -405,7 +406,7 @@ test('HostPort rejects invalid DTOs before sync or async adapters and preserves 
   assert.equal(worldbookCalls, 0);
   let callbacks = 0;
   assert.throws(() => session.host.events.subscribe('chat-changed', () => { callbacks += 1; }), errorCode('PAYLOAD_INVALID'));
-  assert.equal(eventCalls, 1);
+  assert.equal(eventCalls, coreEventCalls + 1);
   assert.equal(callbacks, 0);
   await session.host.generation.generate({ prompt: 'valid' });
   await session.host.worldbooks.save({ id: 'wb', name: 'World', active: true });
@@ -474,10 +475,10 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
 
   unsubscribes[0]();
   runtime.dispose();
-  assert.equal(removed.length, names.length);
+  assert.equal(removed.length, names.length + 1);
   assert.equal(new Set(removed.map(([name]) => name)).size, names.length);
   unsubscribes[0]();
-  assert.equal(removed.length, names.length);
+  assert.equal(removed.length, names.length + 1);
 
   const replacement = installCoreRuntime(coreIdentity({ buildId: 'event-reload', capabilities: ['tavern.chat.events'] }), realm, { hostAdapter: bridge.hostAdapter });
   const replacementSession = replacement.connect(pluginDescriptor('example.event-map-reload', { capabilities: ['tavern.chat.events'] }));
@@ -485,7 +486,7 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   assert.equal(callbacks.size, 1);
   replacement.dispose();
   assert.equal(callbacks.size, 0);
-  assert.equal(removed.length, names.length + 1);
+  assert.equal(removed.length, names.length + 3);
 });
 
 test('HostPort rejects malformed event DTOs for every retained event name', () => {
@@ -505,9 +506,10 @@ test('HostPort rejects malformed event DTOs for every retained event name', () =
   const runtime = installCoreRuntime(coreIdentity({ capabilities: ['tavern.chat.events'] }), new TestRealm(), { hostAdapter: {
     events: { subscribe: (name, listener) => { adapterCalls += 1; listener(invalid.get(name)); return () => {}; } },
   } });
+  const coreAdapterCalls = adapterCalls;
   const session = runtime.connect(pluginDescriptor('example.invalid-events', { capabilities: ['tavern.chat.events'] }));
   for (const name of invalid.keys()) assert.throws(() => session.host.events.subscribe(name, () => assert.fail('invalid DTO reached listener')), errorCode('PAYLOAD_INVALID'));
-  assert.equal(adapterCalls, invalid.size);
+  assert.equal(adapterCalls, coreAdapterCalls + invalid.size);
   assert.throws(() => session.host.events.subscribe('not-retained', () => {}), errorCode('PAYLOAD_INVALID'));
-  assert.equal(adapterCalls, invalid.size);
+  assert.equal(adapterCalls, coreAdapterCalls + invalid.size);
 });

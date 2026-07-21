@@ -23,6 +23,16 @@ reload, accessibility, plugin health, and degraded presentation. Custom
 workbenches may open only through the registered popup/dialog API; do not mount
 an independent settings root.
 
+## Icons
+
+After connecting to Core, browser UI may use the Core-owned declarative element
+`<ss-helper-icon name="brain" decorative></ss-helper-icon>`. Names use the local
+Font Awesome Solid catalog without an `fa-` prefix. Use `decorative` when the
+surrounding button or visible text already supplies meaning; otherwise provide a
+`label`, for example `<ss-helper-icon name="circle-info" label="信息"></ss-helper-icon>`.
+Do not load Font Awesome styles or fonts in a consumer and do not use global
+`fa-*` classes. Core's isolated stylesheet cannot change SillyTavern icons.
+
 ## Prohibited integrations
 
 Do not import SDK/Core source files, access raw Tavern globals,

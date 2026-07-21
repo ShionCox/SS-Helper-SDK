@@ -5,7 +5,9 @@ import { SSHelperError } from './vendor/sdk/errors.js';
 import { waitForTavernReady } from './vendor/sdk/client/tavern-ready.js';
 
 const styleId = 'ss-helper-sdk-core-style';
+const iconStyleId = 'ss-helper-sdk-icon-style';
 let loading;
+let iconStyleFailed = false;
 export let coreRuntime;
 
 function activeCoreSnapshot() {
@@ -15,14 +17,38 @@ function activeCoreSnapshot() {
   return candidate;
 }
 
-function ensureCoreStyle() {
-  const document = globalThis.document;
-  if (document === undefined || document.getElementById(styleId)) return;
+function ensureStyleLink(document, id, pathname, contentDigest, onError) {
+  const suffix = typeof contentDigest === 'string' && /^[a-f0-9]{64}$/u.test(contentDigest) ? `?v=${contentDigest}` : '';
+  const href = `${pathname}${suffix}`;
+  const current = document.getElementById(id);
+  if (current?.tagName === 'LINK') {
+    if (current.getAttribute('href') !== href) current.setAttribute('href', href);
+    if (onError && current.dataset.ssHelperErrorListener !== 'true') {
+      current.dataset.ssHelperErrorListener = 'true';
+      current.addEventListener('error', onError);
+    }
+    return;
+  }
+  current?.remove();
   const style = document.createElement('link');
-  style.id = styleId;
+  style.id = id;
   style.rel = 'stylesheet';
-  style.href = '/api/plugins/ss-helper-sdk/browser/core.css';
+  style.href = href;
+  if (onError) {
+    style.dataset.ssHelperErrorListener = 'true';
+    style.addEventListener('error', onError);
+  }
   document.head?.append(style);
+}
+
+function ensureCoreStyle(contentDigest) {
+  const document = globalThis.document;
+  if (document === undefined) return;
+  ensureStyleLink(document, styleId, '/api/plugins/ss-helper-sdk/browser/core.css', contentDigest);
+  ensureStyleLink(document, iconStyleId, '/api/plugins/ss-helper-sdk/browser/fontawesome/ss-helper-icons.css', contentDigest, () => {
+    iconStyleFailed = true;
+    coreRuntime?.diagnosticsStore?.record({ type: 'core.ui.icon.degraded', code: 'ICON_STYLESHEET_LOAD_FAILED' });
+  });
 }
 
 /**
@@ -32,14 +58,16 @@ function ensureCoreStyle() {
  */
 async function loadArtifactDigest() {
   try {
-    const response = await fetch(new URL('./artifact-manifest.json', import.meta.url));
+    const response = await fetch(new URL('../artifact-manifest.json', import.meta.url));
     if (!response.ok) return undefined;
     const document = await response.json();
     const digest = typeof document?.contentDigest === 'string'
       ? document.contentDigest
       : typeof document?.artifact?.contentDigest === 'string'
         ? document.artifact.contentDigest
-        : undefined;
+        : typeof document?.artifacts?.['SS-Helper-SDK']?.contentDigest === 'string'
+          ? document.artifacts['SS-Helper-SDK'].contentDigest
+          : undefined;
     return typeof digest === 'string' && /^[a-f0-9]{64}$/u.test(digest) ? digest : undefined;
   } catch {
     return undefined;
@@ -72,7 +100,7 @@ export function ensureCoreReady() {
     if (host.capabilities.length === 0) {
       throw new SSHelperError('HOST_NOT_READY', 'SillyTavern host capabilities are not available yet');
     }
-    ensureCoreStyle();
+    ensureCoreStyle(artifactDigest);
     const runtime = installCoreRuntime({
       coreVersion: '2.2.0',
       sdkPackageVersion: '2.2.0',
@@ -87,6 +115,7 @@ export function ensureCoreReady() {
       settingsContainer: globalThis.document?.querySelector?.('#extensions_settings') ?? globalThis.document?.body,
     });
     coreRuntime = runtime;
+    if (iconStyleFailed) runtime.diagnosticsStore.record({ type: 'core.ui.icon.degraded', code: 'ICON_STYLESHEET_LOAD_FAILED' });
     return runtime;
   })();
   loading = attempt;

@@ -447,9 +447,51 @@ test('workspace popup exposes a stable presentation marker and shared chrome', (
     assert.equal(dialog.dataset.presentation, 'workspace');
     assert.equal(dialog.children[0].dataset.popupHeader, 'true');
     assert.equal(dialog.children[1].dataset.popupContent, 'true');
+    assert.equal(dialog.children[2].dataset.popupResizeHandle, 'true');
+    assert.equal(dialog.children[2].getAttribute('aria-label'), '调整窗口大小');
+    const coreStyles = document.getElementById('ss-helper-core-ui-styles').textContent;
+    assert.match(coreStyles, /width: min\(96vw, 88rem\); height: min\(92vh, 58rem\)/);
+    assert.match(coreStyles, /\[data-popup-resize-handle="true"\]/);
+    assert.match(coreStyles, /clip-path: polygon\(100% 0, 100% 100%, 0 100%\); opacity: \.48;/);
+    assert.match(coreStyles, /\[data-popup-resize-handle="true"\] \{ display: none; \}/);
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
     assert.equal(document.activeElement, opener);
     assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 1 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('PAYLOAD_INVALID'));
+  } finally { restore(); }
+});
+
+test('workspace popup restores and updates its browser-persisted size', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const values = new Map([['ss-helper.popup-size:["example.popup-size","workbench",1]', JSON.stringify({ width: 900, height: 700 })]]);
+    Object.assign(document.defaultView, {
+      innerWidth: 1600,
+      innerHeight: 1000,
+      getComputedStyle: () => ({ minWidth: '672px', minHeight: '512px' }),
+      localStorage: {
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, value),
+      },
+    });
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.popup-size'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-size', name: 'workbench', version: 1 });
+    session.registerPopup({ token, title: 'Workspace', presentation: 'workspace', render: () => {} });
+    session.ui.openPopup(token, {});
+    let overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    let dialog = overlay.children[0];
+    assert.equal(dialog.style.width, '900px');
+    assert.equal(dialog.style.height, '700px');
+    dialog.getBoundingClientRect = () => ({ width: Number.parseFloat(dialog.style.width), height: Number.parseFloat(dialog.style.height) });
+    dialog.children[2].dispatchEvent({ type: 'keydown', key: 'ArrowRight', shiftKey: false, preventDefault() {} });
+    assert.deepEqual(JSON.parse(values.values().next().value), { width: 910, height: 700 });
+    dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    session.ui.openPopup(token, {});
+    overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    dialog = overlay.children[0];
+    assert.equal(dialog.style.width, '910px');
+    assert.equal(dialog.style.height, '700px');
   } finally { restore(); }
 });
 
@@ -513,7 +555,9 @@ test('popup public controls share Core styles and enhance native selects idempot
     assert.equal(shells[0].children[1].children[1].children[1].hidden, false);
     const closeButton = dialog.children[0].children[1];
     assert.equal(closeButton.getAttribute('aria-label'), '关闭控件测试');
-    assert.match(closeButton.children[0].className, /fa-xmark/u);
+    assert.equal(closeButton.children[0].tagName, 'SS-HELPER-ICON');
+    assert.equal(closeButton.children[0].getAttribute('name'), 'xmark');
+    assert.equal(closeButton.children[0].getAttribute('aria-hidden'), 'true');
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
     assert.equal(nativeSelect.hidden, false);
     const styles = document.body.children.find((node) => node.dataset.ssHelperStyle === 'core-ui').textContent;

@@ -21,7 +21,8 @@ const WORKSPACE_ROOT = path.dirname(DB_PATH);
 const DATA_ROOT = path.dirname(WORKSPACE_ROOT);
 const TAVERN_ROOT = path.dirname(DATA_ROOT);
 const RECOVERY_BACKUP_ROOT = path.join(TAVERN_ROOT, 'backups');
-const BROWSER_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'browser');
+const PLUGIN_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const BROWSER_ROOT = path.join(PLUGIN_ROOT, 'browser');
 const MAX_VALUE_BYTES = 1024 * 1024;
 const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 const MAX_PAGE_SIZE = 1000;
@@ -912,6 +913,7 @@ function browserAssetPath(req) {
 }
 
 function registerWorkspaceRoutes(router) {
+  router.get('/artifact-manifest.json', (_req, res) => res.sendFile(path.join(PLUGIN_ROOT, 'artifact-manifest.json')));
   router.get('/browser/core.js', (_req, res) => res.sendFile(path.join(BROWSER_ROOT, 'core.js')));
   router.get('/browser/core.css', (_req, res) => res.sendFile(path.join(BROWSER_ROOT, 'core.css')));
   if (typeof router.use === 'function') router.use('/browser', (req, res, next) => {

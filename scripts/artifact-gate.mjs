@@ -201,7 +201,14 @@ function buildCoreArtifact() {
   const baseManifest = JSON.parse(readFileSync(path.join(root, 'apps/core-extension/manifest.json'), 'utf8'));
   const extensionManifest = { ...baseManifest, js: 'index.js', css: 'styles.css' };
   writeFileSync(path.join(extensionRoot, 'manifest.json'), `${JSON.stringify(extensionManifest, null, 2)}\n`);
-  writeFileSync(path.join(extensionRoot, 'styles.css'), readFileSync(path.join(root, 'apps/core-extension/assets/styles.css'), 'utf8').replace(/\r\n?/gu, '\n'));
+  const fontAwesomeRoot = path.join(extensionRoot, 'fontawesome');
+  mkdirSync(path.join(fontAwesomeRoot, 'webfonts'), { recursive: true });
+  copyFileSync(path.join(root, 'public/fontawesome/ss-helper-icons.css'), path.join(fontAwesomeRoot, 'ss-helper-icons.css'));
+  copyFileSync(path.join(root, 'public/fontawesome/webfonts/fa-solid-900.woff2'), path.join(fontAwesomeRoot, 'webfonts/fa-solid-900.woff2'));
+  writeFileSync(path.join(extensionRoot, 'styles.css'), [
+    "@import url('./fontawesome/ss-helper-icons.css');",
+    readFileSync(path.join(root, 'apps/core-extension/assets/styles.css'), 'utf8').replace(/\r\n?/gu, '\n'),
+  ].join('\n'));
   writeFileSync(path.join(extensionRoot, 'index.js'), [
     "import { installCoreRuntime } from './lib/runtime/install-core-runtime.js';",
     "import { createSillyTavernHostBridge } from './lib/host/silly-tavern-adapter.js';",

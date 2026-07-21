@@ -1,6 +1,6 @@
 import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES } from '@ss-helper/sdk';
 import type {
-  ChatMessageInput, ChatMessageSnapshot, ChatSnapshot, GenerationRequest, GenerationResult, GenerationSnapshot,
+  ChatMessageInput, ChatMessageSnapshot, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot,
   HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName,
   HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse,
   PluginBinaryBodyV1, PluginBinaryRequestV1, PluginBinaryResponseV1, PluginJsonAcknowledgementV1,
@@ -123,6 +123,75 @@ const chatDisplayName = (context: UnknownRecord): string | undefined => {
   const characters = Array.isArray(context.characters) ? context.characters : [];
   return text(record(characters[Number(context.characterId)])?.name) ?? text(context.name2);
 };
+
+function navigationIndex(target: ChatNavigationTarget): number | undefined {
+  if (target.index === undefined) return undefined;
+  return Number.isSafeInteger(target.index) && target.index >= 0 ? target.index : undefined;
+}
+
+function navigationId(target: ChatNavigationTarget): string | undefined {
+  if (target.messageId === undefined) return undefined;
+  const value = String(target.messageId).trim();
+  return value.length > 0 && value.length <= 256 ? value : undefined;
+}
+
+function messageElementMatches(element: Element, target: ChatNavigationTarget): boolean {
+  const id = navigationId(target);
+  const index = navigationIndex(target);
+  if (id === undefined && index === undefined) return false;
+  const candidates = [
+    element.getAttribute('mesid'),
+    element.getAttribute('data-mesid'),
+    element.getAttribute('data-message-id'),
+    element.id,
+  ].filter((value): value is string => Boolean(value));
+  if (id !== undefined && candidates.includes(id)) return true;
+  if (index !== undefined) {
+    const rawIndex = candidates.find((value) => /^\d+$/u.test(value));
+    if (rawIndex !== undefined && Number(rawIndex) === index) return true;
+    const position = Number((element as HTMLElement).dataset.messageIndex ?? (element as HTMLElement).dataset.index);
+    if (Number.isSafeInteger(position) && position === index) return true;
+  }
+  return false;
+}
+
+async function navigateToMessage(target: typeof globalThis, destination: ChatNavigationTarget): Promise<void> {
+  const messageId = navigationId(destination);
+  const index = navigationIndex(destination);
+  if (messageId === undefined && index === undefined) throw new Error('message target unavailable');
+  const document = (target as typeof globalThis & { document?: Document }).document;
+  if (!document) throw new Error('message navigation unavailable');
+  const find = (): HTMLElement | undefined => [...document.querySelectorAll<HTMLElement>('#chat .mes')].find((element) => messageElementMatches(element, { messageId, index }));
+  let element = find();
+  // Tavern virtualizes older floors behind this control. Ask it to reveal a
+  // bounded number of older messages, yielding between clicks so the DOM can
+  // settle before the next lookup.
+  for (let attempt = 0; !element && attempt < 20; attempt += 1) {
+    const more = document.querySelector<HTMLElement>('#show_more_messages');
+    if (!more || more.hidden || more.getAttribute('aria-hidden') === 'true') break;
+    more.click();
+    await new Promise<void>((resolve) => (target.setTimeout ?? setTimeout)(resolve, 0));
+    element = find();
+  }
+  if (!element) throw new Error('message unavailable');
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  element.classList.remove('ss-helper-chat-navigation-target');
+  element.classList.add('ss-helper-chat-navigation-target');
+  const previousOutline = element.style.outline;
+  const previousOutlineOffset = element.style.outlineOffset;
+  const previousBoxShadow = element.style.boxShadow;
+  element.style.outline = '2px solid color-mix(in srgb, var(--SmartThemeEmColor, #f0b84b) 88%, transparent)';
+  element.style.outlineOffset = '3px';
+  element.style.boxShadow = '0 0 0 6px color-mix(in srgb, var(--SmartThemeEmColor, #f0b84b) 18%, transparent)';
+  (target.setTimeout ?? setTimeout)(() => {
+    element?.classList.remove('ss-helper-chat-navigation-target');
+    if (element) {
+      element.style.outline = previousOutline;
+      element.style.outlineOffset = previousOutlineOffset;
+      element.style.boxShadow = previousBoxShadow;
+    }
+  }, 1800);
+}
 const identity = (context: UnknownRecord, characterId?: unknown): HostIdentitySnapshot => ({
   ...(text(context.userId) === undefined ? {} : { userId: text(context.userId) }),
   ...(text(context.name1) === undefined ? {} : { userName: text(context.name1) }),
@@ -232,7 +301,9 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
       append: async (input: ChatMessageInput) => { const c = getContext(); const add = fn(c.addOneMessage); if (add === undefined) throw new Error('append unavailable'); const raw = { name: input.name ?? (input.role === 'user' ? c.name1 : c.name2), is_user: input.role === 'user', is_system: input.role === 'system', mes: input.text, variables: input.variables }; await add.call(c, raw); const list = Array.isArray(c.chat) ? c.chat : []; return message(list.at(-1) ?? raw, Math.max(0, list.length - 1)); },
       edit: async (id, input) => { const c = getContext(); const list = Array.isArray(c.chat) ? c.chat : []; const index = list.findIndex((item, i) => (record(item)?.id ?? String(i)) === id); if (index < 0) throw new Error('message unavailable'); const item = record(list[index]) ?? {}; item.mes = input.text; item.is_user = input.role === 'user'; item.is_system = input.role === 'system'; if (input.name !== undefined) item.name = input.name; if (input.variables !== undefined) item.variables = input.variables; const save = fn(c.saveChat); if (save === undefined) throw new Error('edit unavailable'); await save.call(c); return message(item, index); },
       delete: async (id) => { const c = getContext(); const remove = fn(c.deleteMessage); if (remove === undefined) throw new Error('delete unavailable'); await remove.call(c, id); },
+      navigate: async (destination) => navigateToMessage(target, destination),
     };
+    capabilities.push('tavern.chat.navigate');
     const chat = adapter.chat;
     if (fn(initial.addOneMessage) !== undefined && fn(initial.saveChat) !== undefined && fn(initial.deleteMessage) !== undefined) capabilities.push('tavern.chat.write');
   }

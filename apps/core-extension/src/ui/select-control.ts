@@ -17,10 +17,7 @@ export interface SelectControlOptions {
 }
 
 function icon(document: Document, name: string): HTMLElement {
-  const node = document.createElement('i');
-  node.className = `fa-solid ${name}`;
-  node.setAttribute('aria-hidden', 'true');
-  return node;
+  return createIconElement(document, name, { decorative: true });
 }
 
 export function createSelectControl(document: Document, config: SelectControlOptions): HTMLElement {
@@ -51,7 +48,7 @@ export function createSelectControl(document: Document, config: SelectControlOpt
   const arrow = document.createElement('span');
   arrow.className = 'stx-ui-select-arrow';
   arrow.setAttribute('aria-hidden', 'true');
-  arrow.append(icon(document, 'fa-chevron-down'));
+  arrow.append(icon(document, 'chevron-down'));
   trigger.append(value, arrow);
 
   const listbox = document.createElement('div');
@@ -121,7 +118,7 @@ export function createSelectControl(document: Document, config: SelectControlOpt
     check.className = 'stx-ui-select-check';
     check.setAttribute('aria-hidden', 'true');
     check.hidden = option.value !== selected?.value;
-    check.append(icon(document, 'fa-check'));
+    check.append(icon(document, 'check'));
     checkNodes.push(check);
     node.append(check);
     node.addEventListener('pointerdown', (event) => event.preventDefault());
@@ -158,3 +155,4 @@ export function createSelectControl(document: Document, config: SelectControlOpt
   shell.append(trigger, listbox);
   return shell;
 }
+import { createIconElement } from './icon-element.js';

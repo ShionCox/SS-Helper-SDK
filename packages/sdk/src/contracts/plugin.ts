@@ -2,7 +2,7 @@ import type { EventPort } from './events.js';
 import type { HostCapability, HostPort } from './host.js';
 import type { ServicePort } from './services.js';
 import type { SettingsAdapter, SettingsSchema } from './settings.js';
-import type { PopupRegistration, UiPort } from './ui.js';
+import type { ChatIndicatorRegistration, PopupRegistration, UiPort } from './ui.js';
 import type { SecretPort } from './secrets.js';
 import type { WorkspacePort } from './workspace.js';
 
@@ -39,5 +39,7 @@ export interface PluginSession<Capabilities extends HostCapability = HostCapabil
   readonly closed: Promise<SessionCloseInfo>;
   registerSettings(schema: SettingsSchema, adapter: SettingsAdapter): () => void;
   registerPopup(registration: PopupRegistration): () => void;
+  /** Optional for compatibility with Core releases predating chat indicators. */
+  registerChatIndicator?(registration: ChatIndicatorRegistration): () => void;
   dispose(): void;
 }

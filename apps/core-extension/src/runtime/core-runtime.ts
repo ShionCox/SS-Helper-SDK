@@ -19,6 +19,8 @@ import { ToastHost } from '../toast/toast-host.js';
 import { SettingsHost } from '../settings/settings-host.js';
 import type { TavernHostAdapter } from '../host/tavern-host-port.js';
 import { InternalBridgeClient } from '../bridge/internal-bridge.js';
+import { ChatIndicatorHost } from '../chat/chat-indicator-host.js';
+import { ensureIconElement } from '../ui/icon-element.js';
 
 export interface CoreRuntimeIdentity {
   readonly coreVersion: string;
@@ -45,6 +47,7 @@ export class CoreRuntime {
   readonly settings: SettingsHost;
   readonly popups: PopupHost;
   readonly toasts: ToastHost;
+  readonly chatIndicators: ChatIndicatorHost;
   readonly port: CorePort;
   #active = true;
   #snapshot?: CoreDiscoverySnapshot;
@@ -74,16 +77,20 @@ export class CoreRuntime {
       artifact: Object.freeze({ buildId: identity.buildId, contentDigest: identity.contentDigest }),
     });
     this.diagnosticsStore = new DiagnosticsStore(generation);
+    if (document !== undefined && !ensureIconElement(document)) {
+      this.diagnosticsStore.record({ type: 'core.ui.icon.degraded', code: 'CUSTOM_ELEMENT_UNAVAILABLE' });
+    }
     this.services = new ServiceRegistry(this.diagnosticsStore);
     this.events = new EventHub(this.diagnosticsStore);
     this.settings = new SettingsHost(this.descriptor);
     this.popups = new PopupHost(document);
     this.toasts = new ToastHost(document, this.diagnosticsStore);
+    this.chatIndicators = new ChatIndicatorHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
     const bridge = new InternalBridgeClient(options.hostAdapter ?? {});
     this.plugins = new PluginRegistry(
       generation, identity.apiMajor, identity.apiMinor, capabilities,
       () => this.#active, this.services, this.events, this.diagnosticsStore,
-      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, bridge,
+      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, this.chatIndicators, bridge,
     );
     if (options.settingsContainer !== undefined) this.settings.mount(options.settingsContainer);
     this.port = Object.freeze({
@@ -111,6 +118,7 @@ export class CoreRuntime {
     this.#active = false;
     this.settings.dispose();
     this.plugins.closeAll(reason, nextGeneration);
+    this.chatIndicators.dispose();
     this.services.dispose();
     this.events.dispose();
     this.popups.dispose();
