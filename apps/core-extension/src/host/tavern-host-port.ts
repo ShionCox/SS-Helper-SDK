@@ -211,12 +211,18 @@ const finiteCount = (value: unknown): boolean => value === undefined || (typeof 
 const isVariables = (value: unknown): boolean => value === undefined || (isPlainData(value) && (object(value) !== undefined || (Array.isArray(value) && value.every((entry) => object(entry) !== undefined))));
 const isMessage = (value: unknown): boolean => {
   const item = object(value);
-  return item !== undefined && exactKeys(item, ['id', 'index', 'role', 'text'], ['name', 'createdAt', 'variables', 'messageType', 'visibleToAi'])
+  const author = item === undefined ? undefined : object(item.author);
+  const validAuthor = item !== undefined && (item.author === undefined
+    || (author !== undefined
+      && exactKeys(author, ['kind'], ['displayName', 'avatar', 'originalAvatar'])
+      && ['user', 'assistant', 'narrator', 'system'].includes(author.kind as string)
+      && optionalString(author.displayName) && optionalString(author.avatar) && optionalString(author.originalAvatar)));
+  return item !== undefined && exactKeys(item, ['id', 'index', 'role', 'text'], ['name', 'createdAt', 'variables', 'messageType', 'visibleToAi', 'author'])
     && typeof item.id === 'string' && Number.isSafeInteger(item.index) && (item.index as number) >= 0
     && (item.role === 'system' || item.role === 'user' || item.role === 'assistant') && typeof item.text === 'string'
     && optionalString(item.name) && optionalString(item.createdAt) && isVariables(item.variables)
-    && (item.messageType === undefined || ['conversation', 'system', 'tool', 'reasoning'].includes(item.messageType as string))
-    && optionalBoolean(item.visibleToAi);
+    && (item.messageType === undefined || ['conversation', 'system', 'narrator', 'tool', 'reasoning'].includes(item.messageType as string))
+    && optionalBoolean(item.visibleToAi) && validAuthor;
 };
 const isGeneration = (value: unknown): boolean => {
   const item = object(value);

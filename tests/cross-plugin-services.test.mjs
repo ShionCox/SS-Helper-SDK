@@ -52,7 +52,10 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       route: { route: 'fixture', provider: 'deterministic', model: 'rerank-v1' },
     })),
     memory.services.expose(MEMORY_RECALL_V0, (request) => ({
-      items: [{ id: `${request.chatKey}:1`, text: `remember:${request.query}`, score: 1, source: 'fixture' }],
+      mode: request.mode,
+      world: { ownerId: 'owner:world', owner: '世界', memories: [] },
+      narrator: { ownerId: 'owner:narrator', owner: '旁白', memories: [] },
+      actors: [{ ownerId: request.sceneOwnerIds[0], owner: 'A', memories: [{ text: `remember:${request.query}`, confidence: 1, strength: 100 }] }],
     })),
     memory.services.expose(MEMORY_GRAPH_V0, (request) => ({
       nodes: [{ id: `${request.chatKey}:node-a`, label: 'A' }, { id: `${request.chatKey}:node-b`, label: 'B' }],
@@ -88,8 +91,15 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       },
     );
     assert.deepEqual(
-      await consumer.services.call(MEMORY_RECALL_V0, { query: 'name', chatKey: 'chat-a', limit: 1 }),
-      { items: [{ id: 'chat-a:1', text: 'remember:name', score: 1, source: 'fixture' }] },
+      await consumer.services.call(MEMORY_RECALL_V0, {
+        query: 'name', chatKey: 'chat-a', sceneOwnerIds: ['owner:actor:a'], presentOwnerIds: ['owner:actor:a'], viewpointOwnerId: 'owner:actor:a', mode: 'multi_actor', maxItems: 1,
+      }),
+      {
+        mode: 'multi_actor',
+        world: { ownerId: 'owner:world', owner: '世界', memories: [] },
+        narrator: { ownerId: 'owner:narrator', owner: '旁白', memories: [] },
+        actors: [{ ownerId: 'owner:actor:a', owner: 'A', memories: [{ text: 'remember:name', confidence: 1, strength: 100 }] }],
+      },
     );
     assert.deepEqual(
       await consumer.services.call(MEMORY_GRAPH_V0, { query: 'A', chatKey: 'chat-a', limit: 4 }),
@@ -153,7 +163,7 @@ test('exact contracts quarantine timeout/abort late results and permit clean pro
   const controller = new AbortController();
   const pendingRecall = consumer.services.call(
     MEMORY_RECALL_V0,
-    { query: 'cancel', chatKey: 'chat-a' },
+    { query: 'cancel', chatKey: 'chat-a', sceneOwnerIds: [], presentOwnerIds: [], viewpointOwnerId: 'owner:narrator', mode: 'multi_actor' },
     { signal: controller.signal },
   );
   await Promise.resolve();

@@ -465,7 +465,7 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   callbacks.get('identity')({ detail: { id: 9, character: { name: 'private raw object' } } });
 
   assert.deepEqual(received.get('chat-changed'), { name: 'chat-changed', chatKey: 'other.jsonl' });
-  assert.deepEqual(received.get('message-received'), { name: 'message-received', chatKey: 'chat.jsonl', messageId: '0', message: { id: 'm1', index: 0, role: 'assistant', name: 'Character', text: 'answer', variables: memoryVariables } });
+  assert.deepEqual(received.get('message-received'), { name: 'message-received', chatKey: 'chat.jsonl', messageId: '0', message: { id: 'm1', index: 0, role: 'assistant', name: 'Character', text: 'answer', variables: memoryVariables, author: { kind: 'assistant', displayName: 'Character' } } });
   memoryVariables[0].stat_data.世界.灾变天数 = 6;
   assert.equal(received.get('message-received').message.variables[0].stat_data.世界.灾变天数, 5);
   assert.equal(received.get('message-sent').message.text, 'answer');

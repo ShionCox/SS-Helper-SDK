@@ -1,7 +1,7 @@
 import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES } from '@ss-helper/sdk';
 import type {
   ChatMessageInput, ChatMessageSnapshot, ChatMessageType, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot,
-  HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName,
+  HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName, HostMessageAuthorSnapshot,
   HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse,
   PluginBinaryBodyV0, PluginBinaryRequestV0, PluginBinaryResponseV0, PluginJsonAcknowledgementV0,
   PromptContribution, WorldbookSnapshot,
@@ -112,8 +112,15 @@ const message = (value: unknown, index: number): ChatMessageSnapshot => {
   const isHidden = item.is_hidden === true || item.hidden === true || extra?.hidden === true;
   // Tool/reasoning provenance wins over a generic system marker so internal
   // outputs can never become opt-in historical正文 by accident.
-  const messageType: ChatMessageType = isTool ? 'tool' : isReasoning ? 'reasoning' : isSystem ? 'system' : 'conversation';
+  const isNarrator = item.messageType === 'narrator' || item.role === 'narrator' || extra?.type === 'narrator' || item.is_narrator === true;
+  const messageType: ChatMessageType = isTool ? 'tool' : isReasoning ? 'reasoning' : isNarrator ? 'narrator' : isSystem ? 'system' : 'conversation';
   const visibleToAi = !(isSystem || isTool || isReasoning || isHidden);
+  const author: HostMessageAuthorSnapshot = {
+    kind: messageType === 'narrator' ? 'narrator' : isSystem ? 'system' : item.is_user === true ? 'user' : 'assistant',
+    ...(text(item.name) === undefined ? {} : { displayName: text(item.name) }),
+    ...(text(item.avatar) === undefined ? {} : { avatar: text(item.avatar) }),
+    ...(text(item.original_avatar) === undefined ? {} : { originalAvatar: text(item.original_avatar) }),
+  };
   return {
     id: text(item.id) ?? text(item.messageId) ?? String(index), index,
     role: messageType === 'system' ? 'system' : item.is_user === true ? 'user' : 'assistant',
@@ -122,6 +129,7 @@ const message = (value: unknown, index: number): ChatMessageSnapshot => {
     ...(variables === undefined ? {} : { variables }),
     ...(messageType === 'conversation' ? {} : { messageType }),
     ...(visibleToAi ? {} : { visibleToAi: false }),
+    author,
   };
 };
 const chatKey = (context: UnknownRecord): string | undefined => text(context.chatId) ?? text(context.chat_id) ?? text(context.chatFile);
@@ -224,7 +232,8 @@ const messageEvent = (name: 'message-received' | 'message-sent' | 'message-edite
   const raw = index === undefined ? item : list[index] ?? item;
   const key = chatKey(context);
   if (name === 'message-deleted') return { name, messageId: id, ...(key === undefined ? {} : { chatKey: key }) };
-  return { name, messageId: id, ...(key === undefined ? {} : { chatKey: key }), ...(raw === undefined ? {} : { message: message(raw, index ?? 0) }) };
+  const snapshot = raw === undefined ? undefined : message(raw, index ?? 0);
+  return { name, messageId: id, ...(key === undefined ? {} : { chatKey: key }), ...(snapshot === undefined ? {} : { message: snapshot }) };
 };
 const generationUsage = (...args: unknown[]): GenerationSnapshot['usage'] => {
   const source = args.map(record).find((item) => record(item?.usage) !== undefined || record(item?.tokenUsage) !== undefined);

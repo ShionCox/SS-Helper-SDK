@@ -51,7 +51,6 @@ const namedExemptions = new Map([
     'AGENTS.md',
     'scripts/legacy-scan.mjs',
     'test/sdk-artifact.spec.ts',
-    'test/sdk-migration-baseline.spec.ts',
     'docs/sdk-integration.md',
   ])],
 ]);
@@ -75,11 +74,6 @@ const historicalEvidenceExceptions = new Map([
     ['docs/old-sdk-capability-ledger.md', new Map([
       ['raw consumer global', '状态：G0 frozen inventory'],
       ['MemoryOS facade', '状态：G0 frozen inventory'],
-    ])],
-  ])],
-  ['Memory', new Map([
-    ['docs/sdk-migration-baseline.md', new Map([
-      ['raw consumer global', 'SDK 迁移历史基线（G0/G5C，非当前操作指南）'],
     ])],
   ])],
 ]);

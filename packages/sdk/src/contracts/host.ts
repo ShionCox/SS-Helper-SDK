@@ -34,7 +34,14 @@ export interface HostCharacterSnapshot { readonly id: string; readonly name: str
 export interface HostPersonaSnapshot { readonly id?: string | undefined; readonly name: string; readonly avatar?: string | undefined; readonly description?: string | undefined; }
 export type MessageVariableEntry = Readonly<Record<string, PlainData>>;
 export type MessageVariablesSnapshot = MessageVariableEntry | readonly MessageVariableEntry[];
-export type ChatMessageType = 'conversation' | 'system' | 'tool' | 'reasoning';
+export type ChatMessageType = 'conversation' | 'narrator' | 'system' | 'tool' | 'reasoning';
+/** Host-side provenance only. It is not an in-world MemoryOwner. */
+export interface HostMessageAuthorSnapshot {
+  readonly kind: 'user' | 'assistant' | 'narrator' | 'system';
+  readonly displayName?: string | undefined;
+  readonly avatar?: string | undefined;
+  readonly originalAvatar?: string | undefined;
+}
 export interface ChatMessageSnapshot {
   readonly id: string;
   readonly index: number;
@@ -46,6 +53,8 @@ export interface ChatMessageSnapshot {
   /** Optional provenance metadata; omitted by older hosts for ordinary messages. */
   readonly messageType?: ChatMessageType | undefined;
   readonly visibleToAi?: boolean | undefined;
+  /** Stable host provenance; never treated as a card-internal actor ID. */
+  readonly author?: HostMessageAuthorSnapshot | undefined;
 }
 export interface ChatSnapshot { readonly key: string; readonly id?: string | undefined; readonly name?: string | undefined; readonly messageCount: number; readonly messages?: readonly ChatMessageSnapshot[]; readonly variables?: Readonly<Record<string, PlainData>>; }
 export interface ChatMessageInput { readonly role: 'system' | 'user' | 'assistant'; readonly text: string; readonly name?: string | undefined; readonly variables?: MessageVariablesSnapshot; }

@@ -66,7 +66,14 @@ declare const binaryHost: HostPort<'tavern.plugin.binary-request.v0'>;
 declare const session: PluginSession<'tavern.chat.read'>;
 declare const adapter: SettingsAdapter;
 const request: LlmCompletionRequest = { messages: [{ role: 'user', content: 'hello' }] };
-const recall: MemoryRecallRequest = { query: 'hello', chatKey: 'chat:1' };
+const recall: MemoryRecallRequest = {
+  query: 'hello',
+  chatKey: 'chat:1',
+  sceneOwnerIds: ['owner:actor:a'],
+  presentOwnerIds: ['owner:actor:a'],
+  viewpointOwnerId: 'owner:actor:a',
+  mode: 'multi_actor',
+};
 services.call(LLM_COMPLETION_V0, request);
 services.call(LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } });
 services.call(LLM_EMBEDDING_V0, { input: ['hello'] });
@@ -93,7 +100,12 @@ session.ui.openPopup(popup, { tab: 'main' });
 
 const serviceToken: ServiceContract<'ss-helper.llm', 'completion', 0, LlmCompletionRequest, LlmCompletionResponse> = LLM_COMPLETION_V0;
 const eventToken: EventContract<'ss-helper.llm', 'route-changed', 0, { readonly route: string }> = LLM_ROUTE_CHANGED_V0;
-const memoryResponse: MemoryRecallResponse = { items: [] };
+const memoryResponse: MemoryRecallResponse = {
+  mode: 'multi_actor',
+  world: { ownerId: 'owner:world', owner: '世界', memories: [] },
+  narrator: { ownerId: 'owner:narrator', owner: '旁白', memories: [] },
+  actors: [],
+};
 const closeInfo: SessionCloseInfo = { reason: 'core_replaced', generation: 1, nextGeneration: 2 };
 const capability: HostCapability = 'tavern.chat.read';
 const error = new SSHelperError('CORE_MISSING', 'Core missing');
