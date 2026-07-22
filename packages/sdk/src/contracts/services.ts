@@ -6,7 +6,7 @@ export interface ServiceContract<Provider extends string, Name extends string, V
   readonly provider: Provider;
   readonly name: Name;
   readonly version: Version;
-  readonly schemaId?: string;
+  readonly schemaId: string;
   readonly validateRequest?: BoundaryValidator<Request>;
   readonly validateResponse?: BoundaryValidator<Response>;
 }

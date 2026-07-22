@@ -432,6 +432,22 @@ test('registered popup owns dialog lifecycle, Escape cleanup, focus return, and 
   } finally { restore(); }
 });
 
+test('popup tokens cannot be opened by a different plugin session', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const owner = runtime.connect(pluginDescriptor('example.popup-owner'));
+    const caller = runtime.connect(pluginDescriptor('example.popup-caller'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-owner', name: 'details', version: 0 });
+    let renders = 0;
+    owner.registerPopup({ token, title: 'Details', render: () => { renders += 1; } });
+    assert.throws(() => caller.ui.openPopup(token, {}), errorCode('PAYLOAD_INVALID'));
+    assert.equal(renders, 0);
+    assert.equal(document.body.children.some((node) => node.dataset.ssHelperPopup !== undefined), false);
+  } finally { restore(); }
+});
+
 test('workspace popup exposes a stable presentation marker and shared chrome', () => {
   const restore = installFakeDomGlobals();
   try {

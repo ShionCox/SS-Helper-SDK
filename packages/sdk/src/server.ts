@@ -52,7 +52,7 @@ interface ServerBroker {
   connect(input: { readonly pluginId: string; readonly capabilities: readonly ServerCapability[] }): ServerPluginSession;
 }
 
-const BROKER_SYMBOL = Symbol.for('@ss-helper/sdk.server.v2');
+const BROKER_SYMBOL = Symbol.for('@ss-helper/sdk.server.v0');
 
 export async function connectServerPlugin(input: {
   readonly pluginId: string;

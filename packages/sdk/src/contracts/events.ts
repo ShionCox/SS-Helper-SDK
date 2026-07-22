@@ -5,7 +5,7 @@ export interface EventContract<Provider extends string, Name extends string, Ver
   readonly provider: Provider;
   readonly name: Name;
   readonly version: Version;
-  readonly schemaId?: string;
+  readonly schemaId: string;
   readonly validatePayload?: BoundaryValidator<Payload>;
 }
 

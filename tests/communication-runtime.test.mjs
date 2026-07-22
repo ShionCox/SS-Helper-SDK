@@ -74,6 +74,17 @@ test('service version/schema mismatch, namespace, validators, and plain-data bou
   assert.throws(() => caller.services.expose('raw-service', () => ({})), errorCode('PAYLOAD_INVALID'));
 });
 
+test('service and event schema identifiers must match provider, name, and version exactly', async () => {
+  const { provider, caller } = setup();
+  const token = service('example.provider', 'canonical', 0);
+  provider.services.expose(token, () => ({ ok: true }));
+  const wrongSchema = { ...token, schemaId: 'example.provider.canonical.v1' };
+  const missingSchema = { kind: token.kind, provider: token.provider, name: token.name, version: token.version };
+  await assert.rejects(caller.services.call(wrongSchema, {}), errorCode('PAYLOAD_INVALID'));
+  await assert.rejects(caller.services.waitFor(missingSchema, { timeoutMs: 10 }), errorCode('PAYLOAD_INVALID'));
+  assert.throws(() => provider.events.publish({ ...eventContract('example.provider'), schemaId: 'example.provider.changed.v1' }, {}), errorCode('PAYLOAD_INVALID'));
+});
+
 test('provider validators remain authoritative for structurally copied service tokens', async () => {
   const { provider, caller } = setup();
   const providerToken = service('example.provider', 'authoritative', 1, {

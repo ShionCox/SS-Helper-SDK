@@ -36,6 +36,9 @@ export class PopupHost {
 
   open<Input extends PlainData>(scope: SessionScope, token: PopupToken<Input>, input: Input, restoreFocus?: HTMLElement): void {
     scope.assertActive();
+    if (token.kind !== 'popup' || token.provider !== scope.id || !Number.isSafeInteger(token.version) || token.version < 0) {
+      throw new SSHelperError('PAYLOAD_INVALID', 'The popup token is invalid for this plugin', { reason: 'popup_ownership' });
+    }
     assertPayload(input, undefined, 'popup_input');
     const id = key(token);
     const entry = this.#entries.get(id);

@@ -9,6 +9,8 @@ import {
   MEMORY_UPDATED_V0, MEMORY_GRAPH_V0, PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, SDK_PACKAGE_VERSION, SS_HELPER_ERROR_CODES,
   isPluginBinaryRequestV0, isPluginBinaryResponseV0,
 } from '../packages/sdk/dist/index.js';
+import * as sdk from '../packages/sdk/dist/index.js';
+import { connectServerPlugin } from '../packages/sdk/dist/server.js';
 
 const sdkPackage = JSON.parse(readFileSync(new URL('../packages/sdk/package.json', import.meta.url), 'utf8'));
 
@@ -135,4 +137,28 @@ test('the complete frozen error-code set is exported', () => {
     'CALL_TIMEOUT', 'CALL_ABORTED', 'PLUGIN_DISPOSED', 'SETTINGS_ADAPTER_ERROR',
     'HOST_NOT_READY', 'BOOTSTRAP_CALLBACK_TIMEOUT',
   ]);
+});
+
+test('every exported v0 service and event token has one canonical schema identity', () => {
+  const tokens = Object.entries(sdk)
+    .filter(([name, value]) => /^[A-Z0-9_]+_V0$/u.test(name) && value && (value.kind === 'service' || value.kind === 'event'))
+    .map(([, value]) => value);
+  assert.ok(tokens.length > 0);
+  for (const token of tokens) {
+    assert.equal(token.version, 0, `${token.provider}.${token.name} version`);
+    assert.equal(token.schemaId, `${token.provider}.${token.name}.v${token.version}`, `${token.provider}.${token.name} schemaId`);
+  }
+});
+
+test('server SDK connects to the v0 process broker symbol', async () => {
+  const symbol = Symbol.for('@ss-helper/sdk.server.v0');
+  const session = { pluginId: 'example.server', capabilities: new Set(), workspace: {}, secrets: {}, dispose() {} };
+  globalThis[symbol] = { connect: (input) => ({ ...session, pluginId: input.pluginId, capabilities: new Set(input.capabilities) }) };
+  try {
+    const connected = await connectServerPlugin({ pluginId: 'example.server', capabilities: ['workspace.read'], timeoutMs: 0 });
+    assert.equal(connected.pluginId, 'example.server');
+    assert.deepEqual([...connected.capabilities], ['workspace.read']);
+  } finally {
+    delete globalThis[symbol];
+  }
 });

@@ -5,7 +5,7 @@ export interface StructuralContract {
   readonly provider: string;
   readonly name: string;
   readonly version: number;
-  readonly schemaId?: string;
+  readonly schemaId: string;
 }
 
 export function validateContract(contract: unknown, kind: StructuralContract['kind']): asserts contract is StructuralContract {
@@ -15,13 +15,13 @@ export function validateContract(contract: unknown, kind: StructuralContract['ki
   const value = contract as Partial<StructuralContract>;
   if (value.kind !== kind || typeof value.provider !== 'string' || typeof value.name !== 'string'
     || !Number.isSafeInteger(value.version) || (value.version ?? -1) < 0
-    || (value.schemaId !== undefined && typeof value.schemaId !== 'string')) {
+    || value.schemaId !== `${value.provider}.${value.name}.v${value.version}`) {
     throw new SSHelperError('PAYLOAD_INVALID', 'The contract token is invalid', { reason: 'contract' });
   }
 }
 
 export function contractKey(contract: StructuralContract): string {
-  return JSON.stringify([contract.kind, contract.provider, contract.name, contract.version, contract.schemaId ?? null]);
+  return JSON.stringify([contract.kind, contract.provider, contract.name, contract.version, contract.schemaId]);
 }
 
 export function contractBase(contract: StructuralContract): string {
