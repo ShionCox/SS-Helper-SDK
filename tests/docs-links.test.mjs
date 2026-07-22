@@ -28,8 +28,8 @@ test('README LLM example uses the current connection and message contract', () =
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8');
   assert.doesNotMatch(readme, /connectCore/);
   assert.match(readme, /connectSSHelper/);
-  assert.doesNotMatch(readme, /LLM_COMPLETION_V1,\s*\{\s*prompt\s*:/);
-  assert.match(readme, /LLM_COMPLETION_V1,\s*\{\s*messages:\s*\[\s*\{\s*role:\s*'user',\s*content:\s*'Hello'\s*}\s*]\s*,?\s*}/s);
+  assert.doesNotMatch(readme, /LLM_COMPLETION_V0,\s*\{\s*prompt\s*:/);
+  assert.match(readme, /LLM_COMPLETION_V0,\s*\{\s*messages:\s*\[\s*\{\s*role:\s*'user',\s*content:\s*'Hello'\s*}\s*]\s*,?\s*}/s);
 });
 
 test('architecture evidence link targets the current artifact-gate heading', () => {

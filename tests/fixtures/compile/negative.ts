@@ -1,8 +1,8 @@
 import {
-  LLM_COMPLETION_V1,
-  LLM_EMBEDDING_V1,
-  LLM_ROUTE_CHANGED_V1,
-  MEMORY_RECALL_V1,
+  LLM_COMPLETION_V0,
+  LLM_EMBEDDING_V0,
+  LLM_ROUTE_CHANGED_V0,
+  MEMORY_RECALL_V0,
   type CoreDescriptor,
   type EventPort,
   type HostPort,
@@ -16,7 +16,7 @@ import {
 declare const services: ServicePort;
 declare const events: EventPort;
 declare const chatOnlyHost: HostPort<'tavern.chat.read'>;
-declare const binaryHost: HostPort<'tavern.plugin.binary-request.v1'>;
+declare const binaryHost: HostPort<'tavern.plugin.binary-request.v0'>;
 
 // @ts-expect-error private source deep imports are blocked by package exports
 import '@ss-helper/sdk/src/contracts/core.js';
@@ -24,39 +24,37 @@ import '@ss-helper/sdk/src/contracts/core.js';
 import '@ss-helper/sdk/testing';
 
 // @ts-expect-error plugin IDs require a namespace separator
-const badPlugin: PluginDescriptor = { id: 'invalid', displayName: 'Bad', pluginVersion: '1', sdkPackageVersion: '1', apiMajor: 1, minApiMinor: 0, capabilities: [] };
+const badPlugin: PluginDescriptor = { id: 'invalid', displayName: 'Bad', pluginVersion: '0.0.1', sdkPackageVersion: '0.0.1', apiVersion: '0.0.1', minApiVersion: '0.0.1', capabilities: [] };
 // @ts-expect-error arbitrary settings field kinds/HTML are not public schema
 const badSettings: SettingsSchema = { id: 'bad', title: 'Bad', fields: [{ kind: 'html', id: 'x', label: 'X', html: '<b>x</b>' }] };
 
 // @ts-expect-error coreVersion is an independent, required version axis
-const missingCoreVersion: VersionAxes = { sdkPackageVersion: '1.0.0', apiMajor: 1, apiMinor: 0, pluginVersion: '2.0.0' };
+const missingCoreVersion: VersionAxes = { sdkPackageVersion: '0.0.1', apiVersion: '0.0.1', pluginVersion: '0.0.1' };
 // @ts-expect-error sdkPackageVersion cannot be merged into coreVersion
-const missingSdkPackageVersion: VersionAxes = { coreVersion: '4.0.0', apiMajor: 1, apiMinor: 0, pluginVersion: '2.0.0' };
-// @ts-expect-error apiMajor and apiMinor are separate required axes
-const missingApiMajor: VersionAxes = { coreVersion: '4.0.0', sdkPackageVersion: '1.0.0', apiMinor: 0, pluginVersion: '2.0.0' };
-// @ts-expect-error apiMinor cannot be represented by apiMajor alone
-const missingApiMinor: VersionAxes = { coreVersion: '4.0.0', sdkPackageVersion: '1.0.0', apiMajor: 1, pluginVersion: '2.0.0' };
+const missingSdkPackageVersion: VersionAxes = { coreVersion: '0.0.1', apiVersion: '0.0.1', pluginVersion: '0.0.1' };
+// @ts-expect-error apiVersion is a required SemVer axis
+const missingApiVersion: VersionAxes = { coreVersion: '0.0.1', sdkPackageVersion: '0.0.1', pluginVersion: '0.0.1' };
 // @ts-expect-error pluginVersion is an independent, required version axis
-const missingPluginVersion: VersionAxes = { coreVersion: '4.0.0', sdkPackageVersion: '1.0.0', apiMajor: 1, apiMinor: 0 };
+const missingPluginVersion: VersionAxes = { coreVersion: '0.0.1', sdkPackageVersion: '0.0.1', apiVersion: '0.0.1' };
 // @ts-expect-error a core descriptor cannot attribute pluginVersion as coreVersion
-const coreWithPluginVersion: CoreDescriptor = { kind: 'ss-helper-core', id: 'ss-helper.core', pluginVersion: '4.0.0', sdkPackageVersion: '1.0.0', apiMajor: 1, apiMinor: 0, generation: 1, state: 'ready', capabilities: [], artifact: { buildId: 'fixture', contentDigest: 'abc' } };
-// @ts-expect-error a plugin descriptor cannot attribute coreVersion as pluginVersion or apiMinor as minApiMinor
-const pluginWithCoreAxes: PluginDescriptor = { id: 'example.plugin', displayName: 'Example', coreVersion: '4.0.0', sdkPackageVersion: '1.0.0', apiMajor: 1, apiMinor: 0, capabilities: [] };
+const coreWithPluginVersion: CoreDescriptor = { kind: 'ss-helper-core', id: 'ss-helper.core', pluginVersion: '0.0.1', sdkPackageVersion: '0.0.1', apiVersion: '0.0.1', generation: 1, state: 'ready', capabilities: [], artifact: { buildId: 'fixture', contentDigest: 'abc' } };
+// @ts-expect-error a plugin descriptor cannot attribute coreVersion as pluginVersion
+const pluginWithCoreAxes: PluginDescriptor = { id: 'example.plugin', displayName: 'Example', coreVersion: '0.0.1', sdkPackageVersion: '0.0.1', apiVersion: '0.0.1', minApiVersion: '0.0.1', capabilities: [] };
 
 // @ts-expect-error public service API requires a typed structural token
 services.call('ss-helper.llm:completion', { messages: [] });
 // @ts-expect-error wrong request DTO
-services.call(LLM_COMPLETION_V1, { prompt: 'not messages' });
+services.call(LLM_COMPLETION_V0, { prompt: 'not messages' });
 // @ts-expect-error embedding input must be text or a non-empty text array at runtime
-services.call(LLM_EMBEDDING_V1, { input: 42 });
+services.call(LLM_EMBEDDING_V0, { input: 42 });
 // @ts-expect-error wrong recall DTO
-services.call(MEMORY_RECALL_V1, { query: 'x' });
+services.call(MEMORY_RECALL_V0, { query: 'x' });
 // @ts-expect-error handler response must satisfy the contract response DTO
-services.expose(LLM_COMPLETION_V1, async () => ({ content: 'wrong' }));
+services.expose(LLM_COMPLETION_V0, async () => ({ content: 'wrong' }));
 // @ts-expect-error public event API requires a typed structural token
 events.publish('ss-helper.llm:route-changed', { route: 'x' });
 // @ts-expect-error invalid event payload reason
-events.publish(LLM_ROUTE_CHANGED_V1, { route: 'x', reason: 'manual' });
+events.publish(LLM_ROUTE_CHANGED_V0, { route: 'x', reason: 'manual' });
 
 chatOnlyHost.chat.readCurrent();
 // @ts-expect-error generation is absent without a generation capability
@@ -67,13 +65,13 @@ chatOnlyHost.worldbooks.list();
 chatOnlyHost.chat.list();
 
 // @ts-expect-error a strict response mode is required
-binaryHost.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'POST' });
+binaryHost.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'POST' });
 // @ts-expect-error arbitrary headers and secrets are not public request DTO fields
-binaryHost.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'POST', responseMode: 'binary', headers: { authorization: 'secret' } });
-const jsonAcknowledgement = await binaryHost.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json' });
+binaryHost.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'POST', responseMode: 'binary', headers: { authorization: 'secret' } });
+const jsonAcknowledgement = await binaryHost.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json' });
 // @ts-expect-error JSON acknowledgement responses never expose binary bytes
 jsonAcknowledgement.data;
-const binaryBytes = await binaryHost.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'POST', responseMode: 'binary' });
+const binaryBytes = await binaryHost.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'POST', responseMode: 'binary' });
 // @ts-expect-error binary responses never expose a JSON acknowledgement body
 binaryBytes.body;
 
@@ -82,4 +80,4 @@ const messageWithRawVariables: ChatMessageInput = { role: 'assistant', text: 'un
 // @ts-expect-error message variable arrays contain snapshot records, not scalar values
 const messageWithScalarVariables: ChatMessageInput = { role: 'assistant', text: 'unsafe', variables: [1] };
 
-void [badPlugin, badSettings, missingCoreVersion, missingSdkPackageVersion, missingApiMajor, missingApiMinor, missingPluginVersion, coreWithPluginVersion, pluginWithCoreAxes, messageWithRawVariables, messageWithScalarVariables];
+void [badPlugin, badSettings, missingCoreVersion, missingSdkPackageVersion, missingApiVersion, missingPluginVersion, coreWithPluginVersion, pluginWithCoreAxes, messageWithRawVariables, messageWithScalarVariables];

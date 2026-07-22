@@ -43,7 +43,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.equal(runtime.settings.mount(container), runtime.settings.mount(container));
     assert.equal(document.getElementById(SETTINGS_ROOT_ID), container.children[0]);
     const saved = [];
-    const session = runtime.connect({ ...pluginDescriptor('example.settings'), settingsDisplayName: '记忆系统', pluginVersion: 'V0.0.2' });
+    const session = runtime.connect({ ...pluginDescriptor('example.settings'), settingsDisplayName: '记忆系统', pluginVersion: '0.0.2' });
     session.registerSettings(schema('example.settings'), {
       load: async () => ({ enabled: true, 'api-key': 'secret', count: 2, mode: 'a' }),
       save: async (values) => { saved.push(values); },
@@ -224,7 +224,7 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     const saved = [];
     let emitSettings;
     let popupInput;
-    const popupToken = { kind: 'popup', provider: 'example.legacy-theme', name: 'tools', version: 1 };
+    const popupToken = { kind: 'popup', provider: 'example.legacy-theme', name: 'tools', version: 0 };
     session.registerPopup({ token: popupToken, title: 'Tools', render: (_popupContainer, input) => { popupInput = input; } });
     session.registerSettings({
       id: 'example.legacy-theme', title: 'Legacy theme', fields: [
@@ -416,7 +416,7 @@ test('registered popup owns dialog lifecycle, Escape cleanup, focus return, and 
     const opener = document.createElement('button'); document.body.append(opener); opener.focus();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const session = runtime.connect(pluginDescriptor('example.popup'));
-    const token = Object.freeze({ kind: 'popup', provider: 'example.popup', name: 'workbench', version: 1 });
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup', name: 'workbench', version: 0 });
     let disposed = 0;
     const unregister = session.registerPopup({ token, title: 'Workbench', render: (container) => { const input = document.createElement('input'); container.append(input); return () => { disposed += 1; }; } });
     session.ui.openPopup(token, { tab: 'main' });
@@ -439,7 +439,7 @@ test('workspace popup exposes a stable presentation marker and shared chrome', (
     const opener = document.createElement('button'); document.body.append(opener); opener.focus();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const session = runtime.connect(pluginDescriptor('example.workspace-popup'));
-    const token = Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'workbench', version: 1 });
+    const token = Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'workbench', version: 0 });
     session.registerPopup({ token, title: 'Workspace', presentation: 'workspace', render: (container) => { container.append(document.createElement('main')); } });
     session.ui.openPopup(token, {});
     const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
@@ -456,7 +456,7 @@ test('workspace popup exposes a stable presentation marker and shared chrome', (
     assert.match(coreStyles, /\[data-popup-resize-handle="true"\] \{ display: none; \}/);
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
     assert.equal(document.activeElement, opener);
-    assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 1 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 0 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('PAYLOAD_INVALID'));
   } finally { restore(); }
 });
 
@@ -464,7 +464,7 @@ test('workspace popup restores and updates its browser-persisted size', () => {
   const restore = installFakeDomGlobals();
   try {
     const document = new FakeDocument();
-    const values = new Map([['ss-helper.popup-size:["example.popup-size","workbench",1]', JSON.stringify({ width: 900, height: 700 })]]);
+    const values = new Map([['ss-helper.popup-size:["example.popup-size","workbench",0]', JSON.stringify({ width: 900, height: 700 })]]);
     Object.assign(document.defaultView, {
       innerWidth: 1600,
       innerHeight: 1000,
@@ -476,7 +476,7 @@ test('workspace popup restores and updates its browser-persisted size', () => {
     });
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const session = runtime.connect(pluginDescriptor('example.popup-size'));
-    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-size', name: 'workbench', version: 1 });
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-size', name: 'workbench', version: 0 });
     session.registerPopup({ token, title: 'Workspace', presentation: 'workspace', render: () => {} });
     session.ui.openPopup(token, {});
     let overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
@@ -502,7 +502,7 @@ test('popup restores focus to a rerendered opener with the same stable id', () =
     const opener = document.createElement('button'); opener.id = 'stable-popup-opener'; document.body.append(opener); opener.focus();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const session = runtime.connect(pluginDescriptor('example.popup-focus'));
-    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-focus', name: 'focus', version: 1 });
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-focus', name: 'focus', version: 0 });
     session.registerPopup({ token, title: 'Focus', render: () => {} });
     session.ui.openPopup(token, {});
     const replacement = document.createElement('button'); replacement.id = opener.id;
@@ -519,7 +519,7 @@ test('popup public controls share Core styles and enhance native selects idempot
     const document = new FakeDocument();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const session = runtime.connect(pluginDescriptor('example.popup-controls'));
-    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-controls', name: 'controls', version: 1 });
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-controls', name: 'controls', version: 0 });
     let nativeSelect;
     let changes = 0;
     session.registerPopup({
@@ -580,7 +580,7 @@ test('throwing popup render rolls back overlay, listeners, session cleanup, and 
     const opener = document.createElement('button'); document.body.append(opener); opener.focus();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const session = runtime.connect(pluginDescriptor('example.throwing-popup'));
-    const token = Object.freeze({ kind: 'popup', provider: 'example.throwing-popup', name: 'broken', version: 1 });
+    const token = Object.freeze({ kind: 'popup', provider: 'example.throwing-popup', name: 'broken', version: 0 });
     session.registerPopup({ token, title: 'Broken', render: () => { throw new Error('private renderer failure'); } });
     assert.throws(() => session.ui.openPopup(token, {}), errorCode('PAYLOAD_INVALID'));
     assert.equal(document.body.children.filter((node) => node.dataset.ssHelperPopup !== undefined).length, 0);
@@ -598,7 +598,7 @@ test('ToastHost gates notifications, stacks and deduplicates safe DTOs, and clea
     const denied = runtime.connect(pluginDescriptor('example.toast-denied'));
     assert.throws(() => denied.ui.showToast({ level: 'info', message: 'Denied' }), errorCode('CAPABILITY_NOT_GRANTED'));
 
-    const session = runtime.connect(pluginDescriptor('example.toast', { capabilities: ['core.ui.notification.v1'] }));
+    const session = runtime.connect(pluginDescriptor('example.toast', { capabilities: ['core.ui.notification.v0'] }));
     assert.throws(() => session.ui.showToast({ level: 'info', message: '', durationMs: 10 }), errorCode('PAYLOAD_INVALID'));
     for (let index = 0; index < 6; index += 1) session.ui.showToast({ level: index === 0 ? 'error' : 'warning', title: `Notice ${index}`, message: `Message ${index}`, code: `NOTICE_${index}`, durationMs: 0 });
     const root = document.getElementById('ss-helper-toast-root');
@@ -620,7 +620,7 @@ test('ToastHost pauses automatic dismissal while expanded and resumes after clic
   try {
     const document = new FakeDocument();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
-    const session = runtime.connect(pluginDescriptor('example.toast-timer', { capabilities: ['core.ui.notification.v1'] }));
+    const session = runtime.connect(pluginDescriptor('example.toast-timer', { capabilities: ['core.ui.notification.v0'] }));
     session.ui.showToast({ level: 'info', message: 'Timed message', durationMs: 1_500 });
     const root = document.getElementById('ss-helper-toast-root');
     root.dispatchEvent({ type: 'click', target: root });

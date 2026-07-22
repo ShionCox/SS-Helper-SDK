@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { contentDigest, createDeterministicZip, inventory, rewriteSdkImports, sha256File, verifyInventory } from '../scripts/artifact-lib.mjs';
 import { createEvidenceSanitizer } from '../scripts/evidence-sanitizer.mjs';
+import { systemTool } from '../scripts/platform-tools.mjs';
 
 test('artifact evidence sanitizer redacts Windows roots without obscuring command semantics', () => {
   const sanitize = createEvidenceSanitizer({
@@ -104,7 +105,7 @@ test('deterministic zip ignores source filesystem timestamps and extracts cleanl
     assert.equal(sha256File(second), sha256File(first));
     const extracted = path.join(root, 'extracted');
     mkdirSync(extracted);
-    execFileSync('tar', ['-xf', second, '-C', extracted]);
+    execFileSync(systemTool('tar.exe'), ['-xf', second, '-C', extracted]);
     assert.equal(readFileSync(path.join(extracted, 'nested', 'payload.txt'), 'utf8'), 'payload\n');
   } finally {
     rmSync(root, { recursive: true, force: true });

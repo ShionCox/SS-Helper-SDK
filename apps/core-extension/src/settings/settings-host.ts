@@ -544,7 +544,7 @@ export class SettingsHost {
     const copy = document.createElement('div'); copy.className = 'stx-launcher-copy';
     const name = document.createElement('strong'); name.textContent = 'SS-Helper 设置中心';
     const details = document.createElement('small');
-    details.textContent = `SDK ${this.core.sdkPackageVersion} · API ${this.core.apiMajor}.${this.core.apiMinor} · ${this.#contributions.size} 个插件`;
+    details.textContent = `SDK ${this.core.sdkPackageVersion} · API ${this.core.apiVersion} · ${this.#contributions.size} 个插件`;
     copy.append(name, details);
     const open = document.createElement('button');
     open.id = 'ss-helper-open-settings-center';
@@ -642,7 +642,7 @@ export class SettingsHost {
     const content = document.createElement('div'); content.className = 'stx-center-scroll';
     const grid = document.createElement('div'); grid.className = 'stx-overview-grid';
     grid.append(
-      this.#renderOverviewCard(document, 'Core Runtime', formatReleaseVersion(this.core.coreVersion), `API ${this.core.apiMajor}.${this.core.apiMinor} · generation ${this.core.generation}`, 'microchip', 'healthy'),
+      this.#renderOverviewCard(document, 'Core Runtime', formatReleaseVersion(this.core.coreVersion), `API ${this.core.apiVersion} · generation ${this.core.generation}`, 'microchip', 'healthy'),
       this.#renderOverviewCard(document, '已注册插件', String(this.#contributions.size), '设置会自动出现在左侧菜单', 'plug', this.#contributions.size > 0 ? 'healthy' : 'degraded'),
     );
     const list = document.createElement('section'); list.className = 'stx-overview-list';

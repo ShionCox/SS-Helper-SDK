@@ -1,9 +1,9 @@
 import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES } from '@ss-helper/sdk';
 import type {
-  ChatMessageInput, ChatMessageSnapshot, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot,
+  ChatMessageInput, ChatMessageSnapshot, ChatMessageType, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot,
   HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName,
   HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse,
-  PluginBinaryBodyV1, PluginBinaryRequestV1, PluginBinaryResponseV1, PluginJsonAcknowledgementV1,
+  PluginBinaryBodyV0, PluginBinaryRequestV0, PluginBinaryResponseV0, PluginJsonAcknowledgementV0,
   PromptContribution, WorldbookSnapshot,
 } from '@ss-helper/sdk';
 import type { TavernHostAdapter } from './tavern-host-port.js';
@@ -87,30 +87,41 @@ const safeFilename = (value: string | null): string | undefined => {
   if (filename === undefined || filename.length === 0 || filename.length > 255 || /[\u0000-\u001f\u007f/\\]/u.test(filename)) throw new Error('unsafe content disposition');
   return filename;
 };
-const assertBinaryBody = async (body: PluginBinaryBodyV1): Promise<Uint8Array<ArrayBuffer>> => {
+const assertBinaryBody = async (body: PluginBinaryBodyV0): Promise<Uint8Array<ArrayBuffer>> => {
   const bytes = decodeBase64(body.data);
   if (body.contentType !== PLUGIN_BINARY_CONTENT_TYPE || bytes.byteLength !== body.byteLength || bytes.byteLength > PLUGIN_BINARY_MAX_BYTES || await binarySha256(bytes) !== body.sha256) {
     throw new Error('invalid binary request body');
   }
   return bytes;
 };
-const jsonAcknowledgement = (value: unknown): PluginJsonAcknowledgementV1 => {
+const jsonAcknowledgement = (value: unknown): PluginJsonAcknowledgementV0 => {
   const acknowledgement = retainedPlain(value);
   const item = record(acknowledgement);
   if (item === undefined || Object.keys(item).length !== 2 || item.ok !== true || !Object.hasOwn(item, 'data')) {
     throw new Error('invalid JSON acknowledgement');
   }
-  return acknowledgement as unknown as PluginJsonAcknowledgementV1;
+  return acknowledgement as unknown as PluginJsonAcknowledgementV0;
 };
 const message = (value: unknown, index: number): ChatMessageSnapshot => {
   const item = record(value) ?? {};
+  const extra = record(item.extra);
   const variables = messageVariables(item.variables);
+  const isSystem = item.is_system === true || item.role === 'system';
+  const isTool = item.role === 'tool' || extra?.type === 'tool';
+  const isReasoning = item.is_reasoning === true;
+  const isHidden = item.is_hidden === true || item.hidden === true || extra?.hidden === true;
+  // Tool/reasoning provenance wins over a generic system marker so internal
+  // outputs can never become opt-in historical正文 by accident.
+  const messageType: ChatMessageType = isTool ? 'tool' : isReasoning ? 'reasoning' : isSystem ? 'system' : 'conversation';
+  const visibleToAi = !(isSystem || isTool || isReasoning || isHidden);
   return {
     id: text(item.id) ?? text(item.messageId) ?? String(index), index,
-    role: item.is_system === true ? 'system' : item.is_user === true ? 'user' : 'assistant',
+    role: messageType === 'system' ? 'system' : item.is_user === true ? 'user' : 'assistant',
     ...(text(item.name) === undefined ? {} : { name: text(item.name) }), text: text(item.mes) ?? text(item.text) ?? '',
     ...(text(item.send_date) === undefined ? {} : { createdAt: text(item.send_date) }),
     ...(variables === undefined ? {} : { variables }),
+    ...(messageType === 'conversation' ? {} : { messageType }),
+    ...(visibleToAi ? {} : { visibleToAi: false }),
   };
 };
 const chatKey = (context: UnknownRecord): string | undefined => text(context.chatId) ?? text(context.chat_id) ?? text(context.chatFile);
@@ -342,9 +353,9 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
   if (setPrompt !== undefined) { capabilities.push('tavern.prompt.contribute'); adapter.prompt = { set: async (value: PromptContribution) => { setPrompt(value.id, value.content, value.position ?? 0, value.depth ?? 0, value.scan ?? false); }, remove: async (id) => { setPrompt(id, '', 0, 0, false); } }; }
   const headers = fn(initial.getRequestHeaders) ?? fn(root.getRequestHeaders);
   if (headers !== undefined && typeof target.fetch === 'function') {
-    capabilities.push('tavern.plugin.request', 'tavern.plugin.binary-request.v1');
+    capabilities.push('tavern.plugin.request', 'tavern.plugin.binary-request.v0');
     adapter.request = { send: async (request: PluginApiRequest): Promise<PluginApiResponse> => { if (!request.path.startsWith('/') || request.path.startsWith('//') || request.path.includes('://')) throw new Error('relative same-origin path required'); const url = new URL(request.path, target.location?.origin ?? 'http://localhost'); if (target.location?.origin !== undefined && url.origin !== target.location.origin) throw new Error('cross-origin request denied'); for (const [key, value] of Object.entries(request.query ?? {})) url.searchParams.set(key, String(value)); const response = await target.fetch(url, { method: request.method ?? 'GET', headers: headers() as HeadersInit, ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }) }); const contentType = response.headers.get('content-type') ?? ''; const body = response.status === 204 ? undefined : plain(contentType.includes('json') ? await response.json() : await response.text()); return { status: response.status, ok: response.ok, ...(body === undefined ? {} : { body }) }; } };
-    adapter.binaryRequest = { send: async (request: PluginBinaryRequestV1, options): Promise<PluginBinaryResponseV1> => {
+    adapter.binaryRequest = { send: async (request: PluginBinaryRequestV0, options): Promise<PluginBinaryResponseV0> => {
       if (!/^\/api\/plugins\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(request.path) || request.path.split('/').some((segment) => segment === '.' || segment === '..')) throw new Error('plugin API path required');
       const url = new URL(request.path, target.location?.origin ?? 'http://localhost');
       if (target.location?.origin !== undefined && url.origin !== target.location.origin) throw new Error('cross-origin request denied');
@@ -359,7 +370,7 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
       const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase();
       if (request.responseMode === 'json') {
         if (contentType !== 'application/json' || !response.ok) throw new Error('unsupported JSON acknowledgement response');
-        return { version: 1, mode: 'json', status: response.status, ok: response.ok, body: jsonAcknowledgement(await response.json()) };
+        return { version: 0, mode: 'json', status: response.status, ok: response.ok, body: jsonAcknowledgement(await response.json()) };
       }
       if (contentType !== PLUGIN_BINARY_CONTENT_TYPE) throw new Error('unsupported binary response content type');
       const declaredLength = response.headers.get('content-length');
@@ -369,7 +380,7 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
       const bytes = new Uint8Array(buffer);
       const filename = safeFilename(response.headers.get('content-disposition'));
       return {
-        version: 1, mode: 'binary', status: response.status, ok: response.ok, encoding: 'base64', contentType: PLUGIN_BINARY_CONTENT_TYPE,
+        version: 0, mode: 'binary', status: response.status, ok: response.ok, encoding: 'base64', contentType: PLUGIN_BINARY_CONTENT_TYPE,
         data: encodeBase64(bytes), byteLength: bytes.byteLength, sha256: await binarySha256(bytes),
         ...(filename === undefined ? {} : { filename }),
       };

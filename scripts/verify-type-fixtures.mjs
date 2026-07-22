@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { systemTool } from './platform-tools.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const version = JSON.parse(readFileSync(path.join(root, 'packages', 'sdk', 'package.json'), 'utf8')).version;
@@ -15,7 +16,7 @@ const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 try {
   execFileSync(process.execPath, [path.join(root, 'scripts', 'pack-sdk.mjs')], { cwd: root, stdio: 'inherit' });
   mkdirSync(extracted, { recursive: true });
-  execFileSync('tar', ['-xzf', archive, '-C', extracted], { stdio: 'inherit' });
+  execFileSync(systemTool('tar.exe'), ['-xzf', archive, '-C', extracted], { stdio: 'inherit' });
   mkdirSync(path.dirname(sdkTarget), { recursive: true });
   cpSync(path.join(extracted, 'package'), sdkTarget, { recursive: true });
   cpSync(path.join(root, 'tests', 'fixtures', 'compile', 'positive.ts'), path.join(temp, 'positive.ts'));

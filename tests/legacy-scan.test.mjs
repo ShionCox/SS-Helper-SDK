@@ -38,6 +38,18 @@ test('legacy scan classifies all supplied roots and rejects raw globals', () => 
   } finally { [sdk, llm, memory].forEach((root) => rmSync(root, { recursive: true, force: true })); }
 });
 
+test('legacy scan rejects retired SS-Helper transports outside named guards', () => {
+  const sdk = makeRepo(); const llm = makeRepo(); const memory = makeRepo();
+  try {
+    const args = ['--sdk-root', sdk, '--llm-root', llm, '--memory-root', memory];
+    writeFileSync(join(sdk, 'retired.ts'), "fetch('/api/plugins/ss-helper-sdk/v1/memory/health');\n");
+    commit(sdk);
+    const failure = runScan(...args);
+    assert.equal(failure.status, 1);
+    assert.match(failure.stderr, /SDK\/Core \[production\] retired\.ts: retired SS-Helper transport/);
+  } finally { [sdk, llm, memory].forEach((root) => rmSync(root, { recursive: true, force: true })); }
+});
+
 test('legacy scan exempts only named assertion files', () => {
   const sdk = makeRepo(); const llm = makeRepo(); const memory = makeRepo();
   try {

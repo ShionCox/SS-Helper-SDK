@@ -92,7 +92,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     this.ui = Object.freeze({
       openPopup: <Input extends PlainData>(token: PopupToken<Input>, input: Input) => this.popupHost.open(this.#scope, token, input),
       showToast: (notification: ToastNotification) => {
-        if (!this.host.has('core.ui.notification.v1')) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications are unavailable', { capability: 'core.ui.notification.v1' });
+      if (!this.host.has('core.ui.notification.v0')) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications are unavailable', { capability: 'core.ui.notification.v0' });
         this.toastHost.show(this.#scope, notification);
       },
     });
@@ -134,7 +134,10 @@ function validateDescriptor(descriptor: PluginDescriptor): void {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(descriptor.id)
     || descriptor.id === 'ss-helper.core'
     || descriptor.displayName.trim() === ''
-    || descriptor.pluginVersion.trim() === '') {
+    || !isSemVer(descriptor.pluginVersion)
+    || !isSemVer(descriptor.sdkPackageVersion)
+    || !isSemVer(descriptor.apiVersion)
+    || !isSemVer(descriptor.minApiVersion)) {
     throw new SSHelperError('PAYLOAD_INVALID', 'The plugin descriptor is invalid', { reason: 'descriptor' });
   }
   if (descriptor.settingsDisplayName !== undefined) {
@@ -150,8 +153,7 @@ export class PluginRegistry {
 
   constructor(
     private readonly generation: number,
-    private readonly apiMajor: number,
-    private readonly apiMinor: number,
+    private readonly apiVersion: string,
     private readonly capabilities: readonly HostCapability[],
     private readonly coreActive: () => boolean,
     private readonly services: ServiceRegistry,
@@ -168,7 +170,7 @@ export class PluginRegistry {
   register<Capabilities extends HostCapability>(descriptor: PluginDescriptor<Capabilities>): PluginSession<Capabilities> {
     if (!this.coreActive()) throw new SSHelperError('CORE_DISPOSED', 'Core is disposed');
     validateDescriptor(descriptor);
-    if (descriptor.apiMajor !== this.apiMajor || descriptor.minApiMinor > this.apiMinor) {
+    if (compareSemVer(this.apiVersion, descriptor.minApiVersion) < 0) {
       throw new SSHelperError('API_INCOMPATIBLE', 'The plugin requires an incompatible Core API');
     }
     if (this.#sessions.has(descriptor.id)) {
@@ -228,3 +230,19 @@ export class PluginRegistry {
     })));
   }
 }
+
+function compareSemVer(left: string, right: string): number {
+  const parse = (value: string): readonly [number, number, number] | undefined => {
+    const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(value);
+    return match === null ? undefined : [Number(match[1]), Number(match[2]), Number(match[3])];
+  };
+  const a = parse(left); const b = parse(right);
+  if (a === undefined || b === undefined) return -1;
+  const [aMajor, aMinor, aPatch] = a; const [bMajor, bMinor, bPatch] = b;
+  if (aMajor !== bMajor) return aMajor - bMajor;
+  if (aMinor !== bMinor) return aMinor - bMinor;
+  if (aPatch !== bPatch) return aPatch - bPatch;
+  return 0;
+}
+
+function isSemVer(value: string): boolean { return /^\d+\.\d+\.\d+$/u.test(value); }

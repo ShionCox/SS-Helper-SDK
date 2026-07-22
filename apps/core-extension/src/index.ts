@@ -1,3 +1,5 @@
+import { API_VERSION, SDK_PACKAGE_VERSION } from '@ss-helper/sdk';
+
 export { CoreRuntime, type CoreRuntimeIdentity, type CoreRuntimeOptions } from './runtime/core-runtime.js';
 export { installCoreRuntime } from './runtime/install-core-runtime.js';
 export { PluginRegistry, type PluginSnapshot } from './plugins/plugin-registry.js';
@@ -18,7 +20,6 @@ export { createIconElement, ensureIconElement, SS_HELPER_ICON_TAG, type IconOpti
 export const CORE_EXTENSION_SKELETON = Object.freeze({
   id: 'ss-helper.core',
   installDirectory: 'third-party/SS-Helper-SDK',
-  coreVersion: '2.2.0',
-  apiMajor: 2,
-  apiMinor: 2,
+  coreVersion: SDK_PACKAGE_VERSION,
+  apiVersion: API_VERSION,
 });

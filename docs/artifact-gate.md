@@ -23,6 +23,12 @@ The gate restores the locked toolchain, creates fresh SDK/Core artifacts, verifi
 
 `contentDigest` is SHA-256 over payload inventory entries sorted by ordinal path. Each UTF-8 entry is exactly `path + NUL + lowercaseSha256 + LF`; file sizes, JSON serialization, `artifact-manifest.json`, and the archive hash are excluded.
 
+The workspace release manifest records the SDK tarball with `sdkTarball.sourcePath`
+relative to the repository root (`SS-Helper-SDK/artifacts/<file>`). The tarball is
+an input/source artifact for consumer installation and is intentionally not copied
+into `dist` or the SillyTavern plugin directories; the deployed Core artifact
+contains its own browser SDK runtime.
+
 ## Historical artifact/runtime evidence — G008 fresh rerun required
 
 `artifacts/g009-release-evidence.json` indexes **historical G009** artifact/runtime verification. It is not final fresh G008 evidence: G008 remains `in_progress` and requires a new full rerun before any completion claim. Memory's current post-transcoding baseline is `ab55ec7`; `b84d8a1` is only a pre-transcoding historical evidence node. This record does not authorize

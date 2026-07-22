@@ -59,7 +59,7 @@ export class ToastHost {
     scope.assertActive();
     const input = validateNotification(notification);
     const document = this.document;
-    if (document === undefined) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications require a document', { capability: 'core.ui.notification.v1' });
+    if (document === undefined) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications require a document', { capability: 'core.ui.notification.v0' });
     if (input.code !== undefined) this.#entries.find((entry) => entry.pluginId === scope.id && entry.code === input.code)?.dismiss();
 
     const root = this.#ensureRoot(document);

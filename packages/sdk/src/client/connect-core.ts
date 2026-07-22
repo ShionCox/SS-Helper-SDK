@@ -1,6 +1,5 @@
 import {
-  API_MAJOR,
-  API_MINOR,
+  API_VERSION,
   CORE_DISCOVERY_SYMBOL,
   CORE_LIFECYCLE_EVENT,
   SDK_PACKAGE_VERSION,
@@ -24,11 +23,11 @@ export interface ConnectSSHelperOptions {
 
 export type ConnectDescriptor<Capabilities extends HostCapability> = Omit<
   PluginDescriptor<Capabilities>,
-  'sdkPackageVersion' | 'apiMajor' | 'minApiMinor'
+  'sdkPackageVersion' | 'apiVersion' | 'minApiVersion'
 > & {
   readonly sdkPackageVersion?: string;
-  readonly apiMajor?: number;
-  readonly minApiMinor?: number;
+  readonly apiVersion?: string;
+  readonly minApiVersion?: string;
 };
 
 function targetOrGlobal(target?: DiscoveryTarget): DiscoveryTarget {
@@ -67,8 +66,8 @@ function normalizedDescriptor<Capabilities extends HostCapability>(
   return Object.freeze({
     ...descriptor,
     sdkPackageVersion: descriptor.sdkPackageVersion ?? SDK_PACKAGE_VERSION,
-    apiMajor: descriptor.apiMajor ?? API_MAJOR,
-    minApiMinor: descriptor.minApiMinor ?? API_MINOR,
+    apiVersion: descriptor.apiVersion ?? API_VERSION,
+    minApiVersion: descriptor.minApiVersion ?? API_VERSION,
     capabilities: Object.freeze([...descriptor.capabilities]),
   });
 }
@@ -78,12 +77,10 @@ function connectSnapshot<Capabilities extends HostCapability>(
   descriptor: PluginDescriptor<Capabilities>,
 ): PluginSession<Capabilities> | undefined {
   if (snapshot.descriptor.state !== 'ready') return undefined;
-  if (snapshot.descriptor.apiMajor !== descriptor.apiMajor || snapshot.descriptor.apiMinor < descriptor.minApiMinor) {
+  if (compareSemVer(snapshot.descriptor.apiVersion, descriptor.minApiVersion) < 0) {
     throw new SSHelperError('API_INCOMPATIBLE', 'Core API version is incompatible', {
-      requiredMajor: descriptor.apiMajor,
-      requiredMinor: descriptor.minApiMinor,
-      actualMajor: snapshot.descriptor.apiMajor,
-      actualMinor: snapshot.descriptor.apiMinor,
+      requiredVersion: descriptor.minApiVersion,
+      actualVersion: snapshot.descriptor.apiVersion,
     });
   }
   const missing = descriptor.capabilities.filter((capability) => !snapshot.descriptor.capabilities.includes(capability));
@@ -91,6 +88,20 @@ function connectSnapshot<Capabilities extends HostCapability>(
     throw new SSHelperError('API_INCOMPATIBLE', 'Core capabilities are incompatible', { missing });
   }
   return snapshot.port.connect(descriptor);
+}
+
+function compareSemVer(left: string, right: string): number {
+  const parse = (value: string): readonly [number, number, number] | undefined => {
+    const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(value);
+    return match === null ? undefined : [Number(match[1]), Number(match[2]), Number(match[3])];
+  };
+  const a = parse(left); const b = parse(right);
+  if (a === undefined || b === undefined) return -1;
+  const [aMajor, aMinor, aPatch] = a; const [bMajor, bMinor, bPatch] = b;
+  if (aMajor !== bMajor) return aMajor - bMajor;
+  if (aMinor !== bMinor) return aMinor - bMinor;
+  if (aPatch !== bPatch) return aPatch - bPatch;
+  return 0;
 }
 
 export async function connectSSHelper<Capabilities extends HostCapability = HostCapability>(

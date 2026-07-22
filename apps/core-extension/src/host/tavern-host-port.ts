@@ -17,16 +17,16 @@ import {
   type HostPort,
   type PluginApiRequest,
   type PluginApiResponse,
-  type PluginBinaryBodyV1,
+  type PluginBinaryBodyV0,
   type PluginBinaryRequestOptions,
-  type PluginBinaryRequestV1,
-  type PluginBinaryResponseForModeV1,
-  type PluginBinaryResponseModeV1,
-  type PluginBinaryResponseV1,
+  type PluginBinaryRequestV0,
+  type PluginBinaryResponseForModeV0,
+  type PluginBinaryResponseModeV0,
+  type PluginBinaryResponseV0,
   type PromptContribution,
   type WorldbookSnapshot,
-  isPluginBinaryRequestV1,
-  isPluginBinaryResponseV1,
+  isPluginBinaryRequestV0,
+  isPluginBinaryResponseV0,
 } from '@ss-helper/sdk';
 import type { SessionScope } from '../plugins/session-scope.js';
 import { assertPayload, isPlainData } from '../communication/contracts.js';
@@ -55,7 +55,7 @@ export interface TavernHostAdapter {
   };
   readonly prompt?: { set(contribution: PromptContribution): Promise<void>; remove(id: string): Promise<void> };
   readonly request?: { send(request: PluginApiRequest): Promise<PluginApiResponse> };
-  readonly binaryRequest?: { send(request: PluginBinaryRequestV1, options: { readonly signal: AbortSignal }): Promise<PluginBinaryResponseV1> };
+  readonly binaryRequest?: { send(request: PluginBinaryRequestV0, options: { readonly signal: AbortSignal }): Promise<PluginBinaryResponseV0> };
   readonly metadata?: { save(values: Readonly<Record<string, string>>): Promise<void> };
   readonly settings?: { save(): Promise<void> };
   readonly macros?: { substitute(text: string): Promise<string> };
@@ -93,14 +93,14 @@ function guarded<TArgs extends readonly unknown[], TResult>(scope: SessionScope,
   };
 }
 
-const binaryHash = async (body: PluginBinaryBodyV1): Promise<string> => {
+const binaryHash = async (body: PluginBinaryBodyV0): Promise<string> => {
   const decoded = atob(body.data);
   const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
 };
 
-const assertBinaryHash = async (body: PluginBinaryBodyV1 | undefined, phase: 'host_input' | 'host_output'): Promise<void> => {
+const assertBinaryHash = async (body: PluginBinaryBodyV0 | undefined, phase: 'host_input' | 'host_output'): Promise<void> => {
   if (body !== undefined && await binaryHash(body) !== body.sha256) {
     throw new SSHelperError('PAYLOAD_INVALID', 'The binary payload hash does not match its bytes', { phase, reason: 'sha256_mismatch' });
   }
@@ -111,14 +111,14 @@ const isAbortSignal = (value: unknown): value is AbortSignal => typeof value ===
   && typeof (value as AbortSignal).addEventListener === 'function'
   && typeof (value as AbortSignal).removeEventListener === 'function';
 
-function sendBinaryRequest<Mode extends PluginBinaryResponseModeV1>(
+function sendBinaryRequest<Mode extends PluginBinaryResponseModeV0>(
   scope: SessionScope,
   adapter: TavernHostAdapter,
-  request: PluginBinaryRequestV1<Mode>,
+  request: PluginBinaryRequestV0<Mode>,
   options: PluginBinaryRequestOptions = {},
-): Promise<PluginBinaryResponseForModeV1<Mode>> {
+): Promise<PluginBinaryResponseForModeV0<Mode>> {
   scope.assertActive();
-  assertPayload(request, isPluginBinaryRequestV1, 'host_input');
+  assertPayload(request, isPluginBinaryRequestV0, 'host_input');
   const optionKeys = Object.keys(options);
   if (optionKeys.some((key) => key !== 'timeoutMs' && key !== 'signal')
     || (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 120_000))
@@ -126,7 +126,7 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV1>(
     throw new SSHelperError('PAYLOAD_INVALID', 'The binary request controls are invalid', { phase: 'host_input' });
   }
   const timeoutMs = options.timeoutMs ?? 30_000;
-  return new Promise<PluginBinaryResponseForModeV1<Mode>>((resolve, reject) => {
+  return new Promise<PluginBinaryResponseForModeV0<Mode>>((resolve, reject) => {
     const controller = new AbortController();
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -135,13 +135,13 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV1>(
       controller.abort();
       finish(new SSHelperError('CALL_ABORTED', 'The binary plugin request was aborted'));
     };
-    const finish = (error?: unknown, value?: PluginBinaryResponseForModeV1<Mode>): void => {
+    const finish = (error?: unknown, value?: PluginBinaryResponseForModeV0<Mode>): void => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
       options.signal?.removeEventListener('abort', onExternalAbort);
       removeScopeCleanup();
-      if (error !== undefined) reject(error); else resolve(value as PluginBinaryResponseForModeV1<Mode>);
+      if (error !== undefined) reject(error); else resolve(value as PluginBinaryResponseForModeV0<Mode>);
     };
     removeScopeCleanup = scope.addCleanup(() => {
       controller.abort();
@@ -156,14 +156,14 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV1>(
     void (async () => {
       try {
         await assertBinaryHash(request.body, 'host_input');
-        const response = await requireAdapter(adapter.binaryRequest, 'tavern.plugin.binary-request.v1').send(request, { signal: controller.signal });
-        assertPayload(response, isPluginBinaryResponseV1, 'host_output');
+        const response = await requireAdapter(adapter.binaryRequest, 'tavern.plugin.binary-request.v0').send(request, { signal: controller.signal });
+        assertPayload(response, isPluginBinaryResponseV0, 'host_output');
         if (response.mode !== request.responseMode) {
           throw new SSHelperError('PAYLOAD_INVALID', 'The binary request response mode does not match the request', { phase: 'host_output', reason: 'response_mode_mismatch' });
         }
         if (response.mode === 'binary') await assertBinaryHash(response, 'host_output');
         scope.assertActive();
-        finish(undefined, response as PluginBinaryResponseForModeV1<Mode>);
+        finish(undefined, response as PluginBinaryResponseForModeV0<Mode>);
       } catch (error) {
         if (settled) return;
         finish(error instanceof SSHelperError ? error : new SSHelperError('BRIDGE_CORRUPTED', 'The Tavern binary request adapter failed', { reason: 'host_adapter' }));
@@ -206,14 +206,17 @@ const exactKeys = (value: Record<string, unknown>, required: readonly string[], 
 };
 const object = (value: unknown): Record<string, unknown> | undefined => typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const optionalString = (value: unknown): boolean => value === undefined || typeof value === 'string';
+const optionalBoolean = (value: unknown): boolean => value === undefined || typeof value === 'boolean';
 const finiteCount = (value: unknown): boolean => value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 const isVariables = (value: unknown): boolean => value === undefined || (isPlainData(value) && (object(value) !== undefined || (Array.isArray(value) && value.every((entry) => object(entry) !== undefined))));
 const isMessage = (value: unknown): boolean => {
   const item = object(value);
-  return item !== undefined && exactKeys(item, ['id', 'index', 'role', 'text'], ['name', 'createdAt', 'variables'])
+  return item !== undefined && exactKeys(item, ['id', 'index', 'role', 'text'], ['name', 'createdAt', 'variables', 'messageType', 'visibleToAi'])
     && typeof item.id === 'string' && Number.isSafeInteger(item.index) && (item.index as number) >= 0
     && (item.role === 'system' || item.role === 'user' || item.role === 'assistant') && typeof item.text === 'string'
-    && optionalString(item.name) && optionalString(item.createdAt) && isVariables(item.variables);
+    && optionalString(item.name) && optionalString(item.createdAt) && isVariables(item.variables)
+    && (item.messageType === undefined || ['conversation', 'system', 'tool', 'reasoning'].includes(item.messageType as string))
+    && optionalBoolean(item.visibleToAi);
 };
 const isGeneration = (value: unknown): boolean => {
   const item = object(value);
@@ -279,7 +282,7 @@ const deniedTopLevel: Readonly<Record<string, object>> = Object.freeze({
   generation: deniedSurface('tavern.generation.read', ['available', 'models', 'current', 'generate', 'test']),
   prompt: deniedSurface('tavern.prompt.contribute', ['set', 'remove']),
   request: deniedSurface('tavern.plugin.request', ['send']),
-  binaryRequest: deniedSurface('tavern.plugin.binary-request.v1', ['send']),
+  binaryRequest: deniedSurface('tavern.plugin.binary-request.v0', ['send']),
   metadata: deniedSurface('tavern.metadata.write', ['save']),
   settings: deniedSurface('tavern.settings.write', ['save']),
   macros: deniedSurface('tavern.macros.execute', ['substitute']),
@@ -331,7 +334,7 @@ export function createTavernHostPort<Granted extends HostCapability>(scope: Sess
   }
   if (has('tavern.prompt.contribute')) port.prompt = { set: guarded(scope, (value: PromptContribution) => requireAdapter(adapter.prompt, 'tavern.prompt.contribute').set(value)), remove: guarded(scope, (id: string) => requireAdapter(adapter.prompt, 'tavern.prompt.contribute').remove(id)) };
   if (has('tavern.plugin.request')) port.request = { send: guarded(scope, (request: PluginApiRequest) => requireAdapter(adapter.request, 'tavern.plugin.request').send(request)) };
-  if (has('tavern.plugin.binary-request.v1')) port.binaryRequest = { send: (request: PluginBinaryRequestV1, options?: PluginBinaryRequestOptions) => sendBinaryRequest(scope, adapter, request, options) };
+  if (has('tavern.plugin.binary-request.v0')) port.binaryRequest = { send: (request: PluginBinaryRequestV0, options?: PluginBinaryRequestOptions) => sendBinaryRequest(scope, adapter, request, options) };
   if (has('tavern.metadata.write')) port.metadata = { save: guarded(scope, (values: Readonly<Record<string, string>>) => requireAdapter(adapter.metadata, 'tavern.metadata.write').save(values)) };
   if (has('tavern.settings.write')) port.settings = { save: guarded(scope, () => requireAdapter(adapter.settings, 'tavern.settings.write').save()) };
   if (has('tavern.macros.execute')) port.macros = { substitute: guarded(scope, (text: string) => requireAdapter(adapter.macros, 'tavern.macros.execute').substitute(text)) };

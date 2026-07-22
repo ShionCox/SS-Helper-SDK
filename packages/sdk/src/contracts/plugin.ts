@@ -19,8 +19,8 @@ export interface PluginDescriptor<Capabilities extends HostCapability = HostCapa
   readonly settingsDisplayName?: string;
   readonly pluginVersion: string;
   readonly sdkPackageVersion: string;
-  readonly apiMajor: number;
-  readonly minApiMinor: number;
+  readonly apiVersion: string;
+  readonly minApiVersion: string;
   readonly capabilities: readonly Capabilities[];
 }
 

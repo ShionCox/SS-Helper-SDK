@@ -25,8 +25,7 @@ import { ensureIconElement } from '../ui/icon-element.js';
 export interface CoreRuntimeIdentity {
   readonly coreVersion: string;
   readonly sdkPackageVersion: string;
-  readonly apiMajor: number;
-  readonly apiMinor: number;
+  readonly apiVersion: string;
   readonly capabilities?: readonly HostCapability[];
   readonly buildId: string;
   readonly contentDigest: string;
@@ -62,15 +61,14 @@ export class CoreRuntime {
     const document = options.document ?? options.settingsContainer?.ownerDocument;
     const capabilities = Object.freeze([...new Set([
       ...(identity.capabilities ?? []),
-      ...(document === undefined ? [] : ['core.ui.notification.v1' as const]),
+      ...(document === undefined ? [] : ['core.ui.notification.v0' as const]),
     ])]);
     this.descriptor = Object.freeze({
       kind: 'ss-helper-core',
       id: 'ss-helper.core',
       coreVersion: identity.coreVersion,
       sdkPackageVersion: identity.sdkPackageVersion,
-      apiMajor: identity.apiMajor,
-      apiMinor: identity.apiMinor,
+      apiVersion: identity.apiVersion,
       generation,
       state: 'ready',
       capabilities,
@@ -88,7 +86,7 @@ export class CoreRuntime {
     this.chatIndicators = new ChatIndicatorHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
     const bridge = new InternalBridgeClient(options.hostAdapter ?? {});
     this.plugins = new PluginRegistry(
-      generation, identity.apiMajor, identity.apiMinor, capabilities,
+      generation, identity.apiVersion, capabilities,
       () => this.#active, this.services, this.events, this.diagnosticsStore,
       options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, this.chatIndicators, bridge,
     );

@@ -14,7 +14,7 @@ export function validateContract(contract: unknown, kind: StructuralContract['ki
   }
   const value = contract as Partial<StructuralContract>;
   if (value.kind !== kind || typeof value.provider !== 'string' || typeof value.name !== 'string'
-    || !Number.isSafeInteger(value.version) || (value.version ?? 0) <= 0
+    || !Number.isSafeInteger(value.version) || (value.version ?? -1) < 0
     || (value.schemaId !== undefined && typeof value.schemaId !== 'string')) {
     throw new SSHelperError('PAYLOAD_INVALID', 'The contract token is invalid', { reason: 'contract' });
   }

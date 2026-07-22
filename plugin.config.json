@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 0,
   "kind": "server-plugin",
   "directoryName": "SS-Helper-SDK",
   "displayName": "SS-Helper Core",
@@ -7,13 +7,12 @@
     "id": "ss-helper-sdk",
     "name": "SS-Helper SDK",
     "description": "SS-Helper Core runtime and shared workspace storage",
-    "version": "2.2.0"
+    "version": "0.0.1"
   },
   "browser": {
-    "coreVersion": "2.2.0",
-    "sdkPackageVersion": "2.2.0",
-    "apiMajor": 2,
-    "apiMinor": 2,
+    "coreVersion": "0.0.1",
+    "sdkPackageVersion": "0.0.1",
+    "apiVersion": "0.0.1",
     "modulePath": "/api/plugins/ss-helper-sdk/browser/core.js",
     "stylePath": "/api/plugins/ss-helper-sdk/browser/core.css"
   }

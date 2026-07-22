@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-const BRIDGE_ROUTE = '/internal/bridge/v1/call';
+const BRIDGE_ROUTE = '/internal/bridge/v0/call';
 
 function createRouter() {
   const routes = new Map();
@@ -33,7 +33,7 @@ async function invoke(routes, method, route, request) {
 async function bridge(routes, pluginId, operation, input = {}, headers = {}) {
   return invoke(routes, 'POST', BRIDGE_ROUTE, {
     headers,
-    body: { version: 1, pluginId, operation, input },
+    body: { version: 0, pluginId, operation, input },
   });
 }
 
@@ -49,10 +49,8 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
   try {
     const { routes, router } = createRouter();
     module = await import(`../server-plugin/index.js?bridge=${Date.now()}`);
-    assert.equal(module.__test.resolveDatabasePath({ stRoot: null, dataRoot: path.join(root, 'isolated-data') }), path.join(root, 'isolated-data', '_ss-helper', 'ss-helper.sqlite3'));
+    assert.equal(module.__test.resolveDatabasePath({ stRoot: null, dataRoot: path.join(root, 'isolated-data') }), path.join(root, 'isolated-data', '_ss-helper-v0', 'ss-helper.sqlite3'));
     await module.init(router);
-    assert.equal(routes.has('POST /v2/workspaces/open'), false);
-    assert.equal(routes.has('GET /v2/health'), false);
     assert.equal(routes.has(`POST ${BRIDGE_ROUTE}`), true);
     assert.equal(routes.has('GET /artifact-manifest.json'), true);
     const manifest = await invoke(routes, 'GET', '/artifact-manifest.json', {});
@@ -110,7 +108,7 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
     assert.equal(health.payload.data.ready, true);
     assert.match(health.payload.data.nodeVersion, /^v\d+/u);
     assert.equal(Number.isSafeInteger(health.payload.data.databaseSizeBytes), true);
-    const forged = await invoke(routes, 'POST', BRIDGE_ROUTE, { headers: { 'x-ss-helper-plugin': 'ss-helper.memory' }, body: { version: 1, pluginId: 'forged.plugin', operation: 'workspace.health', input: {} } });
+    const forged = await invoke(routes, 'POST', BRIDGE_ROUTE, { headers: { 'x-ss-helper-plugin': 'ss-helper.memory' }, body: { version: 0, pluginId: 'forged.plugin', operation: 'workspace.health', input: {} } });
     assert.equal(forged.status, 403);
     assert.equal(forged.payload.error, 'SERVER_CAPABILITY_DENIED');
   } finally {
@@ -124,7 +122,7 @@ test('SDK bridge health and confirmed recovery work when SQLite is corrupt', asy
   const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-recovery-'));
   const previous = process.env.SS_HELPER_ST_ROOT;
   process.env.SS_HELPER_ST_ROOT = root;
-  const workspace = path.join(root, 'data', '_ss-helper');
+  const workspace = path.join(root, 'data', '_ss-helper-v0');
   const corruptDatabase = Buffer.from('not a sqlite database', 'utf8');
   const originalKey = Buffer.alloc(32, 7);
   mkdirSync(workspace, { recursive: true });
@@ -186,7 +184,7 @@ test('SDK bridge stores secrets encrypted and limits them to the LLM policy entr
     const denied = await bridge(routes, 'ss-helper.memory', 'secrets.get', { workspaceId: 'llm:global', secretId: 'resource:demo:api-key' });
     assert.equal(denied.status, 403);
     assert.equal(denied.payload.error, 'SERVER_CAPABILITY_DENIED');
-    const dbBytes = readFileSync(path.join(root, 'data', '_ss-helper', 'ss-helper.sqlite3'));
+    const dbBytes = readFileSync(path.join(root, 'data', '_ss-helper-v0', 'ss-helper.sqlite3'));
     assert.equal(dbBytes.includes(Buffer.from('sk-test-secret')), false);
   } finally {
     module?.exit();

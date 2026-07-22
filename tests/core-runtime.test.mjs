@@ -37,7 +37,7 @@ test('dispose preserves a disposed generation and replacement advances exactly o
   first.dispose();
   assert.equal(realm[CORE_DISCOVERY_SYMBOL].descriptor.state, 'disposed');
   assert.deepEqual(await session.closed, { reason: 'core_disposed', generation: 1 });
-  assert.throws(() => session.events.subscribe({ kind: 'event', provider: 'x.y', name: 'z', version: 1 }, () => {}), errorCode('STALE_SESSION'));
+  assert.throws(() => session.events.subscribe({ kind: 'event', provider: 'x.y', name: 'z', version: 0 }, () => {}), errorCode('STALE_SESSION'));
   const second = installCoreRuntime(coreIdentity({ buildId: 'replacement' }), realm);
   assert.equal(second.generation, 2);
   assert.deepEqual(details.map((detail) => [detail.kind, detail.generation]), [['ready', 1], ['disposed', 1], ['replaced', 2]]);
@@ -94,7 +94,7 @@ test('connectSSHelper waits for late Core and closes the snapshot-subscribe race
 test('connectSSHelper reports missing, incompatible, and corrupted bridges with public codes', async () => {
   await assert.rejects(connectSSHelper(pluginDescriptor('example.missing'), { target: new TestRealm(), timeoutMs: 1 }), errorCode('CORE_MISSING'));
   const incompatible = new TestRealm();
-  installCoreRuntime(coreIdentity({ apiMajor: 2 }), incompatible);
+  installCoreRuntime(coreIdentity({ apiVersion: '0.0.0' }), incompatible);
   await assert.rejects(connectSSHelper(pluginDescriptor('example.incompatible'), { target: incompatible, timeoutMs: 10 }), errorCode('API_INCOMPATIBLE'));
   const corrupt = new TestRealm();
   Object.defineProperty(corrupt, CORE_DISCOVERY_SYMBOL, { value: 42, configurable: true });

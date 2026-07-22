@@ -1,6 +1,6 @@
 import { installCoreRuntime } from './lib/runtime/install-core-runtime.js';
 import { createSillyTavernHostBridge } from './lib/host/silly-tavern-adapter.js';
-import { CORE_DISCOVERY_SYMBOL } from './vendor/sdk/contracts/core.js';
+import { API_VERSION, CORE_DISCOVERY_SYMBOL, SDK_PACKAGE_VERSION } from './vendor/sdk/contracts/core.js';
 import { SSHelperError } from './vendor/sdk/errors.js';
 import { waitForTavernReady } from './vendor/sdk/client/tavern-ready.js';
 
@@ -102,10 +102,9 @@ export function ensureCoreReady() {
     }
     ensureCoreStyle(artifactDigest);
     const runtime = installCoreRuntime({
-      coreVersion: '2.2.0',
-      sdkPackageVersion: '2.2.0',
-      apiMajor: 2,
-      apiMinor: 2,
+      coreVersion: SDK_PACKAGE_VERSION,
+      sdkPackageVersion: SDK_PACKAGE_VERSION,
+      apiVersion: API_VERSION,
       buildId: 'ss-helper-sdk',
       contentDigest: artifactDigest ?? 'runtime',
       capabilities: [...host.capabilities, 'workspace.recovery', 'secrets.read', 'secrets.write'],

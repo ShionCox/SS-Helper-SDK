@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 0,
   "plugins": {
     "ss-helper.llm": ["workspace.read", "workspace.write", "secrets.read", "secrets.write"],
     "ss-helper.memory": ["workspace.read", "workspace.write", "workspace.recovery"]

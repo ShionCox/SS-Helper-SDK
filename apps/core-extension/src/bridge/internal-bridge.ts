@@ -2,7 +2,7 @@ import { SSHelperError, type PlainData } from '@ss-helper/sdk';
 import type { TavernHostAdapter } from '../host/tavern-host-port.js';
 import type { ResourceScope } from '../plugins/session-scope.js';
 
-const BRIDGE_PATH = '/api/plugins/ss-helper-sdk/internal/bridge/v1/call' as const;
+const BRIDGE_PATH = '/api/plugins/ss-helper-sdk/internal/bridge/v0/call' as const;
 
 type BridgeResponse = {
   readonly ok?: unknown;
@@ -28,7 +28,7 @@ export class InternalBridgeClient {
     const response = await this.hostAdapter.request.send({
       path: BRIDGE_PATH,
       method: 'POST',
-      body: { version: 1, pluginId, operation, input: input as PlainData },
+      body: { version: 0, pluginId, operation, input: input as PlainData },
     });
     scope.assertActive();
     const body = (response.body ?? {}) as BridgeResponse;

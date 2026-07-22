@@ -14,6 +14,7 @@ import {
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { systemTool } from './platform-tools.mjs';
 
 const ST_TAG = '1.18.0';
 const ST_COMMIT = '51ad27fb86d39a3daca3adaa970375c9670c12df';
@@ -277,7 +278,7 @@ async function main() {
     const extensionRoot = path.join(dataRoot, 'default-user', 'extensions', 'SS-Helper-SDK');
     const extracted = path.join(temporary, 'core-extracted');
     mkdirSync(extracted, { recursive: true });
-    run('tar', ['-xf', path.resolve(args.coreZip), '-C', extracted]);
+    run(systemTool('tar.exe'), ['-xf', path.resolve(args.coreZip), '-C', extracted]);
     cpSync(path.join(extracted, 'third-party', 'SS-Helper-SDK'), extensionRoot, { recursive: true });
     const consumerARoot = path.join(dataRoot, 'default-user', 'extensions', 'SS-Helper-Gate-Consumer-A');
     const consumerBRoot = path.join(dataRoot, 'default-user', 'extensions', 'SS-Helper-Gate-Consumer-B');
@@ -715,7 +716,7 @@ async function main() {
     assert.equal(measured.generationAfterConsumerA, measured.generationAfterConsumerB);
     assert.equal(measured.discovery.generation, measured.generationAfterConsumerB);
     assert.deepEqual(measured.consumerResponse, { value: 'artifact' });
-    assert.deepEqual(measured.consumerHostA.requested, ['tavern.context.read', 'tavern.chat.read', 'tavern.chat.events', 'tavern.worldbooks.read', 'tavern.worldbooks.write', 'tavern.generation.read', 'tavern.prompt.contribute', 'tavern.plugin.request', 'tavern.plugin.binary-request.v1']);
+    assert.deepEqual(measured.consumerHostA.requested, ['tavern.context.read', 'tavern.chat.read', 'tavern.chat.events', 'tavern.worldbooks.read', 'tavern.worldbooks.write', 'tavern.generation.read', 'tavern.prompt.contribute', 'tavern.plugin.request', 'tavern.plugin.binary-request.v0']);
     assert.deepEqual(measured.consumerHostA.granted, measured.consumerHostA.requested);
     assert.equal(measured.consumerHostA.events.subscribedAndRemoved, true);
     assert.equal(typeof measured.consumerHostA.generation.available, 'boolean');
@@ -739,7 +740,6 @@ async function main() {
       },
       import: { status: 200, ok: true, body: { ok: true, data: { bytesMatched: true, hashMatched: true, byteLength: 32 } } },
     });
-    assert.deepEqual(measured.consumerHostA.legacyMemoryRoute, { status: 404, ok: false });
     assert.deepEqual(measured.consumerHostB.requested, ['tavern.context.read']);
     assert.deepEqual(measured.consumerHostB.granted, measured.consumerHostB.requested);
     assert.deepEqual(measured.consumers.sort(), ['fixture.consumer-a', 'fixture.consumer-b']);

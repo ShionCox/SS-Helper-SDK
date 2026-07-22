@@ -1,7 +1,7 @@
 import type { PlainData } from './plain-data.js';
 
 export type HostCapability =
-  | 'core.ui.notification.v1'
+  | 'core.ui.notification.v0'
   | 'tavern.context.read'
   | 'tavern.identity.read'
   | 'tavern.character.read'
@@ -17,7 +17,7 @@ export type HostCapability =
   | 'tavern.generation.execute'
   | 'tavern.prompt.contribute'
   | 'tavern.plugin.request'
-  | 'tavern.plugin.binary-request.v1'
+  | 'tavern.plugin.binary-request.v0'
   | 'tavern.metadata.write'
   | 'tavern.settings.write'
   | 'tavern.macros.execute'
@@ -34,7 +34,19 @@ export interface HostCharacterSnapshot { readonly id: string; readonly name: str
 export interface HostPersonaSnapshot { readonly id?: string | undefined; readonly name: string; readonly avatar?: string | undefined; readonly description?: string | undefined; }
 export type MessageVariableEntry = Readonly<Record<string, PlainData>>;
 export type MessageVariablesSnapshot = MessageVariableEntry | readonly MessageVariableEntry[];
-export interface ChatMessageSnapshot { readonly id: string; readonly index: number; readonly role: 'system' | 'user' | 'assistant'; readonly name?: string | undefined; readonly text: string; readonly createdAt?: string | undefined; readonly variables?: MessageVariablesSnapshot; }
+export type ChatMessageType = 'conversation' | 'system' | 'tool' | 'reasoning';
+export interface ChatMessageSnapshot {
+  readonly id: string;
+  readonly index: number;
+  readonly role: 'system' | 'user' | 'assistant';
+  readonly name?: string | undefined;
+  readonly text: string;
+  readonly createdAt?: string | undefined;
+  readonly variables?: MessageVariablesSnapshot;
+  /** Optional provenance metadata; omitted by older hosts for ordinary messages. */
+  readonly messageType?: ChatMessageType | undefined;
+  readonly visibleToAi?: boolean | undefined;
+}
 export interface ChatSnapshot { readonly key: string; readonly id?: string | undefined; readonly name?: string | undefined; readonly messageCount: number; readonly messages?: readonly ChatMessageSnapshot[]; readonly variables?: Readonly<Record<string, PlainData>>; }
 export interface ChatMessageInput { readonly role: 'system' | 'user' | 'assistant'; readonly text: string; readonly name?: string | undefined; readonly variables?: MessageVariablesSnapshot; }
 /** Core-owned navigation target used by read-only UI references. */
@@ -69,43 +81,43 @@ export interface PluginApiRequest { readonly path: `/${string}`; readonly method
 export interface PluginApiResponse { readonly status: number; readonly ok: boolean; readonly body?: PlainData; }
 export const PLUGIN_BINARY_CONTENT_TYPE = 'application/vnd.sqlite3' as const;
 export const PLUGIN_BINARY_MAX_BYTES = 64 * 1024 * 1024;
-export interface PluginBinaryBodyV1 {
+export interface PluginBinaryBodyV0 {
   readonly encoding: 'base64';
   readonly contentType: typeof PLUGIN_BINARY_CONTENT_TYPE;
   readonly data: string;
   readonly byteLength: number;
   readonly sha256: string;
 }
-export type PluginBinaryResponseModeV1 = 'binary' | 'json';
-export interface PluginBinaryRequestV1<Mode extends PluginBinaryResponseModeV1 = PluginBinaryResponseModeV1> {
-  readonly version: 1;
+export type PluginBinaryResponseModeV0 = 'binary' | 'json';
+export interface PluginBinaryRequestV0<Mode extends PluginBinaryResponseModeV0 = PluginBinaryResponseModeV0> {
+  readonly version: 0;
   readonly path: `/api/plugins/${string}`;
   readonly method: 'GET' | 'POST';
   readonly responseMode: Mode;
-  readonly body?: PluginBinaryBodyV1;
+  readonly body?: PluginBinaryBodyV0;
 }
-export interface PluginBinaryBytesResponseV1 extends PluginBinaryBodyV1 {
-  readonly version: 1;
+export interface PluginBinaryBytesResponseV0 extends PluginBinaryBodyV0 {
+  readonly version: 0;
   readonly mode: 'binary';
   readonly status: number;
   readonly ok: boolean;
   readonly filename?: string;
 }
-export interface PluginJsonAcknowledgementV1 {
+export interface PluginJsonAcknowledgementV0 {
   readonly ok: true;
   readonly data: PlainData;
 }
-export interface PluginBinaryJsonResponseV1 {
-  readonly version: 1;
+export interface PluginBinaryJsonResponseV0 {
+  readonly version: 0;
   readonly mode: 'json';
   readonly status: number;
   readonly ok: boolean;
-  readonly body: PluginJsonAcknowledgementV1;
+  readonly body: PluginJsonAcknowledgementV0;
 }
-export type PluginBinaryResponseV1 = PluginBinaryBytesResponseV1 | PluginBinaryJsonResponseV1;
-export type PluginBinaryResponseForModeV1<Mode extends PluginBinaryResponseModeV1> = Mode extends 'binary'
-  ? PluginBinaryBytesResponseV1
-  : PluginBinaryJsonResponseV1;
+export type PluginBinaryResponseV0 = PluginBinaryBytesResponseV0 | PluginBinaryJsonResponseV0;
+export type PluginBinaryResponseForModeV0<Mode extends PluginBinaryResponseModeV0> = Mode extends 'binary'
+  ? PluginBinaryBytesResponseV0
+  : PluginBinaryJsonResponseV0;
 export interface PluginBinaryRequestOptions { readonly timeoutMs?: number; readonly signal?: AbortSignal; }
 
 const binaryRecord = (value: unknown): Record<string, unknown> | undefined => typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -122,7 +134,7 @@ const isCanonicalBase64 = (value: unknown, byteLength: unknown): value is string
     return decoded.length === byteLength && btoa(decoded) === value;
   } catch { return false; }
 };
-const isBinaryBody = (value: unknown): value is PluginBinaryBodyV1 => {
+const isBinaryBody = (value: unknown): value is PluginBinaryBodyV0 => {
   const body = binaryRecord(value);
   return body !== undefined && binaryExact(body, ['encoding', 'contentType', 'data', 'byteLength', 'sha256'])
     && body.encoding === 'base64' && body.contentType === PLUGIN_BINARY_CONTENT_TYPE
@@ -138,7 +150,7 @@ const isBinaryPlainData = (value: unknown, seen = new Set<object>()): value is P
   return (prototype === Object.prototype || prototype === null)
     && Object.values(value as Record<string, unknown>).every((item) => isBinaryPlainData(item, seen));
 };
-const isJsonAcknowledgement = (value: unknown): value is PluginJsonAcknowledgementV1 => {
+const isJsonAcknowledgement = (value: unknown): value is PluginJsonAcknowledgementV0 => {
   const acknowledgement = binaryRecord(value);
   return acknowledgement !== undefined && binaryExact(acknowledgement, ['ok', 'data'])
     && acknowledgement.ok === true && isBinaryPlainData(acknowledgement.data);
@@ -146,16 +158,16 @@ const isJsonAcknowledgement = (value: unknown): value is PluginJsonAcknowledgeme
 const isPluginApiPath = (value: unknown): value is `/api/plugins/${string}` => typeof value === 'string'
   && /^\/api\/plugins\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(value)
   && value.split('/').every((segment) => segment !== '.' && segment !== '..');
-export const isPluginBinaryRequestV1 = (value: unknown): value is PluginBinaryRequestV1 => {
+export const isPluginBinaryRequestV0 = (value: unknown): value is PluginBinaryRequestV0 => {
   const request = binaryRecord(value);
-  return request !== undefined && binaryExact(request, ['version', 'path', 'method', 'responseMode'], ['body']) && request.version === 1
+  return request !== undefined && binaryExact(request, ['version', 'path', 'method', 'responseMode'], ['body']) && request.version === 0
     && isPluginApiPath(request.path) && (request.method === 'GET' || request.method === 'POST')
     && (request.responseMode === 'binary' || request.responseMode === 'json')
     && (request.method !== 'GET' || request.body === undefined) && (request.body === undefined || isBinaryBody(request.body));
 };
-export const isPluginBinaryResponseV1 = (value: unknown): value is PluginBinaryResponseV1 => {
+export const isPluginBinaryResponseV0 = (value: unknown): value is PluginBinaryResponseV0 => {
   const response = binaryRecord(value);
-  if (response === undefined || response.version !== 1 || !Number.isSafeInteger(response.status)
+  if (response === undefined || response.version !== 0 || !Number.isSafeInteger(response.status)
     || (response.status as number) < 100 || (response.status as number) > 599 || typeof response.ok !== 'boolean') return false;
   if (response.mode === 'binary') {
     return binaryExact(response, ['version', 'mode', 'status', 'ok', 'encoding', 'contentType', 'data', 'byteLength', 'sha256'], ['filename'])
@@ -193,7 +205,7 @@ export type HostPort<G extends HostCapability = HostCapability> = HostPortBase<G
   & HostGenerationPort<G>
   & GrantedSurface<G, 'tavern.prompt.contribute', 'prompt', { set(contribution: PromptContribution): Promise<void>; remove(id: string): Promise<void> }>
   & GrantedSurface<G, 'tavern.plugin.request', 'request', { send(request: PluginApiRequest): Promise<PluginApiResponse> }>
-  & GrantedSurface<G, 'tavern.plugin.binary-request.v1', 'binaryRequest', { send<Mode extends PluginBinaryResponseModeV1>(request: PluginBinaryRequestV1<Mode>, options?: PluginBinaryRequestOptions): Promise<PluginBinaryResponseForModeV1<Mode>> }>
+  & GrantedSurface<G, 'tavern.plugin.binary-request.v0', 'binaryRequest', { send<Mode extends PluginBinaryResponseModeV0>(request: PluginBinaryRequestV0<Mode>, options?: PluginBinaryRequestOptions): Promise<PluginBinaryResponseForModeV0<Mode>> }>
   & GrantedSurface<G, 'tavern.metadata.write', 'metadata', { save(values: Readonly<Record<string, string>>): Promise<void> }>
   & GrantedSurface<G, 'tavern.settings.write', 'settings', { save(): Promise<void> }>
   & GrantedSurface<G, 'tavern.macros.execute', 'macros', { substitute(text: string): Promise<string> }>

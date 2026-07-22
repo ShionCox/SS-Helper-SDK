@@ -56,8 +56,8 @@ export interface WorkspaceSecretSetRequest {
 }
 export interface WorkspaceSecretMetadata { readonly secretId: string; readonly metadata?: PlainData; readonly maskedValue: string; readonly updatedAt: number; readonly keyVersion: number; }
 export interface WorkspaceGrantRequest { readonly workspaceId: string; readonly ownerPluginId?: string; readonly granteePluginId: string; readonly actions: readonly WorkspaceAction[]; readonly expiresAt?: number; }
-export interface WorkspaceBackup { readonly format: 'ss-helper-workspace'; readonly version: 1; readonly ownerPluginId: string; readonly workspaceId: string; readonly metadata: PlainData; readonly workspaceVersion: number; readonly collections: readonly PlainData[]; readonly records: readonly PlainData[]; readonly vectors: readonly PlainData[]; }
-export interface WorkspaceOwnerBackup { readonly format: 'ss-helper-workspace-owner'; readonly version: 1; readonly ownerPluginId: string; readonly exportedAt: number; readonly workspaces: readonly WorkspaceBackup[]; }
+export interface WorkspaceBackup { readonly format: 'ss-helper-workspace'; readonly version: 0; readonly ownerPluginId: string; readonly workspaceId: string; readonly metadata: PlainData; readonly workspaceVersion: number; readonly collections: readonly PlainData[]; readonly records: readonly PlainData[]; readonly vectors: readonly PlainData[]; }
+export interface WorkspaceOwnerBackup { readonly format: 'ss-helper-workspace-owner'; readonly version: 0; readonly ownerPluginId: string; readonly exportedAt: number; readonly workspaces: readonly WorkspaceBackup[]; }
 export interface WorkspaceBackupExportRequest { readonly workspaceId: string; readonly ownerPluginId?: string; }
 export interface WorkspaceBackupImportRequest { readonly workspaceId: string; readonly ownerPluginId?: string; readonly archive: WorkspaceBackup; readonly sha256: string; }
 export interface WorkspaceOwnerBackupImportRequest { readonly archive: WorkspaceOwnerBackup; readonly sha256: string; }

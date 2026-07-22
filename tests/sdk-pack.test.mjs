@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { sha256File } from '../scripts/artifact-lib.mjs';
 import { canonicalText, packSdkPackage } from '../scripts/pack-sdk.mjs';
+import { systemTool } from '../scripts/platform-tools.mjs';
 
 test('canonicalText converts CRLF and bare CR to LF', () => {
   assert.equal(canonicalText('one\r\ntwo\rthree\n'), 'one\ntwo\nthree\n');
@@ -34,7 +35,7 @@ test('SDK pack canonicalizes text and reproduces archive bytes', () => {
 
     const extracted = path.join(root, 'extracted');
     mkdirSync(extracted);
-    execFileSync('tar', ['-xf', second, '-C', extracted]);
+    execFileSync(systemTool('tar.exe'), ['-xf', second, '-C', extracted]);
     for (const relative of ['README.md', 'LICENSE', 'package.json', 'dist/index.js']) {
       assert.doesNotMatch(readFileSync(path.join(extracted, 'package', ...relative.split('/')), 'utf8'), /\r/u);
     }

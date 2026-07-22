@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LLM_EMBEDDING_V1,
-  LLM_RERANK_V1,
-  LLM_STRUCTURED_TASK_V1,
-  MEMORY_RECALL_V1,
-  MEMORY_GRAPH_V1,
-  MEMORY_UPDATED_V1,
+  LLM_EMBEDDING_V0,
+  LLM_RERANK_V0,
+  LLM_STRUCTURED_TASK_V0,
+  MEMORY_RECALL_V0,
+  MEMORY_GRAPH_V0,
+  MEMORY_UPDATED_V0,
 } from '../packages/sdk/dist/index.js';
 import { installCoreRuntime } from '../apps/core-extension/dist/index.js';
 import { coreIdentity, errorCode, pluginDescriptor, TestRealm } from './helpers/runtime-fixture.mjs';
@@ -30,31 +30,31 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
     throw new Error('network is forbidden in the deterministic contract fixture');
   };
 
-  const waits = [LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, MEMORY_RECALL_V1, MEMORY_GRAPH_V1]
+  const waits = [LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, MEMORY_RECALL_V0, MEMORY_GRAPH_V0]
     .map((contract) => consumer.services.waitFor(contract, { timeoutMs: 100 }));
   const removers = [
-    llm.services.expose(LLM_STRUCTURED_TASK_V1, (request, context) => ({
+    llm.services.expose(LLM_STRUCTURED_TASK_V0, (request, context) => ({
       output: { task: request.task, input: request.input, caller: context.callerPluginId },
       route: { route: 'fixture', provider: 'deterministic', model: 'structured-v1' },
     })),
-    llm.services.expose(LLM_EMBEDDING_V1, (request) => {
+    llm.services.expose(LLM_EMBEDDING_V0, (request) => {
       const inputs = Array.isArray(request.input) ? request.input : [request.input];
       return {
         embeddings: inputs.map((value) => [value.length, value.split(/\s+/u).length]),
         route: { route: 'fixture', provider: 'deterministic', model: 'embedding-v1' },
       };
     }),
-    llm.services.expose(LLM_RERANK_V1, (request) => ({
+    llm.services.expose(LLM_RERANK_V0, (request) => ({
       results: request.documents
         .map((document, index) => ({ id: document.id, score: document.text.includes(request.query) ? 1 : 0, index }))
         .sort((left, right) => right.score - left.score)
         .slice(0, request.topN ?? request.documents.length),
       route: { route: 'fixture', provider: 'deterministic', model: 'rerank-v1' },
     })),
-    memory.services.expose(MEMORY_RECALL_V1, (request) => ({
+    memory.services.expose(MEMORY_RECALL_V0, (request) => ({
       items: [{ id: `${request.chatKey}:1`, text: `remember:${request.query}`, score: 1, source: 'fixture' }],
     })),
-    memory.services.expose(MEMORY_GRAPH_V1, (request) => ({
+    memory.services.expose(MEMORY_GRAPH_V0, (request) => ({
       nodes: [{ id: `${request.chatKey}:node-a`, label: 'A' }, { id: `${request.chatKey}:node-b`, label: 'B' }],
       edges: [{ id: `${request.chatKey}:edge-a`, from: `${request.chatKey}:node-a`, to: `${request.chatKey}:node-b`, predicate: 'knows', kind: 'relationship', confidence: 0.9, backingFactId: `${request.chatKey}:fact-a` }],
     })),
@@ -63,21 +63,21 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
   try {
     await Promise.all(waits);
     assert.deepEqual(
-      await consumer.services.call(LLM_STRUCTURED_TASK_V1, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } }),
+      await consumer.services.call(LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } }),
       {
         output: { task: 'extract', input: { text: 'hello' }, caller: 'fixture.cross-plugin-consumer' },
         route: { route: 'fixture', provider: 'deterministic', model: 'structured-v1' },
       },
     );
     assert.deepEqual(
-      await consumer.services.call(LLM_EMBEDDING_V1, { input: ['hello world', 'x'] }),
+      await consumer.services.call(LLM_EMBEDDING_V0, { input: ['hello world', 'x'] }),
       {
         embeddings: [[11, 2], [1, 1]],
         route: { route: 'fixture', provider: 'deterministic', model: 'embedding-v1' },
       },
     );
     assert.deepEqual(
-      await consumer.services.call(LLM_RERANK_V1, {
+      await consumer.services.call(LLM_RERANK_V0, {
         query: 'needle',
         documents: [{ id: 'a', text: 'plain' }, { id: 'b', text: 'has needle' }],
         topN: 1,
@@ -88,17 +88,17 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       },
     );
     assert.deepEqual(
-      await consumer.services.call(MEMORY_RECALL_V1, { query: 'name', chatKey: 'chat-a', limit: 1 }),
+      await consumer.services.call(MEMORY_RECALL_V0, { query: 'name', chatKey: 'chat-a', limit: 1 }),
       { items: [{ id: 'chat-a:1', text: 'remember:name', score: 1, source: 'fixture' }] },
     );
     assert.deepEqual(
-      await consumer.services.call(MEMORY_GRAPH_V1, { query: 'A', chatKey: 'chat-a', limit: 4 }),
+      await consumer.services.call(MEMORY_GRAPH_V0, { query: 'A', chatKey: 'chat-a', limit: 4 }),
       { nodes: [{ id: 'chat-a:node-a', label: 'A' }, { id: 'chat-a:node-b', label: 'B' }], edges: [{ id: 'chat-a:edge-a', from: 'chat-a:node-a', to: 'chat-a:node-b', predicate: 'knows', kind: 'relationship', confidence: 0.9, backingFactId: 'chat-a:fact-a' }] },
     );
 
     const updates = [];
-    const unsubscribe = consumer.events.subscribe(MEMORY_UPDATED_V1, (payload) => updates.push(payload));
-    memory.events.publish(MEMORY_UPDATED_V1, { chatKey: 'chat-a', operation: 'updated', recordIds: ['chat-a:1'] });
+    const unsubscribe = consumer.events.subscribe(MEMORY_UPDATED_V0, (payload) => updates.push(payload));
+    memory.events.publish(MEMORY_UPDATED_V0, { chatKey: 'chat-a', operation: 'updated', recordIds: ['chat-a:1'] });
     assert.deepEqual(updates, [{ chatKey: 'chat-a', operation: 'updated', recordIds: ['chat-a:1'] }]);
     unsubscribe();
 
@@ -121,13 +121,13 @@ test('exact contracts quarantine timeout/abort late results and permit clean pro
   const { runtime, llm, memory, consumer } = setup();
   let finishEmbedding;
   let embeddingSignal;
-  const removeSlowEmbedding = llm.services.expose(LLM_EMBEDDING_V1, (_request, context) => new Promise((resolve) => {
+  const removeSlowEmbedding = llm.services.expose(LLM_EMBEDDING_V0, (_request, context) => new Promise((resolve) => {
     embeddingSignal = context.signal;
     finishEmbedding = resolve;
   }));
 
   await assert.rejects(
-    consumer.services.call(LLM_EMBEDDING_V1, { input: 'late' }, { timeoutMs: 5 }),
+    consumer.services.call(LLM_EMBEDDING_V0, { input: 'late' }, { timeoutMs: 5 }),
     errorCode('CALL_TIMEOUT'),
   );
   assert.equal(embeddingSignal.aborted, true);
@@ -137,22 +137,22 @@ test('exact contracts quarantine timeout/abort late results and permit clean pro
   assert.equal(runtime.port.diagnostics().pending, 0);
 
   removeSlowEmbedding();
-  const removeReplacement = llm.services.expose(LLM_EMBEDDING_V1, () => ({
+  const removeReplacement = llm.services.expose(LLM_EMBEDDING_V0, () => ({
     embeddings: [[1, 2]],
     route: { route: 'replacement', provider: 'deterministic', model: 'embedding-v2' },
   }));
-  assert.deepEqual(await consumer.services.call(LLM_EMBEDDING_V1, { input: 'fresh' }), {
+  assert.deepEqual(await consumer.services.call(LLM_EMBEDDING_V0, { input: 'fresh' }), {
     embeddings: [[1, 2]],
     route: { route: 'replacement', provider: 'deterministic', model: 'embedding-v2' },
   });
 
   let recallSignal;
-  const removeRecall = memory.services.expose(MEMORY_RECALL_V1, (_request, context) => new Promise(() => {
+  const removeRecall = memory.services.expose(MEMORY_RECALL_V0, (_request, context) => new Promise(() => {
     recallSignal = context.signal;
   }));
   const controller = new AbortController();
   const pendingRecall = consumer.services.call(
-    MEMORY_RECALL_V1,
+    MEMORY_RECALL_V0,
     { query: 'cancel', chatKey: 'chat-a' },
     { signal: controller.signal },
   );

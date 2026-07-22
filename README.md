@@ -22,15 +22,15 @@ not use a workspace link, a source-relative import, or a raw Tavern global.
 
 ```ts
 import { connectSSHelper } from '@ss-helper/sdk';
-import { LLM_COMPLETION_V1 } from '@ss-helper/sdk/contracts/llm';
+import { LLM_COMPLETION_V0 } from '@ss-helper/sdk/contracts/llm';
 
 const session = await connectSSHelper({
   id: 'example.plugin',
   displayName: 'Example Plugin',
-  pluginVersion: '1.0.0',
+  pluginVersion: '0.0.1',
   capabilities: [],
 });
-await session.services.call(LLM_COMPLETION_V1, {
+await session.services.call(LLM_COMPLETION_V0, {
   messages: [{ role: 'user', content: 'Hello' }],
 });
 await session.dispose();
@@ -58,7 +58,7 @@ Browser consumers access shared data only through `session.workspace` and the
 capability-gated `session.secrets`; the Core-owned internal bridge is the only
 browser storage transport. Use `open/defineCollection/query/transaction` for
 records and `secrets.set/get/delete/list` for credentials. The server plugin
-creates `data/_ss-helper/ss-helper.sqlite3` and its AES-256-GCM key on first
+creates `data/_ss-helper-v0/ss-helper.sqlite3` and its AES-256-GCM key on first
 startup. Backups never contain Secret values.
 
 SillyTavern extensions share one origin and therefore use a cooperative trust

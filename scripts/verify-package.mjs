@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { systemTool } from './platform-tools.mjs';
 
 const root = process.cwd();
 const artifactDir = path.join(root, 'artifacts');
@@ -15,7 +16,7 @@ execFileSync('pnpm', ['pack:sdk'], { cwd: root, stdio: 'inherit', shell: process
 const tarballs = readdirSync(artifactDir).filter((name) => name.endsWith('.tgz'));
 if (tarballs.length !== 1) throw new Error(`Expected one SDK tarball, got ${tarballs.length}`);
 const tarball = path.join(artifactDir, tarballs[0]);
-const listing = execFileSync('tar', ['-tf', tarball], { encoding: 'utf8' }).trim().split(/\r?\n/u);
+const listing = execFileSync(systemTool('tar.exe'), ['-tf', tarball], { encoding: 'utf8' }).trim().split(/\r?\n/u);
 for (const entry of listing) {
   if (!/^package\/(?:dist\/|README\.md$|LICENSE$|package\.json$)/u.test(entry)) throw new Error(`Unexpected packed file: ${entry}`);
   if (/\.omx|\/src\/|\/tests\//u.test(entry)) throw new Error(`Private file leaked into tarball: ${entry}`);
@@ -37,10 +38,10 @@ writeFileSync(path.join(fixtureDir, 'tsconfig.json'), JSON.stringify({
   include: ['consumer.ts'],
 }, null, 2));
 writeFileSync(path.join(fixtureDir, 'consumer.ts'), [
-  "import { LLM_COMPLETION_V1, LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, type LlmCompletionRequest } from '@ss-helper/sdk';",
+  "import { LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, type LlmCompletionRequest } from '@ss-helper/sdk';",
   "import { CORE_PLUGIN_ID } from '@ss-helper/sdk/contracts/core';",
   "const request: LlmCompletionRequest = { messages: [{ role: 'user', content: 'ok' }] };",
-  "void [LLM_COMPLETION_V1, LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, CORE_PLUGIN_ID, request];",
+  "void [LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, CORE_PLUGIN_ID, request];",
 ].join('\n'));
 execFileSync('pnpm', ['install', '--offline', '--ignore-workspace'], { cwd: fixtureDir, stdio: 'inherit', shell: process.platform === 'win32' });
 execFileSync(path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc'), ['-p', 'tsconfig.json'], { cwd: fixtureDir, stdio: 'inherit', shell: process.platform === 'win32' });

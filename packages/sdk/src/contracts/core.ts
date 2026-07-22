@@ -1,9 +1,8 @@
 import type { HostCapability } from './host.js';
 import type { PluginDescriptor, PluginSession } from './plugin.js';
 
-export const SDK_PACKAGE_VERSION = '2.2.0' as const;
-export const API_MAJOR = 2 as const;
-export const API_MINOR = 2 as const;
+export const SDK_PACKAGE_VERSION = '0.0.1' as const;
+export const API_VERSION = '0.0.1' as const;
 
 export const CORE_EXTENSION_DIRECTORY = 'third-party/SS-Helper-SDK' as const;
 export const CORE_PLUGIN_ID = 'ss-helper.core' as const;
@@ -18,8 +17,7 @@ export interface CoreDescriptor {
   readonly id: typeof CORE_PLUGIN_ID;
   readonly coreVersion: string;
   readonly sdkPackageVersion: string;
-  readonly apiMajor: number;
-  readonly apiMinor: number;
+  readonly apiVersion: string;
   readonly generation: number;
   readonly state: 'ready' | 'disposed';
   readonly capabilities: readonly HostCapability[];
@@ -32,8 +30,7 @@ export interface CoreDescriptor {
 export interface VersionAxes {
   readonly coreVersion: string;
   readonly sdkPackageVersion: string;
-  readonly apiMajor: number;
-  readonly apiMinor: number;
+  readonly apiVersion: string;
   readonly pluginVersion: string;
 }
 

@@ -78,16 +78,16 @@ function isMemoryGraphResponse(value: unknown): value is MemoryGraphResponse {
     && candidate.edges.every(isMemoryGraphEdge);
 }
 
-export const MEMORY_RECALL_V1: ServiceContract<typeof MEMORY_PLUGIN_ID, 'recall', 1, MemoryRecallRequest, MemoryRecallResponse> = Object.freeze({
-  kind: 'service', provider: MEMORY_PLUGIN_ID, name: 'recall', version: 1, schemaId: 'ss-helper.memory.recall.v1',
+export const MEMORY_RECALL_V0: ServiceContract<typeof MEMORY_PLUGIN_ID, 'recall', 0, MemoryRecallRequest, MemoryRecallResponse> = Object.freeze({
+  kind: 'service', provider: MEMORY_PLUGIN_ID, name: 'recall', version: 0, schemaId: 'ss-helper.memory.recall.v0',
 });
 
-export const MEMORY_GRAPH_V1: ServiceContract<typeof MEMORY_PLUGIN_ID, 'graph', 1, MemoryGraphRequest, MemoryGraphResponse> = Object.freeze({
-  kind: 'service', provider: MEMORY_PLUGIN_ID, name: 'graph', version: 1, schemaId: 'ss-helper.memory.graph.v1',
+export const MEMORY_GRAPH_V0: ServiceContract<typeof MEMORY_PLUGIN_ID, 'graph', 0, MemoryGraphRequest, MemoryGraphResponse> = Object.freeze({
+  kind: 'service', provider: MEMORY_PLUGIN_ID, name: 'graph', version: 0, schemaId: 'ss-helper.memory.graph.v0',
   validateRequest: isMemoryGraphRequest,
   validateResponse: isMemoryGraphResponse,
 });
 
-export const MEMORY_UPDATED_V1: EventContract<typeof MEMORY_PLUGIN_ID, 'updated', 1, MemoryUpdatedPayload> = Object.freeze({
-  kind: 'event', provider: MEMORY_PLUGIN_ID, name: 'updated', version: 1, schemaId: 'ss-helper.memory.updated.v1',
+export const MEMORY_UPDATED_V0: EventContract<typeof MEMORY_PLUGIN_ID, 'updated', 0, MemoryUpdatedPayload> = Object.freeze({
+  kind: 'event', provider: MEMORY_PLUGIN_ID, name: 'updated', version: 0, schemaId: 'ss-helper.memory.updated.v0',
 });

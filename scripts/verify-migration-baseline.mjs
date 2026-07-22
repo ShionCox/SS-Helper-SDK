@@ -13,11 +13,26 @@ const memoryRuntime = readFileSync(path.join(memoryRoot, 'src', 'host', 'memory-
 const checks = [];
 const check = (name, condition, evidence) => checks.push({ name, ok: Boolean(condition), evidence });
 
-check('SDK registers only browser, health and workspace routes', !sdkServer.includes('/v1/memory') && sdkServer.includes('/v2/workspaces/'), 'server-plugin/index.js');
+const currentRouteMarkers = [
+  "router.get('/artifact-manifest.json'",
+  "router.get('/browser/core.js'",
+  "router.get('/browser/core.css'",
+  'router.post(BRIDGE_ROUTE',
+];
+check(
+  'SDK registers current browser assets and internal bridge route',
+  currentRouteMarkers.every((marker) => sdkServer.includes(marker)) && sdkServer.includes("const BRIDGE_ROUTE = '/internal/bridge/v0/call'"),
+  'server-plugin/index.js',
+);
+check(
+  'SDK does not register retired workspace routes',
+  !/(?:\/v[12]\/|X-SS-Helper-Plugin)/u.test(sdkServer),
+  'server-plugin/index.js',
+);
 check('SDK does not load Memory implementation', !/SS-Helper-Memory|server[\\/]memory|import\([^)]*memory/iu.test(sdkServer), 'server-plugin/index.js');
 check('SDK schema is workspace-generic', /CREATE TABLE IF NOT EXISTS workspace_records/u.test(sdkServer) && !/(?:facts|evidence|recall_logs|fact_vectors)/u.test(sdkServer), 'server-plugin/index.js');
 check('WorkspacePort exposes generic owner operations', ['health()', 'integrity()', 'list(', 'clearOwned(', 'exportAll()', 'importAll('].every((token) => workspaceContract.includes(token)), 'packages/sdk/src/contracts/workspace.ts');
-check('Memory repository depends on WorkspacePort', /WorkspacePort/u.test(memoryRepository) && !/MemorySqliteClient|\/v1\/memory/u.test(memoryRepository), 'SS-Helper-Memory/src/infrastructure/memory-repository.ts');
+check('Memory repository depends on WorkspacePort', /WorkspacePort/u.test(memoryRepository) && !/MemorySqliteClient|\/api\/plugins\/ss-helper-sdk\//u.test(memoryRepository), 'SS-Helper-Memory/src/infrastructure/memory-repository.ts');
 check('Memory runtime injects session.workspace', /new MemoryRepository\(session\.workspace\)/u.test(memoryRuntime), 'SS-Helper-Memory/src/host/memory-runtime.ts');
 const memoryServer = path.join(memoryRoot, 'server');
 check('Memory has no server plugin files', !existsSync(memoryServer) || readdirSync(memoryServer).length === 0, 'SS-Helper-Memory/server');

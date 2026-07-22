@@ -22,7 +22,8 @@ const patterns = [
   ['raw consumer global', /\b(?:window|globalThis)\.STX\b/],
   ['old settings root', /ss-helper-plugins-container|old-settings-root/i],
   ['MemoryOS facade', /\bMemoryOS\b/],
-  ['workspace/link/absolute import leakage', /(?:link:|file:\/\/|(?:from|import\()\s*['"][A-Za-z]:\\)/i],
+  ['retired SS-Helper transport', /(?:\/api\/plugins\/ss-helper-sdk\/v[12](?:\/|$)|\/internal\/bridge\/v[12](?:\/|$)|\/v1\/memory|\/v2\/(?:workspaces|health)|X-SS-Helper-Plugin)/i],
+  ['workspace/link/absolute import leakage', /(?:link:(?:\.|\/)|file:\/\/|(?:from|import\()\s*['"][A-Za-z]:\\)/i],
   ['secret probing', /(?:localStorage\.getItem\(['"](?:api[_-]?key|token|secret)|Authorization\s*[:=]\s*['"]Bearer)/i],
 ];
 // These files intentionally contain legacy markers as scanner/audit assertions or
@@ -33,6 +34,8 @@ const namedExemptions = new Map([
     'scripts/artifact-gate.mjs',
     'scripts/legacy-scan.mjs',
     'scripts/verify-migration-baseline.mjs',
+    'tests/server-plugin.test.mjs',
+    'tests/tavern-ready.test.mjs',
     'tests/artifact-lib.test.mjs',
     'tests/communication-runtime.test.mjs',
     'tests/contracts.test.mjs',
@@ -42,12 +45,14 @@ const namedExemptions = new Map([
   ])],
   ['LLM', new Set([
     'scripts/legacy-scan.mjs',
+    'test/workspace-architecture.test.mjs',
   ])],
   ['Memory', new Set([
     'AGENTS.md',
     'scripts/legacy-scan.mjs',
     'test/sdk-artifact.spec.ts',
     'test/sdk-migration-baseline.spec.ts',
+    'docs/sdk-integration.md',
   ])],
 ]);
 // Historical evidence may retain a specific legacy marker only when it is

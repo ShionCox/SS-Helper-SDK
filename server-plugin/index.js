@@ -13,7 +13,7 @@ function resolveDatabasePath({ stRoot = process.env.SS_HELPER_ST_ROOT, dataRoot 
     : typeof dataRoot === 'string' && dataRoot.trim()
       ? path.resolve(dataRoot)
       : path.join(ROOT, 'data');
-  return path.join(resolvedDataRoot, '_ss-helper', 'ss-helper.sqlite3');
+  return path.join(resolvedDataRoot, '_ss-helper-v0', 'ss-helper.sqlite3');
 }
 const DB_PATH = resolveDatabasePath();
 const SECRET_KEY_PATH = path.join(path.dirname(DB_PATH), 'ss-helper-secrets.key');
@@ -32,9 +32,9 @@ const MAX_ARCHIVE_COLLECTIONS = 10_000;
 const MAX_ARCHIVE_RECORDS = 100_000;
 const MAX_ARCHIVE_VECTORS = 100_000;
 const MAX_VECTOR_DIMENSIONS = 16_384;
-const SCHEMA_VERSION = 4;
-const SECRET_KEY_VERSION = 1;
-const SERVER_BROKER_SYMBOL = Symbol.for('@ss-helper/sdk.server.v2');
+const SCHEMA_VERSION = 0;
+const SECRET_KEY_VERSION = 0;
+const SERVER_BROKER_SYMBOL = Symbol.for('@ss-helper/sdk.server.v0');
 const SERVER_CAPABILITIES = new Set(['workspace.read', 'workspace.write', 'workspace.recovery', 'secrets.read', 'secrets.write', 'services.register']);
 const PUBLIC_ERROR_CODES = new Set([
   'PAYLOAD_INVALID', 'WORKSPACE_ACCESS_DENIED', 'WORKSPACE_NOT_FOUND', 'WORKSPACE_CONFLICT', 'WORKSPACE_INDEX_REQUIRED',
@@ -55,7 +55,7 @@ function readBridgeCapabilityPolicy() {
     const source = candidates.find((candidate) => fs.existsSync(candidate));
     if (!source) throw new Error('bridge policy is missing');
     const parsed = JSON.parse(fs.readFileSync(source, 'utf8'));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.version !== 1 || !parsed.plugins || typeof parsed.plugins !== 'object') throw new Error('bridge policy is invalid');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.version !== 0 || !parsed.plugins || typeof parsed.plugins !== 'object') throw new Error('bridge policy is invalid');
     return Object.freeze(Object.fromEntries(Object.entries(parsed.plugins).flatMap(([pluginId, capabilities]) => {
       if (!/^[-\w.]{1,128}$/u.test(pluginId) || !Array.isArray(capabilities)) return [];
       const allowed = [...new Set(capabilities.filter((capability) => typeof capability === 'string' && SERVER_CAPABILITIES.has(capability)))];
@@ -64,7 +64,7 @@ function readBridgeCapabilityPolicy() {
   } catch { return Object.freeze({}); }
 }
 const BRIDGE_CAPABILITY_POLICY = readBridgeCapabilityPolicy();
-const BRIDGE_ROUTE = '/internal/bridge/v1/call';
+const BRIDGE_ROUTE = '/internal/bridge/v0/call';
 
 export const info = Object.freeze({
   id: PLUGIN_ID,
@@ -227,7 +227,7 @@ function createSchema(db) {
       PRIMARY KEY(owner_plugin_id, workspace_id, grantee_plugin_id),
       FOREIGN KEY(owner_plugin_id, workspace_id) REFERENCES workspaces(owner_plugin_id, workspace_id) ON DELETE CASCADE
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS workspace_request_dedup_v2(
+    CREATE TABLE IF NOT EXISTS workspace_request_dedup_v0(
       caller_plugin_id TEXT NOT NULL, owner_plugin_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
       request_id TEXT NOT NULL, response_json TEXT NOT NULL, created_at INTEGER NOT NULL,
       PRIMARY KEY(caller_plugin_id, owner_plugin_id, workspace_id, request_id)
@@ -315,9 +315,18 @@ function recoveryBackupPathIsSafe(candidate) {
   return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
 
+function windowsSystemTool(name) {
+  if (process.platform !== 'win32') return name;
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  if (typeof systemRoot !== 'string' || systemRoot.trim() === '') throw new Error('Windows system root is unavailable');
+  const candidate = path.join(systemRoot, 'System32', name);
+  if (!fs.existsSync(candidate)) throw new Error(`Windows system tool is missing: ${candidate}`);
+  return candidate;
+}
+
 function currentWindowsUserSid() {
   try {
-    const output = execFileSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = execFileSync(windowsSystemTool('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const sid = output.match(/S-\d-(?:\d+-){1,14}\d+/u)?.[0];
     if (!sid) throw new Error('SID was not returned');
     return sid;
@@ -349,10 +358,10 @@ function restrictRecoveryBackupAcl(backupPath) {
       '*S-1-5-32-544:F',
       '*S-1-5-32-544:(OI)(CI)F',
     ];
-    execFileSync('icacls.exe', [backupPath, '/inheritance:r', '/grant:r', ...grants, '/T', '/C', '/Q'], {
+    execFileSync(windowsSystemTool('icacls.exe'), [backupPath, '/inheritance:r', '/grant:r', ...grants, '/T', '/C', '/Q'], {
       encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    execFileSync('icacls.exe', [backupPath, '/verify', '/T', '/C', '/Q'], {
+    execFileSync(windowsSystemTool('icacls.exe'), [backupPath, '/verify', '/T', '/C', '/Q'], {
       encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (error) {
@@ -386,8 +395,8 @@ function createRecoveryBackup() {
       throw failure('WORKSPACE_RECOVERY_BACKUP_FAILED', 'Workspace backup hash verification failed');
     }
     const manifest = {
-      format: 'ss-helper-recovery-manifest', version: 1, backupId, createdAt,
-      source: '_ss-helper', files: copiedFiles,
+      format: 'ss-helper-recovery-manifest', version: 0, backupId, createdAt,
+      source: '_ss-helper-v0', files: copiedFiles,
     };
     const serialized = `${JSON.stringify(manifest, null, 2)}\n`;
     const manifestPath = path.join(backupPath, 'ss-helper-recovery-manifest.json');
@@ -633,7 +642,7 @@ function snapshotWorkspace(owner, workspace, row) {
   const records = database.prepare('SELECT collection, record_id, value_json, version, created_at, updated_at FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY collection, record_id').all(owner, workspace);
   const vectors = database.prepare('SELECT collection, record_id, vector_json, model, metadata_json, created_at, updated_at FROM workspace_vectors WHERE owner_plugin_id = ? AND workspace_id = ? ORDER BY collection, record_id').all(owner, workspace);
   return {
-    format: 'ss-helper-workspace', version: 1, ownerPluginId: owner, workspaceId: workspace,
+    format: 'ss-helper-workspace', version: 0, ownerPluginId: owner, workspaceId: workspace,
     metadata: parse(row.metadata_json), workspaceVersion: row.version,
     collections: collections.map((item) => ({ name: item.name, indexes: parse(item.indexes_json) ?? [] })),
     records: records.map((item) => ({ collection: item.collection, recordId: item.record_id, value: parse(item.value_json), version: item.version, createdAt: item.created_at, updatedAt: item.updated_at })),
@@ -685,7 +694,7 @@ const BRIDGE_OPERATION_CAPABILITIES = Object.freeze({
 function assertBridgeEnvelope(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('BRIDGE_ENVELOPE_INVALID');
   const keys = Object.keys(value);
-  if (keys.length !== 4 || !keys.every((key) => ['version', 'pluginId', 'operation', 'input'].includes(key)) || value.version !== 1) {
+  if (keys.length !== 4 || !keys.every((key) => ['version', 'pluginId', 'operation', 'input'].includes(key)) || value.version !== 0) {
     throw failure('BRIDGE_ENVELOPE_INVALID');
   }
   const pluginId = text(value.pluginId, 'pluginId');
@@ -711,7 +720,7 @@ function validateVector(vector) {
 
 function validateWorkspaceArchive(archive) {
   if (!archive || typeof archive !== 'object' || Array.isArray(archive) || sizeOf(archive) > MAX_BACKUP_BYTES) throw failure('BACKUP_TOO_LARGE');
-  if (archive.format !== 'ss-helper-workspace' || archive.version !== 1) throw failure('BACKUP_FORMAT_INVALID');
+  if (archive.format !== 'ss-helper-workspace' || archive.version !== 0) throw failure('BACKUP_FORMAT_INVALID');
   const collections = Array.isArray(archive.collections) ? archive.collections : [];
   const records = Array.isArray(archive.records) ? archive.records : [];
   const vectors = Array.isArray(archive.vectors) ? archive.vectors : [];
@@ -727,7 +736,7 @@ function validateWorkspaceArchive(archive) {
 
 function validateOwnerArchive(archive, pluginId) {
   if (!archive || typeof archive !== 'object' || Array.isArray(archive) || sizeOf(archive) > MAX_BACKUP_BYTES) throw failure('BACKUP_TOO_LARGE');
-  if (archive.format !== 'ss-helper-workspace-owner' || archive.version !== 1 || archive.ownerPluginId !== pluginId || !Array.isArray(archive.workspaces)) throw failure('BACKUP_FORMAT_INVALID');
+  if (archive.format !== 'ss-helper-workspace-owner' || archive.version !== 0 || archive.ownerPluginId !== pluginId || !Array.isArray(archive.workspaces)) throw failure('BACKUP_FORMAT_INVALID');
   if (archive.workspaces.length > MAX_ARCHIVE_WORKSPACES) throw failure('BACKUP_TOO_LARGE');
   for (const workspace of archive.workspaces) validateWorkspaceArchive(workspace);
 }
@@ -735,7 +744,7 @@ function validateOwnerArchive(archive, pluginId) {
 function clearOwnedWorkspaces(caller, input) {
   const preserve = Array.isArray(input.preserveWorkspaceIds) ? input.preserveWorkspaceIds.map((value) => workspaceText(value)) : [];
   const idempotencyKey = input.idempotencyKey === undefined ? '' : text(input.idempotencyKey, 'idempotencyKey');
-  const cached = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v2 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(caller, caller, '*', idempotencyKey) : null;
+  const cached = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v0 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(caller, caller, '*', idempotencyKey) : null;
   if (cached) return { ...parse(cached.response_json), replayed: true };
   database.exec('BEGIN IMMEDIATE');
   let removed;
@@ -745,7 +754,7 @@ function clearOwnedWorkspaces(caller, input) {
     database.exec('COMMIT');
   } catch (error) { database.exec('ROLLBACK'); throw error; }
   const result = { removed, replayed: false };
-  if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v2(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(caller, caller, '*', idempotencyKey, json(result), now());
+  if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v0(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(caller, caller, '*', idempotencyKey, json(result), now());
   return result;
 }
 
@@ -754,7 +763,7 @@ function transactWorkspace(caller, input) {
   const operations = Array.isArray(input.operations) ? input.operations : [];
   if (operations.length > MAX_TRANSACTION_OPERATIONS) invalidPayload('too many transaction operations');
   const idempotencyKey = input.idempotencyKey === undefined ? '' : text(input.idempotencyKey, 'idempotencyKey');
-  const previous = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v2 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(caller, owner, workspace, idempotencyKey) : null;
+  const previous = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v0 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(caller, owner, workspace, idempotencyKey) : null;
   if (previous) return { ...parse(previous.response_json), replayed: true };
   const results = [];
   database.exec('BEGIN IMMEDIATE');
@@ -771,7 +780,7 @@ function transactWorkspace(caller, input) {
     database.exec('COMMIT');
   } catch (error) { database.exec('ROLLBACK'); throw error; }
   const result = { operationCount: operations.length, replayed: false, results };
-  if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v2(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(caller, owner, workspace, idempotencyKey, json(result), now());
+  if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v0(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(caller, owner, workspace, idempotencyKey, json(result), now());
   return result;
 }
 
@@ -881,7 +890,7 @@ function executeBridgeOperation(caller, operation, input) {
     return undefined;
   }
   if (operation === 'workspace.exportAll') {
-    const rows = database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? ORDER BY workspace_id').all(caller); const archive = { format: 'ss-helper-workspace-owner', version: 1, ownerPluginId: caller, exportedAt: now(), workspaces: rows.map((row) => snapshotWorkspace(caller, row.workspace_id, row)) }; return { archive, sha256: archiveDigest(archive) };
+    const rows = database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? ORDER BY workspace_id').all(caller); const archive = { format: 'ss-helper-workspace-owner', version: 0, ownerPluginId: caller, exportedAt: now(), workspaces: rows.map((row) => snapshotWorkspace(caller, row.workspace_id, row)) }; return { archive, sha256: archiveDigest(archive) };
   }
   if (operation === 'workspace.importAll') {
     const archive = input.archive; validateOwnerArchive(archive, caller);
@@ -944,7 +953,7 @@ function serverWorkspaceSession(pluginId, capabilities, assertActive) {
     const operations = Array.isArray(input.operations) ? input.operations : [];
     if (operations.length > MAX_TRANSACTION_OPERATIONS) invalidPayload('too many transaction operations');
     const idempotencyKey = input.idempotencyKey === undefined ? '' : text(input.idempotencyKey, 'idempotencyKey');
-    const previous = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v2 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(pluginId, owner, workspace, idempotencyKey) : null;
+    const previous = idempotencyKey ? database.prepare('SELECT response_json FROM workspace_request_dedup_v0 WHERE caller_plugin_id = ? AND owner_plugin_id = ? AND workspace_id = ? AND request_id = ?').get(pluginId, owner, workspace, idempotencyKey) : null;
     if (previous) return { ...parse(previous.response_json), replayed: true };
     const results = [];
     database.exec('BEGIN IMMEDIATE');
@@ -961,7 +970,7 @@ function serverWorkspaceSession(pluginId, capabilities, assertActive) {
       database.exec('COMMIT');
     } catch (error) { database.exec('ROLLBACK'); throw error; }
     const response = { operationCount: operations.length, replayed: false, results };
-    if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v2(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(pluginId, owner, workspace, idempotencyKey, json(response), now());
+    if (idempotencyKey) database.prepare('INSERT INTO workspace_request_dedup_v0(caller_plugin_id, owner_plugin_id, workspace_id, request_id, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(pluginId, owner, workspace, idempotencyKey, json(response), now());
     return response;
   };
   return Object.freeze({
@@ -1001,7 +1010,7 @@ function serverWorkspaceSession(pluginId, capabilities, assertActive) {
     },
     exportAll: async () => {
       requireCapability('workspace.read'); const rows = database.prepare('SELECT * FROM workspaces WHERE owner_plugin_id = ? ORDER BY workspace_id').all(pluginId);
-      const archive = { format: 'ss-helper-workspace-owner', version: 1, ownerPluginId: pluginId, exportedAt: now(), workspaces: rows.map((row) => snapshotWorkspace(pluginId, row.workspace_id, row)) };
+      const archive = { format: 'ss-helper-workspace-owner', version: 0, ownerPluginId: pluginId, exportedAt: now(), workspaces: rows.map((row) => snapshotWorkspace(pluginId, row.workspace_id, row)) };
       return { archive, sha256: archiveDigest(archive) };
     },
     importAll: async (input) => {

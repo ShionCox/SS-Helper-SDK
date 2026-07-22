@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { contentDigest, createDeterministicZip, inventory, rewriteSdkImports, sha256File, verifyInventory, walkFiles } from './artifact-lib.mjs';
 import { createEvidenceSanitizer } from './evidence-sanitizer.mjs';
+import { systemTool } from './platform-tools.mjs';
 
 const root = process.cwd();
 const artifactDirectory = path.join(root, 'artifacts');
@@ -45,6 +46,7 @@ function directCommand(commandName, args) {
   if (/tsc\.cmd$/iu.test(commandName)) {
     return { commandName: process.execPath, args: [path.join(root, 'node_modules', 'typescript', 'bin', 'tsc'), ...args] };
   }
+  if (commandName === 'tar') return { commandName: systemTool('tar.exe'), args };
   return { commandName, args };
 }
 
@@ -107,6 +109,7 @@ function assertCanonicalPackedText(tarball) {
 
 function sdkGate() {
   command('pnpm', ['build:sdk']);
+  command('pnpm', ['verify:migration']);
   command('pnpm', ['pack:sdk']);
   const tarballs = readdirSync(artifactDirectory).filter((name) => name.endsWith('.tgz'));
   if (tarballs.length !== 1) throw new Error(`Expected exactly one SDK tarball, got ${tarballs.length}`);
@@ -144,10 +147,10 @@ function sdkGate() {
     dependencies: { '@ss-helper/sdk': `file:./${path.basename(externalTarball)}` },
   }, null, 2)}\n`);
   writeFileSync(path.join(consumer, 'consumer.ts'), [
-    "import { LLM_COMPLETION_V1, LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, LLM_ROUTE_DIAGNOSTICS_V1, type LlmCompletionRequest } from '@ss-helper/sdk';",
+    "import { LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, LLM_ROUTE_DIAGNOSTICS_V0, type LlmCompletionRequest } from '@ss-helper/sdk';",
     "import { CORE_PLUGIN_ID } from '@ss-helper/sdk/contracts/core';",
     "const request: LlmCompletionRequest = { messages: [{ role: 'user', content: 'artifact' }] };",
-    "if (CORE_PLUGIN_ID !== 'ss-helper.core' || [LLM_COMPLETION_V1, LLM_STRUCTURED_TASK_V1, LLM_EMBEDDING_V1, LLM_RERANK_V1, LLM_ROUTE_DIAGNOSTICS_V1].some(token => token.version !== 1) || request.messages.length !== 1) throw new Error('runtime export smoke failed');",
+    "if (CORE_PLUGIN_ID !== 'ss-helper.core' || [LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, LLM_ROUTE_DIAGNOSTICS_V0].some(token => token.version !== 0) || request.messages.length !== 1) throw new Error('runtime export smoke failed');",
   ].join('\n'));
   writeFileSync(path.join(consumer, 'tsconfig.nodenext.json'), `${JSON.stringify({
     compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext' },
@@ -242,8 +245,7 @@ function buildCoreArtifact() {
     '    const runtime = installCoreRuntime({',
     '      coreVersion: artifact.coreVersion,',
     '      sdkPackageVersion: artifact.sdkPackageVersion,',
-    '      apiMajor: artifact.apiMajor,',
-    '      apiMinor: artifact.apiMinor,',
+    '      apiVersion: artifact.apiVersion,',
     '      buildId: artifact.buildId,',
     '      contentDigest: artifact.contentDigest,',
     "      capabilities: [...host.capabilities, 'workspace.recovery', 'secrets.read', 'secrets.write'],",
@@ -268,14 +270,13 @@ function buildCoreArtifact() {
   };
   const files = inventory(extensionRoot, new Set(['artifact-manifest.json']));
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 0,
     artifactName: '@ss-helper/core-extension',
     installDirectory: 'third-party/SS-Helper-SDK',
     coreVersion: extensionManifest.version,
     sdkPackageVersion: packageJson.version,
-    apiMajor: 2,
-    apiMinor: 2,
-    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-2.2`,
+    apiVersion: '0.0.1',
+    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-0.0.1`,
     contentDigest: contentDigest(files),
     toolchain,
     files,
@@ -306,7 +307,7 @@ function makeConsumerBundle(name, installedSdk, source) {
     optional: [],
     js: 'index.js',
     author: 'SS-Helper artifact gate',
-    version: '1.0.0',
+    version: '0.0.1',
     auto_update: false,
   }, null, 2)}\n`);
   writeFileSync(path.join(bundle, 'index.js'), source);
@@ -351,8 +352,8 @@ function artifactSmoke(core, sdk) {
     'const start = async () => {',
     '  try {',
     '    await sdk.waitForTavernReady({ timeoutMs: 15_000 });',
-    "    const requested = ['tavern.context.read','tavern.chat.read','tavern.chat.events','tavern.worldbooks.read','tavern.worldbooks.write','tavern.generation.read','tavern.prompt.contribute','tavern.plugin.request','tavern.plugin.binary-request.v1'];",
-    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'1.0.0', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiMajor:2, minApiMinor:2, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
+    "    const requested = ['tavern.context.read','tavern.chat.read','tavern.chat.events','tavern.worldbooks.read','tavern.worldbooks.write','tavern.generation.read','tavern.prompt.contribute','tavern.plugin.request','tavern.plugin.binary-request.v0'];",
+    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'0.0.1', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiVersion:'0.0.1', minApiVersion:'0.0.1', capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
     '    const discoveryBefore = globalThis[discoverySymbol];',
     '    state.discoveryBefore = discoveryBefore?.descriptor;',
     '    state.generationBefore = discoveryBefore?.descriptor?.generation;',
@@ -374,11 +375,10 @@ function artifactSmoke(core, sdk) {
     "    await session.host.prompt.set({ id:'fixture.consumer-a.gate', content:'artifact gate' }); await session.host.prompt.remove('fixture.consumer-a.gate');",
     "    const requestResponse = await session.host.request.send({ path:'/api/settings/get', method:'POST', body:{} });",
     "    const binaryBody = { encoding:'base64', contentType:'application/vnd.sqlite3', data:'U1FMaXRlIGZvcm1hdCAzAEcwMTEgYmluYXJ5IGdhdGU=', byteLength:32, sha256:'0c05ece4802d8aba9072dcd878fcf3ba519e67c66c82ff0754e6749ca87216c1' };",
-    "    const binaryExport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/export', method:'POST', responseMode:'binary' });",
-    "    const binaryImport = await session.host.binaryRequest.send({ version:1, path:'/api/plugins/ss-helper-gate-binary/import', method:'POST', responseMode:'json', body:binaryBody });",
-    "    const legacyMemoryRoute = await session.host.request.send({ path:'/api/plugins/ss-helper-sdk/v1/memory/health', method:'GET' });",
-    '    state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } }, legacyMemoryRoute:{ status:legacyMemoryRoute.status, ok:legacyMemoryRoute.ok } };',
-    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
+    "    const binaryExport = await session.host.binaryRequest.send({ version:0, path:'/api/plugins/ss-helper-gate-binary/export', method:'POST', responseMode:'binary' });",
+    "    const binaryImport = await session.host.binaryRequest.send({ version:0, path:'/api/plugins/ss-helper-gate-binary/import', method:'POST', responseMode:'json', body:binaryBody });",
+    '    state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } } };',
+    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:0, schemaId:'fixture.consumer-a.echo.v0' });",
     "    session.registerSettings({ id:'fixture.consumer-a', title:'A', fields:[{ kind:'select', id:'mode', label:'模式', options:[{value:'balanced',label:'均衡'},{value:'precise',label:'精确'},{value:'creative',label:'创意'},{value:'economy',label:'省用'}] }] }, { load:()=>({mode:'balanced'}), save:()=>{}, reset:()=>({mode:'balanced'}) });",
     '    session.services.expose(contract, (request) => ({ value:request.value }));',
     '    state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
@@ -398,11 +398,11 @@ function artifactSmoke(core, sdk) {
     '  try {',
     '    await sdk.waitForTavernReady({ timeoutMs: 15_000 });',
     "    const requested = ['tavern.context.read'];",
-    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'1.0.0', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiMajor:2, minApiMinor:2, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
+    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'0.0.1', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiVersion:'0.0.1', minApiVersion:'0.0.1', capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
     '    const discoveryBefore = globalThis[discoverySymbol];',
     '    state.discoveryBefore = discoveryBefore?.descriptor;',
     '    const context = await session.host.context.read(); state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey } };',
-    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:1, schemaId:'fixture.consumer-a.echo.v1' });",
+    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:0, schemaId:'fixture.consumer-a.echo.v0' });",
     '    await session.services.waitFor(contract, { timeoutMs:10000 });',
     "    state.response = await session.services.call(contract, { value:'artifact', apiKey:'GATE_API_KEY_SENTINEL', prompt:'GATE_PROMPT_SENTINEL', cookie:'GATE_COOKIE_SENTINEL', csrf:'GATE_CSRF_SENTINEL', authorization:'Bearer GATE_AUTH_SENTINEL', sqliteBase64:'U1FMaXRlIEdBVEVfU1FMSVRFX1NFTlRJTkVM', userContent:'GATE_USER_CONTENT_SENTINEL' }, { timeoutMs:10000 });",
     '    state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
@@ -454,7 +454,7 @@ try {
   const core = buildCoreArtifact();
   const smoke = artifactSmoke(core, sdk);
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 0,
     gate: 'G009-g5a-host-llm-artifact',
     status: 'PASS',
     startedAt,

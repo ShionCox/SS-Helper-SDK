@@ -27,10 +27,8 @@ function isSnapshot(value: unknown): value is CoreDiscoverySnapshot {
     && descriptor.id === 'ss-helper.core'
     && isNonEmptyString(descriptor.coreVersion)
     && isNonEmptyString(descriptor.sdkPackageVersion)
-    && Number.isSafeInteger(descriptor.apiMajor)
-    && descriptor.apiMajor >= 0
-    && Number.isSafeInteger(descriptor.apiMinor)
-    && descriptor.apiMinor >= 0
+    && typeof descriptor.apiVersion === 'string'
+    && /^\d+\.\d+\.\d+$/u.test(descriptor.apiVersion)
     && Number.isSafeInteger(descriptor.generation)
     && descriptor.generation > 0
     && (descriptor.state === 'ready' || descriptor.state === 'disposed')
@@ -69,8 +67,7 @@ function defineSnapshot(realm: CoreRealm, expected: unknown, snapshot: CoreDisco
 function sameArtifact(snapshot: CoreDiscoverySnapshot, identity: CoreRuntimeIdentity): boolean {
   const descriptor = snapshot.descriptor;
   return descriptor.coreVersion === identity.coreVersion
-    && descriptor.apiMajor === identity.apiMajor
-    && descriptor.apiMinor === identity.apiMinor
+    && descriptor.apiVersion === identity.apiVersion
     && descriptor.artifact.buildId === identity.buildId
     && descriptor.artifact.contentDigest === identity.contentDigest;
 }

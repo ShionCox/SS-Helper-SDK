@@ -7,15 +7,15 @@ import { coreIdentity, errorCode, pluginDescriptor, TestRealm } from './helpers/
 const ALL_CAPABILITIES = [
   'tavern.context.read', 'tavern.identity.read', 'tavern.character.read', 'tavern.persona.read', 'tavern.chat.read', 'tavern.chat.list', 'tavern.chat.write', 'tavern.chat.events',
   'tavern.worldbooks.read', 'tavern.worldbooks.write', 'tavern.generation.read', 'tavern.generation.execute',
-  'tavern.prompt.contribute', 'tavern.plugin.request', 'tavern.plugin.binary-request.v1', 'tavern.metadata.write', 'tavern.settings.write', 'tavern.macros.execute', 'tavern.systemMessage.write',
+  'tavern.prompt.contribute', 'tavern.plugin.request', 'tavern.plugin.binary-request.v0', 'tavern.metadata.write', 'tavern.settings.write', 'tavern.macros.execute', 'tavern.systemMessage.write',
 ];
 
 const binaryBody = (bytes) => ({
   encoding: 'base64', contentType: 'application/vnd.sqlite3', data: bytes.toString('base64'), byteLength: bytes.length,
   sha256: createHash('sha256').update(bytes).digest('hex'),
 });
-const binaryResponse = (bytes, overrides = {}) => ({ version: 1, mode: 'binary', status: 200, ok: true, ...binaryBody(bytes), ...overrides });
-const jsonResponse = (data = null, overrides = {}) => ({ version: 1, mode: 'json', status: 200, ok: true, body: { ok: true, data }, ...overrides });
+const binaryResponse = (bytes, overrides = {}) => ({ version: 0, mode: 'binary', status: 200, ok: true, ...binaryBody(bytes), ...overrides });
+const jsonResponse = (data = null, overrides = {}) => ({ version: 0, mode: 'json', status: 200, ok: true, body: { ok: true, data }, ...overrides });
 
 test('production SillyTavern bridge feature-detects real seams and keeps request headers private', async () => {
   const prompts = []; const fetches = [];
@@ -37,7 +37,7 @@ test('production SillyTavern bridge feature-detects real seams and keeps request
   assert.equal((await bridge.hostAdapter.chat.readCurrent()).key, 'chat.jsonl');
   await bridge.hostAdapter.prompt.set({ id: 'memory', content: 'context' });
   await bridge.hostAdapter.prompt.remove('memory');
-  const response = await bridge.hostAdapter.request.send({ path: '/api/plugins/memory', method: 'POST', body: { command: 'health' } });
+  const response = await bridge.hostAdapter.request.send({ path: '/api/settings/get', method: 'GET' });
   assert.deepEqual(response, { status: 200, ok: true, body: { ok: true } });
   assert.equal(fetches[0][1].headers['X-CSRF-Token'], 'secret');
   assert.equal(JSON.stringify(response).includes('secret'), false);
@@ -62,7 +62,7 @@ test('SillyTavern chat snapshots keep distinct file keys when display names are 
   assert.equal(second.key, context.chatId);
 });
 
-test('binary plugin request v1 preserves SQLite bytes and private authentication metadata', async () => {
+test('binary plugin request v0 preserves SQLite bytes and private authentication metadata', async () => {
   const sqlite = Buffer.from('SQLite format 3\0\x00\xffbinary', 'latin1');
   const fetches = [];
   const context = { getRequestHeaders: () => ({ 'X-CSRF-Token': 'private-csrf', Cookie: 'private-cookie' }) };
@@ -86,15 +86,15 @@ test('binary plugin request v1 preserves SQLite bytes and private authentication
     },
   };
   const bridge = createSillyTavernHostBridge(target);
-  assert.ok(bridge.capabilities.includes('tavern.plugin.binary-request.v1'));
-  const exported = await bridge.hostAdapter.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'POST', responseMode: 'binary' }, { signal: new AbortController().signal });
+  assert.ok(bridge.capabilities.includes('tavern.plugin.binary-request.v0'));
+  const exported = await bridge.hostAdapter.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'POST', responseMode: 'binary' }, { signal: new AbortController().signal });
   assert.deepEqual(exported, binaryResponse(sqlite, { filename: 'memory.sqlite3' }));
   assert.equal(new Headers(fetches[0][1].headers).get('X-CSRF-Token'), 'private-csrf');
   assert.equal(new Headers(fetches[0][1].headers).get('Cookie'), 'private-cookie');
   assert.equal(new Headers(fetches[0][1].headers).get('Accept'), 'application/vnd.sqlite3');
   assert.equal(JSON.stringify(exported).includes('private'), false);
 
-  const imported = await bridge.hostAdapter.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) }, { signal: new AbortController().signal });
+  const imported = await bridge.hostAdapter.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) }, { signal: new AbortController().signal });
   assert.deepEqual(Buffer.from(fetches[1][1].body), sqlite);
   assert.equal(new Headers(fetches[1][1].headers).get('Content-Type'), 'application/vnd.sqlite3');
   assert.equal(new Headers(fetches[1][1].headers).get('Accept'), 'application/json');
@@ -107,7 +107,7 @@ test('binary plugin request v1 preserves SQLite bytes and private authentication
     SillyTavern: { getContext: () => context }, location: target.location,
     fetch: async () => ({ status: 200, ok: true, headers: { get: (name) => name === 'content-type' ? 'application/octet-stream' : null }, arrayBuffer: async () => new ArrayBuffer(0) }),
   });
-  await assert.rejects(unsupported.hostAdapter.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: new AbortController().signal }));
+  await assert.rejects(unsupported.hostAdapter.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: new AbortController().signal }));
   const rejectingBridge = (responseHeaders) => createSillyTavernHostBridge({
     SillyTavern: { getContext: () => context }, location: target.location,
     fetch: async () => ({
@@ -121,7 +121,7 @@ test('binary plugin request v1 preserves SQLite bytes and private authentication
     { 'content-type': 'application/vnd.sqlite3', 'content-length': String(sqlite.length), 'content-disposition': 'attachment; filename="../secret.sqlite3"' },
   ]) {
     await assert.rejects(rejectingBridge(responseHeaders).hostAdapter.binaryRequest.send(
-      { version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: new AbortController().signal },
+      { version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: new AbortController().signal },
     ));
   }
   for (const invalidJson of [
@@ -135,7 +135,7 @@ test('binary plugin request v1 preserves SQLite bytes and private authentication
       fetch: async () => ({ status: 200, ok: true, headers: { get: (name) => name === 'content-type' ? invalidJson.contentType : null }, json: async () => invalidJson.body }),
     });
     await assert.rejects(invalid.hostAdapter.binaryRequest.send(
-      { version: 1, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) },
+      { version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) },
       { signal: new AbortController().signal },
     ));
   }
@@ -145,51 +145,51 @@ test('binary request runtime enforces DTO hashes, capability denial, abort, time
   const sqlite = Buffer.from('SQLite format 3\0runtime', 'utf8');
   const valid = binaryResponse(sqlite);
   let calls = 0;
-  const runtime = installCoreRuntime(coreIdentity({ capabilities: ['tavern.plugin.binary-request.v1'] }), new TestRealm(), { hostAdapter: {
+  const runtime = installCoreRuntime(coreIdentity({ capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => { calls += 1; return valid; } },
   } });
-  const session = runtime.connect(pluginDescriptor('example.binary', { capabilities: ['tavern.plugin.binary-request.v1'] }));
-  assert.deepEqual(await session.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), valid);
-  assert.throws(() => session.host.binaryRequest.send({ version: 1, path: '/api/worldinfo/list', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
-  await assert.rejects(session.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: { ...binaryBody(sqlite), sha256: '0'.repeat(64) } }), errorCode('PAYLOAD_INVALID'));
+  const session = runtime.connect(pluginDescriptor('example.binary', { capabilities: ['tavern.plugin.binary-request.v0'] }));
+  assert.deepEqual(await session.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), valid);
+  assert.throws(() => session.host.binaryRequest.send({ version: 0, path: '/api/worldinfo/list', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
+  await assert.rejects(session.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: { ...binaryBody(sqlite), sha256: '0'.repeat(64) } }), errorCode('PAYLOAD_INVALID'));
   assert.equal(calls, 1);
   const denied = runtime.connect(pluginDescriptor('example.binary-denied'));
-  assert.throws(() => denied.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('CAPABILITY_NOT_GRANTED'));
+  assert.throws(() => denied.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('CAPABILITY_NOT_GRANTED'));
   runtime.dispose();
 
-  const pendingRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-controls', capabilities: ['tavern.plugin.binary-request.v1'] }), new TestRealm(), { hostAdapter: {
+  const pendingRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-controls', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async (_request, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('private abort detail')), { once: true })) },
   } });
-  const timeoutSession = pendingRuntime.connect(pluginDescriptor('example.binary-timeout', { capabilities: ['tavern.plugin.binary-request.v1'] }));
-  await assert.rejects(timeoutSession.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { timeoutMs: 2 }), errorCode('CALL_TIMEOUT'));
+  const timeoutSession = pendingRuntime.connect(pluginDescriptor('example.binary-timeout', { capabilities: ['tavern.plugin.binary-request.v0'] }));
+  await assert.rejects(timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { timeoutMs: 2 }), errorCode('CALL_TIMEOUT'));
   const controller = new AbortController();
-  const aborted = timeoutSession.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: controller.signal });
+  const aborted = timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: controller.signal });
   controller.abort();
   await assert.rejects(aborted, errorCode('CALL_ABORTED'));
-  const disposed = timeoutSession.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' });
+  const disposed = timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' });
   timeoutSession.dispose();
   await assert.rejects(disposed, errorCode('PLUGIN_DISPOSED'));
   pendingRuntime.dispose();
 
-  const mismatchRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-mismatch', capabilities: ['tavern.plugin.binary-request.v1'] }), new TestRealm(), { hostAdapter: {
+  const mismatchRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-mismatch', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => ({ ...valid, sha256: 'f'.repeat(64) }) },
   } });
-  const mismatch = mismatchRuntime.connect(pluginDescriptor('example.binary-mismatch', { capabilities: ['tavern.plugin.binary-request.v1'] }));
-  await assert.rejects(mismatch.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
+  const mismatch = mismatchRuntime.connect(pluginDescriptor('example.binary-mismatch', { capabilities: ['tavern.plugin.binary-request.v0'] }));
+  await assert.rejects(mismatch.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
   mismatchRuntime.dispose();
 
-  const crossModeRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-cross-mode', capabilities: ['tavern.plugin.binary-request.v1'] }), new TestRealm(), { hostAdapter: {
+  const crossModeRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-cross-mode', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => jsonResponse() },
   } });
-  const crossMode = crossModeRuntime.connect(pluginDescriptor('example.binary-cross-mode', { capabilities: ['tavern.plugin.binary-request.v1'] }));
-  await assert.rejects(crossMode.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
+  const crossMode = crossModeRuntime.connect(pluginDescriptor('example.binary-cross-mode', { capabilities: ['tavern.plugin.binary-request.v0'] }));
+  await assert.rejects(crossMode.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
   crossModeRuntime.dispose();
 
-  const reverseCrossModeRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-reverse-cross-mode', capabilities: ['tavern.plugin.binary-request.v1'] }), new TestRealm(), { hostAdapter: {
+  const reverseCrossModeRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-reverse-cross-mode', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => valid },
   } });
-  const reverseCrossMode = reverseCrossModeRuntime.connect(pluginDescriptor('example.binary-reverse-cross-mode', { capabilities: ['tavern.plugin.binary-request.v1'] }));
-  await assert.rejects(reverseCrossMode.host.binaryRequest.send({ version: 1, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) }), errorCode('PAYLOAD_INVALID'));
+  const reverseCrossMode = reverseCrossModeRuntime.connect(pluginDescriptor('example.binary-reverse-cross-mode', { capabilities: ['tavern.plugin.binary-request.v0'] }));
+  await assert.rejects(reverseCrossMode.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) }), errorCode('PAYLOAD_INVALID'));
   reverseCrossModeRuntime.dispose();
 });
 
@@ -421,7 +421,13 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   const context = {
     chatId: 'chat.jsonl', name1: 'User', characterId: 2, groupId: 'group', main_api: 'openai', online_status: 'gpt-test',
     selected_world_info: ['Lore'],
-    chat: [{ id: 'm1', is_user: false, name: 'Character', mes: 'answer', variables: memoryVariables }],
+    chat: [
+      { id: 'm1', is_user: false, name: 'Character', mes: 'answer', variables: memoryVariables },
+      { id: 'sys-1', is_system: true, mes: '历史系统正文' },
+      { id: 'tool-1', role: 'tool', mes: '工具输出' },
+      { id: 'tool-system-1', role: 'tool', is_system: true, mes: '系统标记的工具输出' },
+      { id: 'reason-1', is_reasoning: true, mes: '隐藏推理' },
+    ],
     eventSource: {
       on(name, callback) { callbacks.set(name, callback); },
       off(name, callback) { removed.push([name, callback]); callbacks.delete(name); },
@@ -434,6 +440,12 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   };
   const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => context } });
   const mappedMessages = await bridge.hostAdapter.chat.readMessages();
+  assert.deepEqual(mappedMessages.slice(1).map(({ id, role, text, messageType, visibleToAi }) => ({ id, role, text, messageType, visibleToAi })), [
+    { id: 'sys-1', role: 'system', text: '历史系统正文', messageType: 'system', visibleToAi: false },
+    { id: 'tool-1', role: 'assistant', text: '工具输出', messageType: 'tool', visibleToAi: false },
+    { id: 'tool-system-1', role: 'assistant', text: '系统标记的工具输出', messageType: 'tool', visibleToAi: false },
+    { id: 'reason-1', role: 'assistant', text: '隐藏推理', messageType: 'reasoning', visibleToAi: false },
+  ]);
   assert.deepEqual(mappedMessages[0].variables, memoryVariables);
   assert.notEqual(mappedMessages[0].variables, memoryVariables);
   assert.notEqual(mappedMessages[0].variables[0].stat_data, memoryVariables[0].stat_data);
@@ -493,7 +505,7 @@ test('HostPort rejects malformed event DTOs for every retained event name', () =
   const invalid = new Map([
     ['chat-changed', { name: 'chat-changed', chatKey: 1 }],
     ['message-received', { name: 'message-received', messageId: 1 }],
-    ['message-sent', { name: 'message-sent', messageId: '1', message: { id: '1', index: 0, role: 'assistant', text: () => 'raw' } }],
+    ['message-sent', { name: 'message-sent', messageId: '1', message: { id: '1', index: 0, role: 'assistant', text: 'raw', messageType: 'bogus' } }],
     ['message-edited', { name: 'message-edited', messageId: '1', unexpected: true }],
     ['message-deleted', { name: 'message-deleted' }],
     ['generation-started', { name: 'generation-started', generation: { active: true, usage: { totalTokens: Number.POSITIVE_INFINITY } } }],
