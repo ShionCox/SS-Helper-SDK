@@ -449,9 +449,14 @@ test('workspace popup exposes a stable presentation marker and shared chrome', (
     assert.equal(dialog.children[1].dataset.popupContent, 'true');
     assert.equal(dialog.children[2].dataset.popupResizeHandle, 'true');
     assert.equal(dialog.children[2].getAttribute('aria-label'), '调整窗口大小');
+    assert.equal(dialog.children[2].dataset.popupResizeEdge, 'right');
+    assert.equal(dialog.children[3].dataset.popupResizeHandle, 'true');
+    assert.equal(dialog.children[3].dataset.popupResizeEdge, 'left');
+    assert.equal(dialog.children[3].getAttribute('aria-label'), '从左下角调整窗口大小');
     const coreStyles = document.getElementById('ss-helper-core-ui-styles').textContent;
     assert.match(coreStyles, /width: min\(96vw, 88rem\); height: min\(92vh, 58rem\)/);
     assert.match(coreStyles, /\[data-popup-resize-handle="true"\]/);
+    assert.match(coreStyles, /\[data-popup-resize-handle="true"\]\[data-popup-resize-edge="left"\]/);
     assert.match(coreStyles, /clip-path: polygon\(100% 0, 100% 100%, 0 100%\); opacity: \.48;/);
     assert.match(coreStyles, /\[data-popup-resize-handle="true"\] \{ display: none; \}/);
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
@@ -492,6 +497,53 @@ test('workspace popup restores and updates its browser-persisted size', () => {
     dialog = overlay.children[0];
     assert.equal(dialog.style.width, '910px');
     assert.equal(dialog.style.height, '700px');
+  } finally { restore(); }
+});
+
+test('workspace popup keeps corner drags under the pointer and recenters after viewport changes', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    Object.assign(document.defaultView, {
+      innerWidth: 1600,
+      innerHeight: 1000,
+      getComputedStyle: () => ({ minWidth: '672px', minHeight: '512px' }),
+    });
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.popup-pointer-resize'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-pointer-resize', name: 'workbench', version: 0 });
+    session.registerPopup({ token, title: 'Workspace', presentation: 'workspace', render: () => {} });
+    session.ui.openPopup(token, {});
+    const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    const dialog = overlay.children[0];
+    const readStyleNumber = (value, fallback) => {
+      const parsed = Number.parseFloat(value ?? '');
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+    dialog.getBoundingClientRect = () => ({
+      left: readStyleNumber(dialog.style.left, 350),
+      top: readStyleNumber(dialog.style.top, 150),
+      width: readStyleNumber(dialog.style.width, 900),
+      height: readStyleNumber(dialog.style.height, 700),
+    });
+    const leftHandle = dialog.children[3];
+    leftHandle.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 7, clientX: 350, clientY: 850, preventDefault() {} });
+    document.defaultView.dispatchEvent({ type: 'pointermove', pointerId: 7, clientX: 300, clientY: 875, preventDefault() {} });
+    assert.equal(dialog.style.width, '1000px');
+    assert.equal(dialog.style.height, '750px');
+    assert.equal(dialog.style.left, '300px');
+    assert.equal(dialog.style.top, '125px');
+    document.defaultView.dispatchEvent({ type: 'pointerup', pointerId: 7 });
+    assert.equal(dialog.style.position, 'fixed');
+
+    document.defaultView.innerWidth = 600;
+    document.defaultView.innerHeight = 800;
+    document.defaultView.dispatchEvent({ type: 'resize' });
+    assert.equal(dialog.style.position, '');
+    assert.equal(dialog.style.left, '');
+    assert.equal(dialog.style.top, '');
+    assert.equal(dialog.style.margin, '');
+    dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
   } finally { restore(); }
 });
 

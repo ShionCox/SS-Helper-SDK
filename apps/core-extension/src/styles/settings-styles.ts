@@ -349,6 +349,10 @@ export const SETTINGS_CSS = `
   content: ""; position: absolute; right: 3px; bottom: 3px; width: 16px; height: 16px;
   background: currentColor; clip-path: polygon(100% 0, 100% 100%, 0 100%); opacity: .48;
 }
+[data-ss-helper-popup] [data-popup-resize-handle="true"][data-popup-resize-edge="left"] { right: auto; left: 0; cursor: sw-resize; }
+[data-ss-helper-popup] [data-popup-resize-handle="true"][data-popup-resize-edge="left"]::after {
+  right: auto; left: 3px; clip-path: polygon(0 0, 0 100%, 100% 100%);
+}
 [data-ss-helper-popup] [data-popup-header="true"] {
   min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: 0 20px; border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(210, 168, 74, .38));

@@ -39,7 +39,7 @@ export class FakeElement {
   removeAttribute(name) { this.attributes.delete(name); }
   addEventListener(type, listener) { const entries = this.listeners.get(type) ?? new Set(); entries.add(listener); this.listeners.set(type, entries); }
   removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
-  dispatchEvent(event) { event.target ??= this; for (const listener of this.listeners.get(event.type) ?? []) listener(event); }
+  dispatchEvent(event) { event.target ??= this; for (const listener of this.listeners.get(event.type) ?? []) { event.currentTarget = this; listener(event); } event.currentTarget = null; }
   focus() { this.ownerDocument.activeElement = this; }
   contains(node) { if (node === this) return true; return this.children.some((child) => child.contains(node)); }
   get previousElementSibling() { if (!this.parentElement) return null; const index = this.parentElement.children.indexOf(this); return index > 0 ? this.parentElement.children[index - 1] : null; }
@@ -69,7 +69,17 @@ export class FakeElement {
 }
 
 export class FakeDocument {
-  constructor() { this.body = new FakeElement('body', this); this.activeElement = this.body; this.defaultView = { confirm: () => true }; }
+  constructor() {
+    this.body = new FakeElement('body', this);
+    this.activeElement = this.body;
+    const listeners = new Map();
+    this.defaultView = {
+      confirm: () => true,
+      addEventListener: (type, listener) => { const entries = listeners.get(type) ?? new Set(); entries.add(listener); listeners.set(type, entries); },
+      removeEventListener: (type, listener) => listeners.get(type)?.delete(listener),
+      dispatchEvent: (event) => { for (const listener of listeners.get(event.type) ?? []) listener(event); },
+    };
+  }
   createElement(tagName) { return new FakeElement(tagName, this); }
   querySelectorAll(selector) { return this.body.querySelectorAll(selector); }
   querySelector(selector) { return this.body.querySelector(selector); }

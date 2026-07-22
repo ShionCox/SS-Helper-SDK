@@ -65,13 +65,23 @@ export class PopupHost {
     content.dataset.popupContent = 'true';
     dialog.append(header, content);
     const resizeHandle = dialog.dataset.presentation === 'workspace' ? document.createElement('button') : undefined;
+    const leftResizeHandle = dialog.dataset.presentation === 'workspace' ? document.createElement('button') : undefined;
+    const resizeHandles = [resizeHandle, leftResizeHandle].filter((handle): handle is HTMLButtonElement => handle !== undefined);
     if (resizeHandle !== undefined) {
       resizeHandle.type = 'button';
       resizeHandle.dataset.popupResizeHandle = 'true';
+      resizeHandle.dataset.popupResizeEdge = 'right';
       resizeHandle.setAttribute('aria-label', '调整窗口大小');
       resizeHandle.title = '拖拽或使用方向键调整窗口大小';
-      dialog.append(resizeHandle);
     }
+    if (leftResizeHandle !== undefined) {
+      leftResizeHandle.type = 'button';
+      leftResizeHandle.dataset.popupResizeHandle = 'true';
+      leftResizeHandle.dataset.popupResizeEdge = 'left';
+      leftResizeHandle.setAttribute('aria-label', '从左下角调整窗口大小');
+      leftResizeHandle.title = '从左下角拖拽或使用方向键调整窗口大小';
+    }
+    dialog.append(...resizeHandles);
     overlay.append(dialog); document.body.append(overlay);
     let close: () => void = () => undefined;
     const popupUi = new PopupUiController(content, () => close());
@@ -80,8 +90,13 @@ export class PopupHost {
     let removeScopeCleanup = (): void => undefined;
     let onKeyDown: (event: KeyboardEvent) => void = () => undefined;
     let removeResizeListeners = (): void => undefined;
+    let removeViewportResizeListener = (): void => undefined;
     let onResizePointerDown: (event: PointerEvent) => void = () => undefined;
     let onResizeKeyDown: (event: KeyboardEvent) => void = () => undefined;
+    let resizePointerId: number | undefined;
+    let resizePointerHandle: HTMLButtonElement | undefined;
+    let resizeCenterX: number | undefined;
+    let resizeCenterY: number | undefined;
     const popupSizeStorageKey = `${POPUP_SIZE_STORAGE_PREFIX}${id}`;
     const isCompactWorkspace = (): boolean => {
       const view = document.defaultView;
@@ -127,8 +142,11 @@ export class PopupHost {
       dialog.removeEventListener('keydown', onKeyDown);
       closeButton.removeEventListener('click', close);
       removeResizeListeners();
-      resizeHandle?.removeEventListener('pointerdown', onResizePointerDown);
-      resizeHandle?.removeEventListener('keydown', onResizeKeyDown);
+      removeViewportResizeListener();
+      resizeHandles.forEach((handle) => {
+        handle.removeEventListener('pointerdown', onResizePointerDown);
+        handle.removeEventListener('keydown', onResizeKeyDown);
+      });
       this.#open.delete(id);
       try { if (typeof renderCleanup === 'function') renderCleanup(); }
       finally {
@@ -156,12 +174,22 @@ export class PopupHost {
       const computed = view?.getComputedStyle?.(dialog);
       const minWidth = Number.parseFloat(computed?.minWidth ?? '') || 0;
       const minHeight = Number.parseFloat(computed?.minHeight ?? '') || 0;
-      const maxWidth = Math.max(minWidth, (view?.innerWidth ?? width + 32) - 32);
-      const maxHeight = Math.max(minHeight, (view?.innerHeight ?? height + 32) - 32);
-      dialog.style.width = `${Math.min(maxWidth, Math.max(minWidth, width))}px`;
-      dialog.style.height = `${Math.min(maxHeight, Math.max(minHeight, height))}px`;
+      const viewportWidth = view?.innerWidth ?? width + 32;
+      const viewportHeight = view?.innerHeight ?? height + 32;
+      const maxWidth = resizeCenterX === undefined
+        ? Math.max(minWidth, viewportWidth - 32)
+        : Math.max(minWidth, 2 * Math.min(resizeCenterX - 16, viewportWidth - 16 - resizeCenterX));
+      const maxHeight = resizeCenterY === undefined
+        ? Math.max(minHeight, viewportHeight - 32)
+        : Math.max(minHeight, 2 * Math.min(resizeCenterY - 16, viewportHeight - 16 - resizeCenterY));
+      const nextWidth = Math.min(maxWidth, Math.max(minWidth, width));
+      const nextHeight = Math.min(maxHeight, Math.max(minHeight, height));
+      dialog.style.width = `${nextWidth}px`;
+      dialog.style.height = `${nextHeight}px`;
+      if (resizeCenterX !== undefined) dialog.style.left = `${Math.round(resizeCenterX - nextWidth / 2)}px`;
+      if (resizeCenterY !== undefined) dialog.style.top = `${Math.round(resizeCenterY - nextHeight / 2)}px`;
     };
-    if (resizeHandle !== undefined) {
+    if (resizeHandles.length > 0) {
       onResizePointerDown = (event: PointerEvent): void => {
         if (event.button !== 0) return;
         event.preventDefault();
@@ -171,17 +199,52 @@ export class PopupHost {
         const initial = dialog.getBoundingClientRect();
         const startX = event.clientX;
         const startY = event.clientY;
-        const onPointerMove = (moveEvent: PointerEvent): void => resizeTo(initial.width + moveEvent.clientX - startX, initial.height + moveEvent.clientY - startY);
-        const onPointerUp = (): void => { persistPopupSize(); removeResizeListeners(); };
+        const sourceHandle = event.currentTarget as HTMLButtonElement | null;
+        const resizeEdge = sourceHandle?.dataset.popupResizeEdge === 'left' ? 'left' : 'right';
+        // Keep the workspace center fixed while dragging either lower corner.
+        // The active corner then follows the pointer one-to-one, while the
+        // opposite corner moves by the same amount in the other direction.
+        dialog.style.position = 'fixed';
+        dialog.style.left = `${Math.round(initial.left)}px`;
+        dialog.style.top = `${Math.round(initial.top)}px`;
+        dialog.style.margin = '0';
+        resizeCenterX = initial.left + initial.width / 2;
+        resizeCenterY = initial.top + initial.height / 2;
+        resizePointerId = event.pointerId;
+        resizePointerHandle = sourceHandle ?? resizeHandle;
+        try { resizePointerHandle?.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional in older hosts */ }
+        const onPointerMove = (moveEvent: PointerEvent): void => {
+          if (moveEvent.pointerId !== resizePointerId) return;
+          moveEvent.preventDefault();
+          const horizontalDelta = moveEvent.clientX - startX;
+          const widthDelta = (resizeEdge === 'left' ? -horizontalDelta : horizontalDelta) * 2;
+          const heightDelta = (moveEvent.clientY - startY) * 2;
+          resizeTo(initial.width + widthDelta, initial.height + heightDelta);
+        };
+        const onPointerUp = (upEvent?: PointerEvent): void => {
+          if (upEvent !== undefined && upEvent.pointerId !== resizePointerId) return;
+          persistPopupSize();
+          removeResizeListeners();
+        };
+        const onWindowBlur = (): void => onPointerUp();
         removeResizeListeners = (): void => {
           view.removeEventListener('pointermove', onPointerMove);
           view.removeEventListener('pointerup', onPointerUp);
           view.removeEventListener('pointercancel', onPointerUp);
+          view.removeEventListener('blur', onWindowBlur);
+          if (resizePointerId !== undefined && resizePointerHandle !== undefined) {
+            try {
+              if (resizePointerHandle.hasPointerCapture(resizePointerId)) resizePointerHandle.releasePointerCapture(resizePointerId);
+            } catch { /* pointer capture is optional in older hosts */ }
+          }
+          resizePointerId = undefined;
+          resizePointerHandle = undefined;
           removeResizeListeners = (): void => undefined;
         };
         view.addEventListener('pointermove', onPointerMove);
         view.addEventListener('pointerup', onPointerUp);
         view.addEventListener('pointercancel', onPointerUp);
+        view.addEventListener('blur', onWindowBlur);
       };
       onResizeKeyDown = (event: KeyboardEvent): void => {
         const directions: Partial<Record<string, readonly [number, number]>> = {
@@ -192,11 +255,34 @@ export class PopupHost {
         event.preventDefault();
         const rect = dialog.getBoundingClientRect();
         const step = event.shiftKey ? 40 : 10;
-        resizeTo(rect.width + direction[0] * step, rect.height + direction[1] * step);
+        const sourceHandle = event.currentTarget as HTMLButtonElement | null;
+        const resizeEdge = sourceHandle?.dataset.popupResizeEdge === 'left' ? 'left' : 'right';
+        const horizontalDelta = resizeEdge === 'left' ? -direction[0] : direction[0];
+        resizeTo(rect.width + horizontalDelta * step, rect.height + direction[1] * step);
         persistPopupSize();
       };
-      resizeHandle.addEventListener('pointerdown', onResizePointerDown);
-      resizeHandle.addEventListener('keydown', onResizeKeyDown);
+      resizeHandles.forEach((handle) => {
+        handle.addEventListener('pointerdown', onResizePointerDown);
+        handle.addEventListener('keydown', onResizeKeyDown);
+      });
+      const view = document.defaultView;
+      if (view !== null && view !== undefined) {
+        const onViewportResize = (): void => {
+          if (dialog.style.position !== 'fixed') return;
+          removeResizeListeners();
+          dialog.style.position = '';
+          dialog.style.left = '';
+          dialog.style.top = '';
+          dialog.style.margin = '';
+          resizeCenterX = undefined;
+          resizeCenterY = undefined;
+        };
+        view.addEventListener('resize', onViewportResize);
+        removeViewportResizeListener = (): void => {
+          view.removeEventListener('resize', onViewportResize);
+          removeViewportResizeListener = (): void => undefined;
+        };
+      }
       const storedSize = readPopupSize();
       if (storedSize !== undefined) resizeTo(storedSize.width, storedSize.height);
     }
