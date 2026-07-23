@@ -26,10 +26,42 @@ function descendants(root: HTMLElement): HTMLElement[] {
   return result;
 }
 
-function selectedValue(select: HTMLSelectElement, options: readonly { readonly value: string }[]): string | undefined {
+interface NativeSelectOption {
+  readonly source: HTMLOptionElement;
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string | undefined;
+  readonly group?: string | undefined;
+}
+
+function nativeSelectOptions(select: HTMLSelectElement): NativeSelectOption[] {
+  const options: NativeSelectOption[] = [];
+  const appendOption = (node: HTMLElement, group?: string): void => {
+    if (node.tagName !== 'OPTION') return;
+    const source = node as HTMLOptionElement;
+    const description = node.getAttribute('data-ss-helper-description')?.trim();
+    options.push({
+      source,
+      value: source.value,
+      label: node.textContent ?? '',
+      ...(description ? { description } : {}),
+      ...(group?.trim() ? { group: group.trim() } : {}),
+    });
+  };
+  for (const child of Array.from(select.children) as HTMLElement[]) {
+    if (child.tagName === 'OPTION') appendOption(child);
+    else if (child.tagName === 'OPTGROUP') {
+      const group = child.getAttribute('label') ?? '';
+      for (const option of Array.from(child.children) as HTMLElement[]) appendOption(option, group);
+    }
+  }
+  return options;
+}
+
+function selectedValue(select: HTMLSelectElement, options: readonly NativeSelectOption[]): string | undefined {
   if (options.some((option) => option.value === select.value)) return select.value;
-  const selected = (Array.from(select.children) as HTMLElement[]).find((node) => node.tagName === 'OPTION' && (node as HTMLOptionElement).selected);
-  return selected === undefined ? options[0]?.value : (selected as HTMLOptionElement).value;
+  const selected = options.find((option) => option.source.selected);
+  return selected?.value ?? options[0]?.value;
 }
 
 function dispatchChange(select: HTMLSelectElement): void {
@@ -59,9 +91,13 @@ export class PopupUiController implements PopupUiContext {
       .filter((node) => node.tagName === 'SELECT' && node.getAttribute(UI_CONTROL_ATTRIBUTE) === 'select') as HTMLSelectElement[];
     for (const select of candidates) {
       if (this.#enhanced.has(select)) continue;
-      const options = (Array.from(select.children) as HTMLElement[])
-        .filter((node) => node.tagName === 'OPTION')
-        .map((node) => ({ value: (node as HTMLOptionElement).value, label: node.textContent ?? '' }));
+      const nativeOptions = nativeSelectOptions(select);
+      const options = nativeOptions.map(({ value, label, description, group }) => ({
+        value,
+        label,
+        ...(description === undefined ? {} : { description }),
+        ...(group === undefined ? {} : { group }),
+      }));
       const id = select.id || `ss-helper-popup-select-${++popupSelectSequence}`;
       if (!select.id) select.id = id;
       const shell = createSelectControl(select.ownerDocument, {
@@ -69,12 +105,10 @@ export class PopupUiController implements PopupUiContext {
         ariaLabel: select.getAttribute('aria-label') ?? (select.name || '选择'),
         disabled: select.disabled,
         options,
-        value: selectedValue(select, options),
+        value: selectedValue(select, nativeOptions),
         onSelect: (value) => {
           select.value = value;
-          for (const node of Array.from(select.children) as HTMLElement[]) {
-            if (node.tagName === 'OPTION') (node as HTMLOptionElement).selected = (node as HTMLOptionElement).value === value;
-          }
+          for (const option of nativeOptions) option.source.selected = option.value === value;
           dispatchChange(select);
         },
       });
@@ -89,7 +123,7 @@ export class PopupUiController implements PopupUiContext {
       select.tabIndex = -1;
       select.setAttribute('aria-hidden', 'true');
       select.dataset.ssHelperEnhanced = 'true';
-      select.parentElement?.append(shell);
+      select.after(shell);
       this.#enhanced.set(select, state);
     }
   }

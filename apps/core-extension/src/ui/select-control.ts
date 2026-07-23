@@ -1,6 +1,8 @@
 export interface SelectControlOption {
   readonly value: string;
   readonly label: string;
+  readonly description?: string | undefined;
+  readonly group?: string | undefined;
 }
 
 export interface SelectControlOptions {
@@ -54,6 +56,7 @@ export function createSelectControl(document: Document, config: SelectControlOpt
   const listbox = document.createElement('div');
   listbox.id = `${config.id}-listbox`;
   listbox.className = 'stx-ui-select-listbox';
+  listbox.setAttribute('popover', 'manual');
   listbox.setAttribute('role', 'listbox');
   listbox.setAttribute('aria-label', config.ariaLabel);
   listbox.hidden = true;
@@ -63,6 +66,40 @@ export function createSelectControl(document: Document, config: SelectControlOpt
   let activeIndex = selected === undefined ? 0 : selectedIndex;
   let typeahead = '';
   let typeaheadTimer: ReturnType<typeof setTimeout> | undefined;
+  const view = document.defaultView;
+  const topLayerListbox = listbox as HTMLElement & {
+    hidePopover?: () => void;
+    showPopover?: () => void;
+  };
+  const positionListbox = (): void => {
+    if (typeof trigger.getBoundingClientRect !== 'function') return;
+    const rect = trigger.getBoundingClientRect();
+    const viewportWidth = view?.innerWidth ?? document.documentElement?.clientWidth ?? rect.right;
+    const viewportHeight = view?.innerHeight ?? document.documentElement?.clientHeight ?? rect.bottom;
+    const edge = 8;
+    const gap = 6;
+    const width = Math.min(rect.width, Math.max(0, viewportWidth - edge * 2));
+    const left = Math.min(Math.max(edge, rect.left), Math.max(edge, viewportWidth - width - edge));
+    const spaceBelow = Math.max(0, viewportHeight - rect.bottom - gap - edge);
+    const spaceAbove = Math.max(0, rect.top - gap - edge);
+    const openAbove = spaceBelow < 120 && spaceAbove > spaceBelow;
+    listbox.style.position = 'fixed';
+    listbox.style.right = 'auto';
+    listbox.style.left = `${left}px`;
+    listbox.style.width = `${width}px`;
+    listbox.style.maxHeight = `${Math.min(240, Math.max(80, openAbove ? spaceAbove : spaceBelow))}px`;
+    if (openAbove) {
+      listbox.style.top = 'auto';
+      listbox.style.bottom = `${Math.max(edge, viewportHeight - rect.top + gap)}px`;
+    } else {
+      listbox.style.top = `${Math.min(viewportHeight - edge, rect.bottom + gap)}px`;
+      listbox.style.bottom = 'auto';
+    }
+  };
+  const stopTrackingPosition = (): void => {
+    view?.removeEventListener('resize', positionListbox);
+    view?.removeEventListener('scroll', positionListbox, true);
+  };
 
   const syncSelected = (index: number): void => {
     optionNodes.forEach((node, optionIndex) => node.setAttribute('aria-selected', String(optionIndex === index)));
@@ -78,6 +115,8 @@ export function createSelectControl(document: Document, config: SelectControlOpt
     } else trigger.removeAttribute('aria-activedescendant');
   };
   const close = (): void => {
+    stopTrackingPosition();
+    try { topLayerListbox.hidePopover?.(); } catch { /* The popover may already be closed. */ }
     listbox.hidden = true;
     shell.dataset.open = 'false';
     trigger.setAttribute('aria-expanded', 'false');
@@ -86,6 +125,10 @@ export function createSelectControl(document: Document, config: SelectControlOpt
   const open = (): void => {
     if (trigger.disabled) return;
     listbox.hidden = false;
+    positionListbox();
+    try { topLayerListbox.showPopover?.(); } catch { /* Fixed-position fallback remains usable. */ }
+    view?.addEventListener('resize', positionListbox);
+    view?.addEventListener('scroll', positionListbox, true);
     shell.dataset.open = 'true';
     trigger.setAttribute('aria-expanded', 'true');
     syncActive();
@@ -104,16 +147,35 @@ export function createSelectControl(document: Document, config: SelectControlOpt
     syncActive();
   };
 
+  let renderedGroup: string | undefined;
   config.options.forEach((option, index) => {
+    const group = option.group?.trim();
+    if (group && group !== renderedGroup) {
+      const heading = document.createElement('div');
+      heading.className = 'stx-ui-select-group';
+      heading.setAttribute('role', 'presentation');
+      heading.textContent = group;
+      listbox.append(heading);
+      renderedGroup = group;
+    }
     const node = document.createElement('div');
     node.id = `${config.id}-option-${index}`;
     node.className = 'stx-ui-select-option';
     node.setAttribute('role', 'option');
     node.setAttribute('aria-selected', String(option.value === selected?.value));
     node.tabIndex = -1;
+    if (option.description?.trim()) node.setAttribute('aria-label', `${option.label}，${option.description.trim()}`);
+    const copy = document.createElement('span');
+    copy.className = 'stx-ui-select-option-copy';
     const text = document.createElement('span');
     text.textContent = option.label;
-    node.append(text);
+    copy.append(text);
+    if (option.description?.trim()) {
+      const description = document.createElement('small');
+      description.textContent = option.description.trim();
+      copy.append(description);
+    }
+    node.append(copy);
     const check = document.createElement('span');
     check.className = 'stx-ui-select-check';
     check.setAttribute('aria-hidden', 'true');

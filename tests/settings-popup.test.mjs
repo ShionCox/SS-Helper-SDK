@@ -66,6 +66,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.match(coreStyles.textContent, /\.stx-ui-select-trigger \{/);
     assert.match(coreStyles.textContent, /\.stx-ui-select-arrow \{/);
     assert.match(coreStyles.textContent, /\.stx-ui-select-listbox \{/);
+    assert.match(coreStyles.textContent, /position: fixed; z-index: 2147483000/);
     assert.match(coreStyles.textContent, /\.stx-ui-select-check\[hidden\] \{ display: none; \}/);
     assert.match(coreStyles.textContent, /background: var\(--ss-theme-surface-3\)/);
     const opener = descendants(container.children[0]).find((node) => node.id === 'ss-helper-open-settings-center');
@@ -90,6 +91,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.match(selectWrap.children[0].children[1].className, /stx-ui-select-arrow/u);
     assert.equal(selectWrap.children[0].children[1].getAttribute('aria-hidden'), 'true');
     assert.equal(selectWrap.children[1].getAttribute('role'), 'listbox');
+    assert.equal(selectWrap.children[1].getAttribute('popover'), 'manual');
     assert.equal(selectWrap.children[1].hidden, true);
     await runtime.settings.save('example.settings', { enabled: false, 'api-key': 'next', count: 3, mode: 'a' });
     assert.equal(saved.length, 1);
@@ -610,6 +612,7 @@ test('popup public controls share Core styles and enhance native selects idempot
     const controls = descendants(dialog);
     const shells = controls.filter((node) => node.className === 'stx-ui-select-wrap');
     assert.equal(shells.length, 1);
+    assert.equal(shells[0].previousElementSibling, nativeSelect);
     assert.equal(nativeSelect.hidden, true);
     assert.equal(nativeSelect.getAttribute('aria-hidden'), 'true');
     const trigger = shells[0].children[0];
@@ -632,12 +635,68 @@ test('popup public controls share Core styles and enhance native selects idempot
     assert.match(styles, /\[data-ss-helper-popup\].*--ss-theme-surface/su);
     assert.match(styles, /padding-inline-start:\s*var\(--ss-control-input-padding-inline-start,\s*11px\)/u);
     assert.match(styles, /padding-inline-end:\s*var\(--ss-control-input-padding-inline-end,\s*11px\)/u);
-    for (const kind of ['button', 'input', 'textarea', 'checkbox', 'status', 'progress', 'file-trigger']) {
+    for (const kind of ['button', 'segmented', 'input', 'textarea', 'checkbox', 'status', 'progress', 'file-trigger']) {
       assert.ok(styles.includes(`data-ss-helper-control="${kind}"`));
     }
     for (const tone of ['neutral', 'primary', 'danger', 'success', 'warning', 'error']) {
       assert.ok(styles.includes(`data-ss-helper-tone="${tone}"`));
     }
+    for (const size of ['xs', 'sm', 'md', 'lg']) {
+      assert.ok(styles.includes(`data-ss-helper-size="${size}"`));
+    }
+    assert.match(styles, /\[data-ss-helper-icon-only\][^{]*\{[^}]*border:\s*0[^}]*background:\s*transparent/u);
+    assert.match(styles, /\[data-ss-helper-control="segmented"\]\s*>\s*\[data-ss-helper-control="button"\]\s*\{[^}]*border:\s*0[^}]*transition:/u);
+    assert.match(styles, /\[data-ss-helper-control="segmented"\]\s*>\s*\[data-ss-helper-control="button"\]:is\(\[aria-pressed="true"\],\s*\[aria-selected="true"\]\)\s*\{[^}]*border:\s*0[^}]*box-shadow:\s*none[^}]*filter:\s*brightness\(1\.12\)/u);
+    assert.match(styles, /\[data-ss-helper-control="segmented"\]\s*>\s*\[data-ss-helper-control="button"\]:hover\s*\{[^}]*transform:\s*translateY\(-1px\)/u);
+    assert.match(styles, /\.stx-center-close\s*\{[^}]*border:\s*0/u);
+    assert.match(styles, /\[data-popup-header="true"\]\s+button\s*\{[^}]*border:\s*0/u);
+  } finally { restore(); }
+});
+
+test('popup select preserves option groups and renders concise secondary descriptions', () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.grouped-select'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.grouped-select', name: 'controls', version: 0 });
+    let nativeSelect;
+    let changes = 0;
+    session.registerPopup({
+      token,
+      title: 'Grouped Select',
+      render: (container, _input, ui) => {
+        nativeSelect = document.createElement('select');
+        nativeSelect.setAttribute('data-ss-helper-control', 'select');
+        nativeSelect.setAttribute('aria-label', '目标人物');
+        const recommended = document.createElement('optgroup'); recommended.setAttribute('label', '推荐匹配');
+        const first = document.createElement('option'); first.value = 'owner-a'; first.textContent = '艾琳'; first.selected = true;
+        first.setAttribute('data-ss-helper-description', '已确认 · 置信度 93% · 别名：店长');
+        recommended.append(first);
+        const pending = document.createElement('optgroup'); pending.setAttribute('label', '待确认人物');
+        const second = document.createElement('option'); second.value = 'owner-b'; second.textContent = '贝拉';
+        second.setAttribute('data-ss-helper-description', '待确认 · 置信度 86%');
+        pending.append(second);
+        nativeSelect.value = 'owner-a';
+        nativeSelect.append(recommended, pending);
+        nativeSelect.addEventListener('change', () => { changes += 1; });
+        container.append(nativeSelect);
+        ui?.refreshControls(container);
+      },
+    });
+    session.ui.openPopup(token, {});
+    const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    const shell = descendants(overlay).find((node) => node.className === 'stx-ui-select-wrap');
+    const listbox = shell.children[1];
+    assert.equal(listbox.children[0].className, 'stx-ui-select-group');
+    assert.equal(listbox.children[0].textContent, '推荐匹配');
+    assert.equal(listbox.children[1].getAttribute('role'), 'option');
+    assert.equal(listbox.children[1].children[0].children[0].textContent, '艾琳');
+    assert.equal(listbox.children[1].children[0].children[1].textContent, '已确认 · 置信度 93% · 别名：店长');
+    assert.equal(listbox.children[2].textContent, '待确认人物');
+    listbox.children[3].dispatchEvent({ type: 'click' });
+    assert.equal(nativeSelect.value, 'owner-b');
+    assert.equal(changes, 1);
   } finally { restore(); }
 });
 

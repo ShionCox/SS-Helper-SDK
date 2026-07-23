@@ -11,8 +11,11 @@ export type PopupPresentation = 'default' | 'workspace';
 
 export const UI_CONTROL_ATTRIBUTE = 'data-ss-helper-control' as const;
 export const UI_CONTROL_TONE_ATTRIBUTE = 'data-ss-helper-tone' as const;
-export type UiControlKind = 'button' | 'input' | 'textarea' | 'checkbox' | 'select' | 'status' | 'progress' | 'file-trigger';
+export const UI_CONTROL_SIZE_ATTRIBUTE = 'data-ss-helper-size' as const;
+export const UI_CONTROL_ICON_ONLY_ATTRIBUTE = 'data-ss-helper-icon-only' as const;
+export type UiControlKind = 'button' | 'segmented' | 'input' | 'textarea' | 'checkbox' | 'select' | 'status' | 'progress' | 'file-trigger';
 export type UiControlTone = 'neutral' | 'primary' | 'danger' | 'success' | 'warning' | 'error';
+export type UiControlSize = 'xs' | 'sm' | 'md' | 'lg';
 
 export interface PopupUiContext {
   /** Re-applies Core-owned component behavior after a plugin replaces popup DOM. */
