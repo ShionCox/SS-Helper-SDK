@@ -21,6 +21,22 @@ export const SETTINGS_CSS = `
 :where(#ss-helper-settings-root, #ss-helper-settings-center-overlay, #ss-helper-toast-root, [data-ss-helper-popup]) *::before,
 :where(#ss-helper-settings-root, #ss-helper-settings-center-overlay, #ss-helper-toast-root, [data-ss-helper-popup]) *::after { box-sizing: border-box; }
 
+#ss-helper-extension-menu-group { display: block; }
+#ss-helper-extension-menu-group > .stx-extension-menu-item {
+  appearance: none; width: 100%; border: 0; padding: 5px; display: flex; align-items: center; gap: 10px;
+  background: transparent; color: var(--SmartThemeBodyColor, #ececec); font: inherit; text-align: left;
+  opacity: .5; cursor: pointer;
+}
+#ss-helper-extension-menu-group > .stx-extension-menu-item:hover,
+#ss-helper-extension-menu-group > .stx-extension-menu-item:focus-visible {
+  opacity: 1; background: color-mix(in srgb, var(--SmartThemeBodyColor, #ececec) 8%, transparent);
+}
+#ss-helper-extension-menu-group > .stx-extension-menu-item:focus-visible {
+  outline: 2px solid var(--SmartThemeQuoteColor, #d2a84a); outline-offset: -2px;
+}
+#ss-helper-extension-menu-group > .stx-extension-menu-item:is(:disabled, [aria-disabled="true"]) { opacity: .35; cursor: wait; }
+#ss-helper-extension-menu-group > .stx-extension-menu-item > span { min-width: 0; overflow-wrap: anywhere; }
+
 #ss-helper-settings-root { display: block; padding: .75rem; }
 #ss-helper-settings-root .stx-launcher-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .65rem; }
 #ss-helper-settings-root .stx-ui-title { margin: 0 0 .12rem; font-size: 1.05rem; font-weight: 700; }

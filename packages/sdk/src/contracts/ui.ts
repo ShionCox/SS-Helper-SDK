@@ -72,6 +72,17 @@ export interface ChatIndicatorRegistration {
   subscribe?(listener: (targetKeys?: readonly string[]) => void): () => void;
 }
 
+export interface ExtensionMenuItemRegistration {
+  /** Stable identifier unique within the registering plugin. */
+  readonly id: string;
+  readonly label: string;
+  /** Safe Font Awesome glyph name without the `fa-` prefix. */
+  readonly icon: string;
+  /** Lower values appear first inside the Core-owned SS-Helper group. */
+  readonly order?: number;
+  onActivate(): void | Promise<void>;
+}
+
 export interface UiPort {
   openPopup<Input extends PlainData>(token: PopupToken<Input>, input: Input): void;
   showToast(notification: ToastNotification): void;

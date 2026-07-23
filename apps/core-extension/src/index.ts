@@ -15,6 +15,7 @@ export {
 export { PopupHost } from './popup/popup-host.js';
 export { ToastHost } from './toast/toast-host.js';
 export { ChatIndicatorHost, chatIndicatorTargetFromRow } from './chat/chat-indicator-host.js';
+export { ExtensionMenuHost, SS_HELPER_EXTENSION_MENU_GROUP_ID } from './ui/extension-menu-host.js';
 export { createIconElement, ensureIconElement, SS_HELPER_ICON_TAG, type IconOptions } from './ui/icon-element.js';
 
 export const CORE_EXTENSION_SKELETON = Object.freeze({

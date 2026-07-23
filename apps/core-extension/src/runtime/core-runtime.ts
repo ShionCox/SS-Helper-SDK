@@ -21,6 +21,7 @@ import type { TavernHostAdapter } from '../host/tavern-host-port.js';
 import { InternalBridgeClient } from '../bridge/internal-bridge.js';
 import { ChatIndicatorHost } from '../chat/chat-indicator-host.js';
 import { ensureIconElement } from '../ui/icon-element.js';
+import { ExtensionMenuHost } from '../ui/extension-menu-host.js';
 
 export interface CoreRuntimeIdentity {
   readonly coreVersion: string;
@@ -47,6 +48,7 @@ export class CoreRuntime {
   readonly popups: PopupHost;
   readonly toasts: ToastHost;
   readonly chatIndicators: ChatIndicatorHost;
+  readonly extensionMenus: ExtensionMenuHost;
   readonly port: CorePort;
   #active = true;
   #snapshot?: CoreDiscoverySnapshot;
@@ -84,11 +86,12 @@ export class CoreRuntime {
     this.popups = new PopupHost(document);
     this.toasts = new ToastHost(document, this.diagnosticsStore);
     this.chatIndicators = new ChatIndicatorHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
+    this.extensionMenus = new ExtensionMenuHost(document, this.diagnosticsStore, this.toasts);
     const bridge = new InternalBridgeClient(options.hostAdapter ?? {});
     this.plugins = new PluginRegistry(
       generation, identity.apiVersion, capabilities,
       () => this.#active, this.services, this.events, this.diagnosticsStore,
-      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, this.chatIndicators, bridge,
+      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, this.chatIndicators, this.extensionMenus, bridge,
     );
     if (options.settingsContainer !== undefined) this.settings.mount(options.settingsContainer);
     this.port = Object.freeze({
@@ -116,6 +119,7 @@ export class CoreRuntime {
     this.#active = false;
     this.settings.dispose();
     this.plugins.closeAll(reason, nextGeneration);
+    this.extensionMenus.dispose();
     this.chatIndicators.dispose();
     this.services.dispose();
     this.events.dispose();

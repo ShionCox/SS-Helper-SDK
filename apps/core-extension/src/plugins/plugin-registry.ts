@@ -14,6 +14,7 @@ import {
   type SettingsAdapter,
   type SettingsSchema,
   type ChatIndicatorRegistration,
+  type ExtensionMenuItemRegistration,
   type PopupRegistration,
   type PopupToken,
   type PlainData,
@@ -29,6 +30,7 @@ import type { SettingsHost } from '../settings/settings-host.js';
 import type { PopupHost } from '../popup/popup-host.js';
 import type { ToastHost } from '../toast/toast-host.js';
 import type { ChatIndicatorHost } from '../chat/chat-indicator-host.js';
+import type { ExtensionMenuHost } from '../ui/extension-menu-host.js';
 import { createWorkspacePort } from '../workspace/workspace-port.js';
 import { createSecretPort } from '../workspace/secret-port.js';
 import type { InternalBridgeClient } from '../bridge/internal-bridge.js';
@@ -71,6 +73,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     private readonly popupHost: PopupHost,
     private readonly toastHost: ToastHost,
     private readonly chatIndicatorHost: ChatIndicatorHost,
+    private readonly extensionMenuHost: ExtensionMenuHost,
     bridge: InternalBridgeClient,
   ) {
     this.#scope = new ResourceScope(descriptor.id, generation, coreActive);
@@ -110,6 +113,8 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   registerPopup(registration: PopupRegistration): () => void { return this.popupHost.register(this.#scope, registration); }
 
   registerChatIndicator(registration: ChatIndicatorRegistration): () => void { return this.chatIndicatorHost.register(this.#scope, registration); }
+
+  registerExtensionMenuItem(registration: ExtensionMenuItemRegistration): () => void { return this.extensionMenuHost.register(this.#scope, registration); }
 
   dispose(): void { this.remove(this); }
 
@@ -164,6 +169,7 @@ export class PluginRegistry {
     private readonly popupHost: PopupHost,
     private readonly toastHost: ToastHost,
     private readonly chatIndicatorHost: ChatIndicatorHost,
+    private readonly extensionMenuHost: ExtensionMenuHost,
     private readonly bridge: InternalBridgeClient,
   ) {}
 
@@ -195,6 +201,7 @@ export class PluginRegistry {
       this.popupHost,
       this.toastHost,
       this.chatIndicatorHost,
+      this.extensionMenuHost,
       this.bridge,
     );
     this.#sessions.set(descriptor.id, session as unknown as PluginSessionImpl<HostCapability>);

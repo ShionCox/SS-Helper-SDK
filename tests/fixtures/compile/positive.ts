@@ -96,6 +96,13 @@ acknowledgement.body.data;
 session.registerSettings(settings, adapter);
 session.registerPopup(legacyPopupRegistration);
 session.registerPopup(enhancedPopupRegistration);
+session.registerExtensionMenuItem?.({
+  id: 'open-tool',
+  label: '打开工具',
+  icon: 'wrench',
+  order: 100,
+  onActivate: () => session.ui.openPopup(popup, { tab: 'main' }),
+});
 session.ui.openPopup(popup, { tab: 'main' });
 
 const serviceToken: ServiceContract<'ss-helper.llm', 'completion', 0, LlmCompletionRequest, LlmCompletionResponse> = LLM_COMPLETION_V0;
