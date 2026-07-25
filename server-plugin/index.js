@@ -78,6 +78,8 @@ let initError;
 let secretKey;
 let secretKeyError;
 let recoveryInProgress = false;
+let warmupHandle;
+let serverActive = false;
 
 function now() { return Date.now(); }
 function json(value) { return JSON.stringify(value ?? null); }
@@ -1068,13 +1070,25 @@ const serverBroker = Object.freeze({
 });
 
 export async function init(router) {
-  try { ensureDatabase(); } catch { /* health route reports the failure */ }
-  try { ensureSecretKey(); } catch { /* Secret API reports the failure without disabling the workspace */ }
+  // Register the route before warming SQLite/secret storage. Browser extensions
+  // can load while SillyTavern is still initializing server plugins; registering
+  // last created a window where the Core existed but every workspace call got
+  // an HTTP 404. The route is now available immediately and storage remains
+  // lazily initialized by the first health/operation call.
+  serverActive = true;
   registerWorkspaceRoutes(router);
   Object.defineProperty(globalThis, SERVER_BROKER_SYMBOL, { value: serverBroker, configurable: true, enumerable: false, writable: false });
+  warmupHandle = setImmediate(() => {
+    warmupHandle = undefined;
+    if (!serverActive) return;
+    try { ensureDatabase(); } catch { /* health route reports the failure */ }
+    try { ensureSecretKey(); } catch { /* Secret API reports the failure without disabling the workspace */ }
+  });
 }
 
 export function exit() {
+  serverActive = false;
+  if (warmupHandle !== undefined) { clearImmediate(warmupHandle); warmupHandle = undefined; }
   try { delete globalThis[SERVER_BROKER_SYMBOL]; } finally { closeWorkspaceDatabase(); recoveryInProgress = false; }
 }
 

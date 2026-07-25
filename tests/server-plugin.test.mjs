@@ -118,6 +118,27 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
   }
 });
 
+test('SDK server init registers the private bridge before deferred storage warmup', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-route-first-'));
+  const previous = process.env.SS_HELPER_ST_ROOT;
+  process.env.SS_HELPER_ST_ROOT = root;
+  let module;
+  try {
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?route-first=${Date.now()}`);
+    const initialized = module.init(router);
+    assert.equal(routes.has(`POST ${BRIDGE_ROUTE}`), true, 'bridge route must exist synchronously during init');
+    await initialized;
+    const health = await bridge(routes, 'ss-helper.memory', 'workspace.health');
+    assert.equal(health.status, 200);
+    assert.equal(health.payload.data.ready, true);
+  } finally {
+    module?.exit();
+    restoreEnv('SS_HELPER_ST_ROOT', previous);
+    try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore Windows SQLite handles */ }
+  }
+});
+
 test('SDK bridge health and confirmed recovery work when SQLite is corrupt', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-recovery-'));
   const previous = process.env.SS_HELPER_ST_ROOT;
