@@ -63,7 +63,7 @@ test('extension menu registration validates input and rejects duplicates', () =>
     session.registerExtensionMenuItem(menuRegistration('memory-workbench', '记忆工作台', 'brain', 100));
     assert.throws(
       () => session.registerExtensionMenuItem(menuRegistration('memory-workbench', '重复', 'brain', 100)),
-      (error) => errorCode('PAYLOAD_INVALID')(error) && error.details?.reason === 'duplicate_extension_menu_item',
+      (error) => errorCode('INVALID_PAYLOAD')(error) && error.details?.reason === 'duplicate_extension_menu_item',
     );
     for (const registration of [
       menuRegistration('Bad ID', '工具', 'brain', 100),
@@ -73,7 +73,7 @@ test('extension menu registration validates input and rejects duplicates', () =>
     ]) {
       assert.throws(
         () => session.registerExtensionMenuItem(registration),
-        (error) => errorCode('PAYLOAD_INVALID')(error) && error.details?.reason === 'extension_menu_registration',
+        (error) => errorCode('INVALID_PAYLOAD')(error) && error.details?.reason === 'extension_menu_registration',
       );
     }
   } finally {

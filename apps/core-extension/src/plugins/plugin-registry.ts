@@ -1,19 +1,19 @@
 import {
   SSHelperError,
-  type AnyEventContract,
-  type AnyServiceContract,
-  type CallOptions,
-  type EventPort,
+  type AnyBusEventContract,
+  type AnyRequestContract,
+  type BusPort,
+  type BusRequestOptions,
   type HostCapability,
   type HostPort,
   type PluginDescriptor,
   type PluginSession,
-  type ServicePort,
   type SessionCloseInfo,
   type SessionCloseReason,
   type SettingsAdapter,
   type SettingsSchema,
   type ChatIndicatorRegistration,
+  type ChatMessageActionRegistration,
   type ExtensionMenuItemRegistration,
   type PopupRegistration,
   type PopupToken,
@@ -21,8 +21,7 @@ import {
   type UiPort,
   type ToastNotification,
 } from '@ss-helper/sdk';
-import type { EventHub } from '../communication/event-hub.js';
-import type { ServiceRegistry } from '../communication/service-registry.js';
+import type { MessageBus } from '../communication/message-bus.js';
 import type { DiagnosticsStore } from '../diagnostics/diagnostics-store.js';
 import { ResourceScope } from './session-scope.js';
 import { createTavernHostPort, type TavernHostAdapter } from '../host/tavern-host-port.js';
@@ -30,6 +29,7 @@ import type { SettingsHost } from '../settings/settings-host.js';
 import type { PopupHost } from '../popup/popup-host.js';
 import type { ToastHost } from '../toast/toast-host.js';
 import type { ChatIndicatorHost } from '../chat/chat-indicator-host.js';
+import type { ChatMessageActionHost } from '../chat/chat-message-action-host.js';
 import type { ExtensionMenuHost } from '../ui/extension-menu-host.js';
 import { createWorkspacePort } from '../workspace/workspace-port.js';
 import { createSecretPort } from '../workspace/secret-port.js';
@@ -52,8 +52,7 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   readonly #scope: ResourceScope;
   readonly #close: (info: SessionCloseInfo) => void;
   readonly closed: Promise<SessionCloseInfo>;
-  readonly services: ServicePort;
-  readonly events: EventPort;
+  readonly bus: BusPort;
   readonly host: HostPort<Capabilities>;
   readonly ui: UiPort;
   readonly workspace: import('@ss-helper/sdk').WorkspacePort;
@@ -65,14 +64,14 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     readonly generation: number,
     coreActive: () => boolean,
     private readonly remove: (session: PluginSessionImpl<Capabilities>) => void,
-    services: ServiceRegistry,
-    events: EventHub,
+    bus: MessageBus,
     granted: readonly Capabilities[],
     hostAdapter: TavernHostAdapter,
     private readonly settingsHost: SettingsHost,
     private readonly popupHost: PopupHost,
     private readonly toastHost: ToastHost,
     private readonly chatIndicatorHost: ChatIndicatorHost,
+    private readonly chatMessageActionHost: ChatMessageActionHost,
     private readonly extensionMenuHost: ExtensionMenuHost,
     bridge: InternalBridgeClient,
   ) {
@@ -80,22 +79,19 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
     let close!: (info: SessionCloseInfo) => void;
     this.closed = new Promise((resolve) => { close = resolve; });
     this.#close = close;
-    this.services = Object.freeze({
-      expose: (contract: AnyServiceContract, handler: (request: unknown, context: unknown) => unknown) => services.expose(this.#scope, contract, handler as never),
-      waitFor: (contract: AnyServiceContract, options?: CallOptions) => services.waitFor(this.#scope, contract, options),
-      call: (contract: AnyServiceContract, request: unknown, options?: CallOptions) => services.call(this.#scope, contract, request, options),
-    }) as ServicePort;
-    this.events = Object.freeze({
-      publish: (contract: AnyEventContract, payload: unknown) => events.publish(this.#scope, contract, payload),
-      subscribe: (contract: AnyEventContract, listener: (payload: unknown) => void) => events.subscribe(this.#scope, contract, listener),
-    }) as EventPort;
+    this.bus = Object.freeze({
+      handle: (contract: AnyRequestContract, handler: (request: unknown, context: unknown) => unknown) => bus.handle(this.#scope, contract, handler as never),
+      request: (contract: AnyRequestContract, request: unknown, options?: BusRequestOptions) => bus.request(this.#scope, contract, request, options),
+      publish: (contract: AnyBusEventContract, payload: unknown) => bus.publish(this.#scope, contract, payload),
+      subscribe: (contract: AnyBusEventContract, listener: (payload: unknown) => void) => bus.subscribe(this.#scope, contract, listener),
+    }) as BusPort;
     this.host = createTavernHostPort(this.#scope, granted, hostAdapter);
     this.workspace = createWorkspacePort(this.#scope, descriptor.id, granted, bridge);
     this.secrets = createSecretPort(this.#scope, descriptor.id, granted, bridge);
     this.ui = Object.freeze({
       openPopup: <Input extends PlainData>(token: PopupToken<Input>, input: Input) => this.popupHost.open(this.#scope, token, input),
       showToast: (notification: ToastNotification) => {
-      if (!this.host.has('core.ui.notification.v0')) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications are unavailable', { capability: 'core.ui.notification.v0' });
+      if (!this.host.has('core.ui.notification.v0')) throw new SSHelperError('FORBIDDEN', 'Toast notifications are unavailable', { capability: 'core.ui.notification.v0' });
         this.toastHost.show(this.#scope, notification);
       },
     });
@@ -113,6 +109,20 @@ class PluginSessionImpl<Capabilities extends HostCapability> implements PluginSe
   registerPopup(registration: PopupRegistration): () => void { return this.popupHost.register(this.#scope, registration); }
 
   registerChatIndicator(registration: ChatIndicatorRegistration): () => void { return this.chatIndicatorHost.register(this.#scope, registration); }
+
+  registerChatMessageAction(registration: ChatMessageActionRegistration): () => void {
+    if (!this.host.has('core.ui.chat-message-action.v0')) {
+      throw new SSHelperError('FORBIDDEN', 'Chat message actions are unavailable', {
+        capability: 'core.ui.chat-message-action.v0',
+      });
+    }
+    if (!this.host.has('tavern.chat.read')) {
+      throw new SSHelperError('FORBIDDEN', 'Chat read access is required for message actions', {
+        capability: 'tavern.chat.read',
+      });
+    }
+    return this.chatMessageActionHost.register(this.#scope, registration);
+  }
 
   registerExtensionMenuItem(registration: ExtensionMenuItemRegistration): () => void { return this.extensionMenuHost.register(this.#scope, registration); }
 
@@ -143,12 +153,12 @@ function validateDescriptor(descriptor: PluginDescriptor): void {
     || !isSemVer(descriptor.sdkPackageVersion)
     || !isSemVer(descriptor.apiVersion)
     || !isSemVer(descriptor.minApiVersion)) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The plugin descriptor is invalid', { reason: 'descriptor' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The plugin descriptor is invalid', { reason: 'descriptor' });
   }
   if (descriptor.settingsDisplayName !== undefined) {
     const value = descriptor.settingsDisplayName.trim();
     if (value.length === 0 || value.length > 40 || /[\u0000-\u001f\u007f]/u.test(value)) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'The plugin settings display name is invalid', { reason: 'descriptor.settingsDisplayName' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'The plugin settings display name is invalid', { reason: 'descriptor.settingsDisplayName' });
     }
   }
 }
@@ -161,26 +171,26 @@ export class PluginRegistry {
     private readonly apiVersion: string,
     private readonly capabilities: readonly HostCapability[],
     private readonly coreActive: () => boolean,
-    private readonly services: ServiceRegistry,
-    private readonly events: EventHub,
+    private readonly bus: MessageBus,
     private readonly diagnostics: DiagnosticsStore,
     private readonly hostAdapter: TavernHostAdapter,
     private readonly settingsHost: SettingsHost,
     private readonly popupHost: PopupHost,
     private readonly toastHost: ToastHost,
     private readonly chatIndicatorHost: ChatIndicatorHost,
+    private readonly chatMessageActionHost: ChatMessageActionHost,
     private readonly extensionMenuHost: ExtensionMenuHost,
     private readonly bridge: InternalBridgeClient,
   ) {}
 
   register<Capabilities extends HostCapability>(descriptor: PluginDescriptor<Capabilities>): PluginSession<Capabilities> {
-    if (!this.coreActive()) throw new SSHelperError('CORE_DISPOSED', 'Core is disposed');
+    if (!this.coreActive()) throw new SSHelperError('CORE_UNAVAILABLE', 'Core is disposed');
     validateDescriptor(descriptor);
     if (compareSemVer(this.apiVersion, descriptor.minApiVersion) < 0) {
-      throw new SSHelperError('API_INCOMPATIBLE', 'The plugin requires an incompatible Core API');
+      throw new SSHelperError('INVALID_PAYLOAD', 'The plugin requires an incompatible Core API');
     }
     if (this.#sessions.has(descriptor.id)) {
-      throw new SSHelperError('DUPLICATE_PLUGIN_ID', 'The plugin ID is already registered', { pluginId: descriptor.id });
+      throw new SSHelperError('CONFLICT', 'The plugin ID is already registered', { pluginId: descriptor.id });
     }
     const frozenDescriptor = Object.freeze({ ...descriptor, capabilities: Object.freeze([...descriptor.capabilities]) });
     const granted = Object.freeze(descriptor.capabilities.filter((capability) => {
@@ -193,14 +203,14 @@ export class PluginRegistry {
       this.generation,
       this.coreActive,
       (candidate) => this.#remove(candidate as unknown as PluginSessionImpl<HostCapability>, 'consumer_dispose'),
-      this.services,
-      this.events,
+      this.bus,
       granted,
       this.hostAdapter,
       this.settingsHost,
       this.popupHost,
       this.toastHost,
       this.chatIndicatorHost,
+      this.chatMessageActionHost,
       this.extensionMenuHost,
       this.bridge,
     );

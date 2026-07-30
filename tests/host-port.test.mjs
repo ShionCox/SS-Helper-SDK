@@ -37,9 +37,11 @@ test('production SillyTavern bridge feature-detects real seams and keeps request
   assert.equal((await bridge.hostAdapter.chat.readCurrent()).key, 'chat.jsonl');
   await bridge.hostAdapter.prompt.set({ id: 'memory', content: 'context' });
   await bridge.hostAdapter.prompt.remove('memory');
-  const response = await bridge.hostAdapter.request.send({ path: '/api/settings/get', method: 'GET' });
+  const requestSignal = new AbortController().signal;
+  const response = await bridge.hostAdapter.request.send({ path: '/api/settings/get', method: 'GET' }, { signal: requestSignal });
   assert.deepEqual(response, { status: 200, ok: true, body: { ok: true } });
   assert.equal(fetches[0][1].headers['X-CSRF-Token'], 'secret');
+  assert.equal(fetches[0][1].signal, requestSignal);
   assert.equal(JSON.stringify(response).includes('secret'), false);
   await assert.rejects(bridge.hostAdapter.request.send({ path: '//evil.example/api' }));
   assert.deepEqual(prompts.at(-1), ['memory', '', 0, 0, false]);
@@ -150,46 +152,46 @@ test('binary request runtime enforces DTO hashes, capability denial, abort, time
   } });
   const session = runtime.connect(pluginDescriptor('example.binary', { capabilities: ['tavern.plugin.binary-request.v0'] }));
   assert.deepEqual(await session.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), valid);
-  assert.throws(() => session.host.binaryRequest.send({ version: 0, path: '/api/worldinfo/list', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
-  await assert.rejects(session.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: { ...binaryBody(sqlite), sha256: '0'.repeat(64) } }), errorCode('PAYLOAD_INVALID'));
+  assert.throws(() => session.host.binaryRequest.send({ version: 0, path: '/api/worldinfo/list', method: 'GET', responseMode: 'binary' }), errorCode('INVALID_PAYLOAD'));
+  await assert.rejects(session.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: { ...binaryBody(sqlite), sha256: '0'.repeat(64) } }), errorCode('INVALID_PAYLOAD'));
   assert.equal(calls, 1);
   const denied = runtime.connect(pluginDescriptor('example.binary-denied'));
-  assert.throws(() => denied.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('CAPABILITY_NOT_GRANTED'));
+  assert.throws(() => denied.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('FORBIDDEN'));
   runtime.dispose();
 
   const pendingRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-controls', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async (_request, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('private abort detail')), { once: true })) },
   } });
   const timeoutSession = pendingRuntime.connect(pluginDescriptor('example.binary-timeout', { capabilities: ['tavern.plugin.binary-request.v0'] }));
-  await assert.rejects(timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { timeoutMs: 2 }), errorCode('CALL_TIMEOUT'));
+  await assert.rejects(timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { timeoutMs: 2 }), errorCode('TIMEOUT'));
   const controller = new AbortController();
   const aborted = timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }, { signal: controller.signal });
   controller.abort();
-  await assert.rejects(aborted, errorCode('CALL_ABORTED'));
+  await assert.rejects(aborted, errorCode('ABORTED'));
   const disposed = timeoutSession.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' });
   timeoutSession.dispose();
-  await assert.rejects(disposed, errorCode('PLUGIN_DISPOSED'));
+  await assert.rejects(disposed, errorCode('STALE_SESSION'));
   pendingRuntime.dispose();
 
   const mismatchRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-mismatch', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => ({ ...valid, sha256: 'f'.repeat(64) }) },
   } });
   const mismatch = mismatchRuntime.connect(pluginDescriptor('example.binary-mismatch', { capabilities: ['tavern.plugin.binary-request.v0'] }));
-  await assert.rejects(mismatch.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
+  await assert.rejects(mismatch.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('INVALID_PAYLOAD'));
   mismatchRuntime.dispose();
 
   const crossModeRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-cross-mode', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => jsonResponse() },
   } });
   const crossMode = crossModeRuntime.connect(pluginDescriptor('example.binary-cross-mode', { capabilities: ['tavern.plugin.binary-request.v0'] }));
-  await assert.rejects(crossMode.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('PAYLOAD_INVALID'));
+  await assert.rejects(crossMode.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/export', method: 'GET', responseMode: 'binary' }), errorCode('INVALID_PAYLOAD'));
   crossModeRuntime.dispose();
 
   const reverseCrossModeRuntime = installCoreRuntime(coreIdentity({ buildId: 'binary-reverse-cross-mode', capabilities: ['tavern.plugin.binary-request.v0'] }), new TestRealm(), { hostAdapter: {
     binaryRequest: { send: async () => valid },
   } });
   const reverseCrossMode = reverseCrossModeRuntime.connect(pluginDescriptor('example.binary-reverse-cross-mode', { capabilities: ['tavern.plugin.binary-request.v0'] }));
-  await assert.rejects(reverseCrossMode.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) }), errorCode('PAYLOAD_INVALID'));
+  await assert.rejects(reverseCrossMode.host.binaryRequest.send({ version: 0, path: '/api/plugins/memory/backup/import', method: 'POST', responseMode: 'json', body: binaryBody(sqlite) }), errorCode('INVALID_PAYLOAD'));
   reverseCrossModeRuntime.dispose();
 });
 
@@ -310,6 +312,61 @@ test('production bridge keeps connected provider-only sources usable through gen
 
 });
 
+test('production bridge classifies Tavern response_format rejection without exposing the Provider body', async () => {
+  const privateMessage = 'This response_format type is unavailable now';
+  const current = {
+    mainApi: 'openai',
+    onlineStatus: 'Valid',
+    chatCompletionSettings: { chat_completion_source: 'custom', custom_model: 'deepseek-v4' },
+    generateQuietPrompt: async () => {
+      throw {
+        status: 400,
+        error: {
+          message: privateMessage,
+          type: 'invalid_request_error',
+          param: 'response_format.type',
+          code: 'unsupported_value',
+        },
+      };
+    },
+  };
+  const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => current } });
+
+  await assert.rejects(
+    bridge.hostAdapter.generation.generate({
+      prompt: 'extract',
+      quiet: true,
+      jsonSchema: { name: 'memory_extract', value: { type: 'object' }, strict: true, returnInvalid: true },
+    }),
+    (error) => error?.code === 'INVALID_PAYLOAD'
+      && error?.details?.reasonCode === 'RESPONSE_FORMAT_UNSUPPORTED'
+      && error?.details?.stage === 'host.generation.response-format'
+      && error?.details?.httpStatus === 400
+      && error?.details?.providerErrorParam === 'response_format.type'
+      && !JSON.stringify(error).includes(privateMessage),
+  );
+});
+
+test('production bridge never infers response_format support from an error message', async () => {
+  const original = new Error('This response_format type is unavailable now');
+  const current = {
+    mainApi: 'openai',
+    onlineStatus: 'Valid',
+    chatCompletionSettings: { chat_completion_source: 'custom', custom_model: 'deepseek-v4' },
+    generateQuietPrompt: async () => { throw original; },
+  };
+  const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => current } });
+
+  await assert.rejects(
+    bridge.hostAdapter.generation.generate({
+      prompt: 'extract',
+      quiet: true,
+      jsonSchema: { name: 'memory_extract', value: { type: 'object' }, strict: true, returnInvalid: true },
+    }),
+    (error) => error === original,
+  );
+});
+
 test('every retained Tavern capability has an explicit DTO adapter path', async () => {
   const calls = [];
   const worldbook = { id: 'wb', name: 'World', active: true };
@@ -341,7 +398,7 @@ test('every retained Tavern capability has an explicit DTO adapter path', async 
   assert.equal((await session.host.generation.test({ prompt: 'test' })).text, 'ok');
   await session.host.metadata.save({ key: 'value' }); await session.host.settings.save();
   assert.equal(await session.host.macros.substitute('{{x}}'), 'value'); await session.host.systemMessage.send('notice');
-  assert.throws(() => session.host.generation.generate({ prompt: () => 'invalid' }), errorCode('PAYLOAD_INVALID'));
+  assert.throws(() => session.host.generation.generate({ prompt: () => 'invalid' }), errorCode('INVALID_PAYLOAD'));
   session.dispose();
   assert.ok(calls.some((entry) => entry === 'event-cleanup'));
 });
@@ -358,9 +415,9 @@ test('HostPort grants the requested/supported intersection and maps adapter fail
   assert.deepEqual(session.host.capabilities, ['tavern.context.read', 'tavern.chat.read']);
   assert.equal(session.host.has('tavern.worldbooks.read'), false);
   assert.equal('worldbooks' in session.host, false);
-  assert.throws(() => session.host.worldbooks.list(), errorCode('CAPABILITY_NOT_GRANTED'));
+  assert.throws(() => session.host.worldbooks.list(), errorCode('FORBIDDEN'));
   assert.deepEqual(await session.host.context.read(), { chatId: 'chat-1' });
-  await assert.rejects(session.host.chat.readCurrent(), errorCode('BRIDGE_CORRUPTED'));
+  await assert.rejects(session.host.chat.readCurrent(), errorCode('INTERNAL'));
 });
 
 test('HostPort fails closed when a supported adapter is absent and cleans event listeners', async () => {
@@ -373,13 +430,25 @@ test('HostPort fails closed when a supported adapter is absent and cleans event 
   const session = runtime.connect(pluginDescriptor('example.events', { capabilities: ['tavern.chat.events', 'tavern.settings.write'] }));
   const unsubscribe = session.host.events.subscribe('chat-changed', () => {});
   assert.equal(typeof listener, 'function');
-  assert.throws(() => session.host.settings.save(), errorCode('CAPABILITY_NOT_GRANTED'));
+  assert.throws(() => session.host.settings.save(), errorCode('FORBIDDEN'));
   unsubscribe();
   assert.equal(cleanups, 1);
   session.host.events.subscribe('chat-changed', () => {});
   session.dispose();
   assert.equal(cleanups, 2);
-  assert.throws(() => session.host.events.subscribe('chat-changed', () => {}), errorCode('PLUGIN_DISPOSED'));
+  assert.throws(() => session.host.events.subscribe('chat-changed', () => {}), errorCode('STALE_SESSION'));
+});
+
+test('workspace recovery denial uses the canonical SDK diagnostic code', async () => {
+  const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
+  const session = runtime.connect(pluginDescriptor('example.workspace-denied'));
+  await assert.rejects(
+    session.workspace.admin.integrity(),
+    (error) => error?.code === 'FORBIDDEN'
+      && error?.details?.reasonCode === 'WORKSPACE_RECOVERY_DENIED'
+      && error?.details?.stage === 'workspace.admin',
+  );
+  runtime.dispose();
 });
 
 test('HostPort rejects invalid DTOs before sync or async adapters and preserves explicit callback capability', async () => {
@@ -400,12 +469,12 @@ test('HostPort rejects invalid DTOs before sync or async adapters and preserves 
   } });
   const coreEventCalls = eventCalls;
   const session = runtime.connect(pluginDescriptor('example.dto-guard', { capabilities: ALL_CAPABILITIES }));
-  assert.throws(() => session.host.generation.generate({ prompt: () => 'invalid' }), errorCode('PAYLOAD_INVALID'));
-  assert.throws(() => session.host.worldbooks.save({ id: 'wb', name: 'World', active: () => true }), errorCode('PAYLOAD_INVALID'));
+  assert.throws(() => session.host.generation.generate({ prompt: () => 'invalid' }), errorCode('INVALID_PAYLOAD'));
+  assert.throws(() => session.host.worldbooks.save({ id: 'wb', name: 'World', active: () => true }), errorCode('INVALID_PAYLOAD'));
   assert.equal(generationCalls, 0);
   assert.equal(worldbookCalls, 0);
   let callbacks = 0;
-  assert.throws(() => session.host.events.subscribe('chat-changed', () => { callbacks += 1; }), errorCode('PAYLOAD_INVALID'));
+  assert.throws(() => session.host.events.subscribe('chat-changed', () => { callbacks += 1; }), errorCode('INVALID_PAYLOAD'));
   assert.equal(eventCalls, coreEventCalls + 1);
   assert.equal(callbacks, 0);
   await session.host.generation.generate({ prompt: 'valid' });
@@ -414,8 +483,56 @@ test('HostPort rejects invalid DTOs before sync or async adapters and preserves 
   assert.equal(worldbookCalls, 1);
 });
 
+test('HostPort returns async event listener work to the SillyTavern emitter', async () => {
+  let adapterListener;
+  const runtime = installCoreRuntime(coreIdentity({ capabilities: ['tavern.chat.events'] }), new TestRealm(), { hostAdapter: {
+    events: { subscribe: (_name, listener) => { adapterListener = listener; return () => {}; } },
+  } });
+  const session = runtime.connect(pluginDescriptor('example.async-event', { capabilities: ['tavern.chat.events'] }));
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let completed = false;
+  session.host.events.subscribe('prompt-ready', async () => {
+    await gate;
+    completed = true;
+  });
+
+  const dispatch = adapterListener({ name: 'prompt-ready', chatKey: 'chat.jsonl', prompt: { messages: [], dryRun: false } });
+  await Promise.resolve();
+  assert.equal(completed, false);
+  release();
+  await dispatch;
+  assert.equal(completed, true);
+  runtime.dispose();
+});
+
+test('production SillyTavern bridge awaits prompt-ready listeners', async () => {
+  let hostCallback;
+  const context = {
+    chatId: 'chat.jsonl', chat: [],
+    eventSource: { on: (_name, callback) => { hostCallback = callback; }, off: () => {} },
+    event_types: { CHAT_COMPLETION_PROMPT_READY: 'prompt' },
+  };
+  const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => context } });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let completed = false;
+  bridge.hostAdapter.events.subscribe('prompt-ready', async () => {
+    await gate;
+    completed = true;
+  });
+
+  const dispatch = hostCallback({ chat: [], dryRun: false });
+  await Promise.resolve();
+  assert.equal(completed, false);
+  release();
+  await dispatch;
+  assert.equal(completed, true);
+});
+
 test('production bridge maps every retained SillyTavern event to a narrow DTO and detaches listeners', async () => {
   const callbacks = new Map();
+  const emit = (name, ...args) => { for (const callback of callbacks.get(name) ?? []) callback(...args); };
   const removed = [];
   const memoryVariables = [{ initialized_lorebooks: { Lore: [] }, stat_data: { 世界: { 灾变天数: 5 }, 核心储备: { 低级核心: 4 } } }];
   const context = {
@@ -423,17 +540,20 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
     selected_world_info: ['Lore'],
     chat: [
       { id: 'm1', is_user: false, name: 'Character', mes: 'answer', variables: memoryVariables },
-      { id: 'sys-1', is_system: true, mes: '历史系统正文' },
+      { id: 'hidden-user', is_user: true, name: 'User', is_system: true, mes: '隐藏用户楼层' },
+      { id: 'hidden-assistant', is_user: false, name: 'Character', is_system: true, mes: '隐藏助手楼层' },
+      { id: 'sys-1', name: 'SillyTavern System', is_system: true, mes: '历史系统正文' },
       { id: 'tool-1', role: 'tool', mes: '工具输出' },
       { id: 'tool-system-1', role: 'tool', is_system: true, mes: '系统标记的工具输出' },
       { id: 'reason-1', is_reasoning: true, mes: '隐藏推理' },
     ],
     eventSource: {
-      on(name, callback) { callbacks.set(name, callback); },
-      off(name, callback) { removed.push([name, callback]); callbacks.delete(name); },
+      on(name, callback) { const listeners = callbacks.get(name) ?? new Set(); listeners.add(callback); callbacks.set(name, listeners); },
+      off(name, callback) { removed.push([name, callback]); const listeners = callbacks.get(name); listeners?.delete(callback); if (listeners?.size === 0) callbacks.delete(name); },
     },
     event_types: {
       CHAT_CHANGED: 'chat', MESSAGE_RECEIVED: 'received', MESSAGE_SENT: 'sent', MESSAGE_EDITED: 'edited', MESSAGE_DELETED: 'deleted',
+      MESSAGE_SWIPED: 'swiped', MESSAGE_SWIPE_DELETED: 'swipe-deleted',
       GENERATION_STARTED: 'started', GENERATION_ENDED: 'ended', CHAT_COMPLETION_PROMPT_READY: 'prompt', WORLDINFO_UPDATED: 'worldbook', CHARACTER_EDITED: 'identity',
     },
     addOneMessage: async (raw) => { context.chat.push(raw); }, saveChat: async () => {}, deleteMessage: async () => {},
@@ -441,6 +561,8 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => context } });
   const mappedMessages = await bridge.hostAdapter.chat.readMessages();
   assert.deepEqual(mappedMessages.slice(1).map(({ id, role, text, messageType, visibleToAi }) => ({ id, role, text, messageType, visibleToAi })), [
+    { id: 'hidden-user', role: 'user', text: '隐藏用户楼层', messageType: undefined, visibleToAi: false },
+    { id: 'hidden-assistant', role: 'assistant', text: '隐藏助手楼层', messageType: undefined, visibleToAi: false },
     { id: 'sys-1', role: 'system', text: '历史系统正文', messageType: 'system', visibleToAi: false },
     { id: 'tool-1', role: 'assistant', text: '工具输出', messageType: 'tool', visibleToAi: false },
     { id: 'tool-system-1', role: 'assistant', text: '系统标记的工具输出', messageType: 'tool', visibleToAi: false },
@@ -453,24 +575,27 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   const runtime = installCoreRuntime(coreIdentity({ capabilities: ['tavern.chat.events'] }), realm, { hostAdapter: bridge.hostAdapter });
   const session = runtime.connect(pluginDescriptor('example.event-map', { capabilities: ['tavern.chat.events'] }));
   const received = new Map();
-  const names = ['chat-changed', 'message-received', 'message-sent', 'message-edited', 'message-deleted', 'generation-started', 'generation-ended', 'prompt-ready', 'worldbook-updated', 'identity-changed'];
+  const names = ['chat-changed', 'message-received', 'message-sent', 'message-edited', 'message-deleted', 'message-swiped', 'message-swipe-deleted', 'generation-started', 'generation-ended', 'prompt-ready', 'worldbook-updated', 'identity-changed'];
   const unsubscribes = names.map((name) => session.host.events.subscribe(name, (event) => received.set(name, event)));
 
-  callbacks.get('chat')('other.jsonl');
-  callbacks.get('received')(0, 'normal'); callbacks.get('sent')(0); callbacks.get('edited')(0); callbacks.get('deleted')(0);
-  callbacks.get('started')('normal', { usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }, signal: new AbortController().signal }, false);
-  callbacks.get('ended')(1);
-  callbacks.get('prompt')({ chat: [{ role: 'system', content: 'rules' }, { role: 'user', name: 'User', content: [{ type: 'text', text: 'hi' }] }], dryRun: true });
-  callbacks.get('worldbook')('Lore', { entries: { 7: { uid: 7, key: ['alpha'], keysecondary: ['beta'], content: 'fact', disable: false, position: 1, order: 10 } } });
-  callbacks.get('identity')({ detail: { id: 9, character: { name: 'private raw object' } } });
+  emit('chat', 'other.jsonl');
+  emit('received', 0, 'normal'); emit('sent', 0); emit('edited', 0); emit('deleted', 0);
+  emit('swiped', 0); emit('swipe-deleted', { messageId: 0, swipeId: 2, newSwipeId: 1 });
+  emit('started', 'normal', { usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }, signal: new AbortController().signal }, false);
+  emit('ended', 1);
+  emit('prompt', { chat: [{ role: 'system', content: 'rules' }, { role: 'user', name: 'User', content: [{ type: 'text', text: 'hi' }] }], dryRun: true });
+  emit('worldbook', 'Lore', { entries: { 7: { uid: 7, key: ['alpha'], keysecondary: ['beta'], content: 'fact', disable: false, position: 1, order: 10 } } });
+  emit('identity', { detail: { id: 9, character: { name: 'private raw object' } } });
 
   assert.deepEqual(received.get('chat-changed'), { name: 'chat-changed', chatKey: 'other.jsonl' });
-  assert.deepEqual(received.get('message-received'), { name: 'message-received', chatKey: 'chat.jsonl', messageId: '0', message: { id: 'm1', index: 0, role: 'assistant', name: 'Character', text: 'answer', variables: memoryVariables, author: { kind: 'assistant', displayName: 'Character' } } });
+  assert.deepEqual(received.get('message-received'), { name: 'message-received', chatKey: 'chat.jsonl', messageId: '0', message: { id: 'm1', stableId: 'm1', index: 0, role: 'assistant', name: 'Character', text: 'answer', variables: memoryVariables, author: { kind: 'assistant', displayName: 'Character' } } });
   memoryVariables[0].stat_data.世界.灾变天数 = 6;
   assert.equal(received.get('message-received').message.variables[0].stat_data.世界.灾变天数, 5);
   assert.equal(received.get('message-sent').message.text, 'answer');
   assert.equal(received.get('message-edited').messageId, '0');
-  assert.deepEqual(received.get('message-deleted'), { name: 'message-deleted', chatKey: 'chat.jsonl', messageId: '0' });
+  assert.deepEqual(received.get('message-deleted'), { name: 'message-deleted', chatKey: 'chat.jsonl', messageId: '0', remainingCount: 0 });
+  assert.equal(received.get('message-swiped').name, 'message-swiped');
+  assert.deepEqual(received.get('message-swipe-deleted'), { name: 'message-swipe-deleted', chatKey: 'chat.jsonl', messageId: 'm1', messageIndex: 0, deletedVariantId: '2', activeVariantId: '1' });
   assert.deepEqual(received.get('generation-started'), { name: 'generation-started', chatKey: 'chat.jsonl', generation: { active: true, provider: 'openai', model: 'gpt-test', usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } } });
   assert.deepEqual(received.get('generation-ended'), { name: 'generation-ended', chatKey: 'chat.jsonl', generation: { active: false, provider: 'openai', model: 'gpt-test' } });
   assert.deepEqual(received.get('prompt-ready').prompt, { messages: [{ role: 'system', content: 'rules' }, { role: 'user', name: 'User', content: [{ type: 'text', text: 'hi' }] }], dryRun: true });
@@ -487,10 +612,10 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
 
   unsubscribes[0]();
   runtime.dispose();
-  assert.equal(removed.length, names.length + 1);
-  assert.equal(new Set(removed.map(([name]) => name)).size, names.length);
+  assert.equal(callbacks.size, 0);
+  const removedAfterDispose = removed.length;
   unsubscribes[0]();
-  assert.equal(removed.length, names.length + 1);
+  assert.equal(removed.length, removedAfterDispose);
 
   const replacement = installCoreRuntime(coreIdentity({ buildId: 'event-reload', capabilities: ['tavern.chat.events'] }), realm, { hostAdapter: bridge.hostAdapter });
   const replacementSession = replacement.connect(pluginDescriptor('example.event-map-reload', { capabilities: ['tavern.chat.events'] }));
@@ -498,7 +623,46 @@ test('production bridge maps every retained SillyTavern event to a narrow DTO an
   assert.equal(callbacks.size, 1);
   replacement.dispose();
   assert.equal(callbacks.size, 0);
-  assert.equal(removed.length, names.length + 3);
+  assert.equal(removed.length, removedAfterDispose + 2);
+});
+
+test('production bridge derives deletion ranges from chat object identity and never guesses after an unreliable snapshot', () => {
+  const listeners = new Map();
+  const on = (name, callback) => { const values = listeners.get(name) ?? new Set(); values.add(callback); listeners.set(name, values); };
+  const off = (name, callback) => { const values = listeners.get(name); values?.delete(callback); if (values?.size === 0) listeners.delete(name); };
+  const emit = (name, ...args) => { for (const callback of listeners.get(name) ?? []) callback(...args); };
+  const context = {
+    chatId: 'chat.jsonl',
+    chat: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+    eventSource: { on, off },
+    event_types: {
+      CHAT_CHANGED: 'chat', MESSAGE_SENT: 'sent', MESSAGE_RECEIVED: 'received', MESSAGE_EDITED: 'edited',
+      MESSAGE_SWIPED: 'swiped', MESSAGE_DELETED: 'deleted',
+    },
+  };
+  const bridge = createSillyTavernHostBridge({ SillyTavern: { getContext: () => context } });
+  const events = [];
+  const dispose = bridge.hostAdapter.events.subscribe('message-deleted', event => events.push(event));
+
+  context.chat.splice(1, 1);
+  emit('deleted', context.chat.length);
+  assert.deepEqual(events.at(-1), { name: 'message-deleted', chatKey: 'chat.jsonl', messageId: '3', remainingCount: 3, fromIndex: 1, deletedCount: 1 });
+
+  context.chat.pop();
+  emit('deleted', context.chat.length);
+  assert.deepEqual(events.at(-1), { name: 'message-deleted', chatKey: 'chat.jsonl', messageId: '2', remainingCount: 2, fromIndex: 2, deletedCount: 1 });
+
+  context.chat.push({ id: 'e' }, { id: 'f' }, { id: 'g' });
+  emit('received', context.chat.length - 1);
+  context.chat.splice(1, 2);
+  emit('deleted', context.chat.length);
+  assert.deepEqual(events.at(-1), { name: 'message-deleted', chatKey: 'chat.jsonl', messageId: '3', remainingCount: 3, fromIndex: 1, deletedCount: 2 });
+
+  context.chat = context.chat.slice(0, -1).map(item => ({ ...item }));
+  emit('deleted', context.chat.length);
+  assert.deepEqual(events.at(-1), { name: 'message-deleted', chatKey: 'chat.jsonl', messageId: '2', remainingCount: 2 });
+  dispose();
+  assert.equal(listeners.size, 0);
 });
 
 test('HostPort rejects malformed event DTOs for every retained event name', () => {
@@ -508,6 +672,8 @@ test('HostPort rejects malformed event DTOs for every retained event name', () =
     ['message-sent', { name: 'message-sent', messageId: '1', message: { id: '1', index: 0, role: 'assistant', text: 'raw', messageType: 'bogus' } }],
     ['message-edited', { name: 'message-edited', messageId: '1', unexpected: true }],
     ['message-deleted', { name: 'message-deleted' }],
+    ['message-swiped', { name: 'message-swiped', messageId: 1 }],
+    ['message-swipe-deleted', { name: 'message-swipe-deleted', messageId: '1', messageIndex: -1, deletedVariantId: '0', activeVariantId: '0' }],
     ['generation-started', { name: 'generation-started', generation: { active: true, usage: { totalTokens: Number.POSITIVE_INFINITY } } }],
     ['generation-ended', { name: 'generation-ended', generation: { active: 'false' } }],
     ['prompt-ready', { name: 'prompt-ready', prompt: { messages: {}, dryRun: false } }],
@@ -520,8 +686,8 @@ test('HostPort rejects malformed event DTOs for every retained event name', () =
   } });
   const coreAdapterCalls = adapterCalls;
   const session = runtime.connect(pluginDescriptor('example.invalid-events', { capabilities: ['tavern.chat.events'] }));
-  for (const name of invalid.keys()) assert.throws(() => session.host.events.subscribe(name, () => assert.fail('invalid DTO reached listener')), errorCode('PAYLOAD_INVALID'));
+  for (const name of invalid.keys()) assert.throws(() => session.host.events.subscribe(name, () => assert.fail('invalid DTO reached listener')), errorCode('INVALID_PAYLOAD'));
   assert.equal(adapterCalls, coreAdapterCalls + invalid.size);
-  assert.throws(() => session.host.events.subscribe('not-retained', () => {}), errorCode('PAYLOAD_INVALID'));
+  assert.throws(() => session.host.events.subscribe('not-retained', () => {}), errorCode('INVALID_PAYLOAD'));
   assert.equal(adapterCalls, coreAdapterCalls + invalid.size);
 });

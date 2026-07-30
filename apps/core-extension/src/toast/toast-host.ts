@@ -39,7 +39,7 @@ function validateNotification(input: ToastNotification): Readonly<ToastNotificat
     || (input.title !== undefined && (typeof input.title !== 'string' || input.title.trim().length === 0 || input.title.length > 80))
     || (input.code !== undefined && (typeof input.code !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/u.test(input.code)))
     || (input.durationMs !== undefined && (!Number.isSafeInteger(input.durationMs) || (input.durationMs !== 0 && (input.durationMs < 1_500 || input.durationMs > 30_000))))) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The toast notification is invalid', { reason: 'toast_notification' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The toast notification is invalid', { reason: 'toast_notification' });
   }
   return Object.freeze({ ...input, message: input.message.trim(), ...(input.title === undefined ? {} : { title: input.title.trim() }) });
 }
@@ -59,7 +59,7 @@ export class ToastHost {
     scope.assertActive();
     const input = validateNotification(notification);
     const document = this.document;
-    if (document === undefined) throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Toast notifications require a document', { capability: 'core.ui.notification.v0' });
+    if (document === undefined) throw new SSHelperError('FORBIDDEN', 'Toast notifications require a document', { capability: 'core.ui.notification.v0' });
     if (input.code !== undefined) this.#entries.find((entry) => entry.pluginId === scope.id && entry.code === input.code)?.dismiss();
 
     const root = this.#ensureRoot(document);

@@ -2,6 +2,7 @@ import type { PlainData } from './plain-data.js';
 
 export type HostCapability =
   | 'core.ui.notification.v0'
+  | 'core.ui.chat-message-action.v0'
   | 'tavern.context.read'
   | 'tavern.identity.read'
   | 'tavern.character.read'
@@ -44,6 +45,10 @@ export interface HostMessageAuthorSnapshot {
 }
 export interface ChatMessageSnapshot {
   readonly id: string;
+  /** Stable host identity when the host provides one; absent when `id` falls back to the floor index. */
+  readonly stableId?: string | undefined;
+  /** Active host-side variant such as a SillyTavern swipe index. */
+  readonly variantId?: string | undefined;
   readonly index: number;
   readonly role: 'system' | 'user' | 'assistant';
   readonly name?: string | undefined;
@@ -67,19 +72,25 @@ export interface GenerationSnapshot { readonly active: boolean; readonly provide
 export interface GenerationJsonSchema { readonly name: string; readonly value: Readonly<Record<string, PlainData>>; readonly description?: string | undefined; readonly strict?: boolean; readonly returnInvalid?: boolean; }
 export interface GenerationRequest { readonly prompt: string; readonly model?: string | undefined; readonly quiet?: boolean; readonly contextMode?: 'chat' | 'isolated' | undefined; readonly jsonSchema?: GenerationJsonSchema | undefined; }
 export interface GenerationResult { readonly text: string; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
-export type HostEventName = 'chat-changed' | 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted' | 'generation-started' | 'generation-ended' | 'generation-config-changed' | 'prompt-ready' | 'worldbook-updated' | 'identity-changed';
+export type HostEventName = 'chat-changed' | 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted' | 'message-swiped' | 'message-swipe-deleted' | 'generation-started' | 'generation-ended' | 'generation-config-changed' | 'prompt-ready' | 'prompt-finalized' | 'worldbook-updated' | 'identity-changed';
 export interface PromptMessageSnapshot { readonly role?: string | undefined; readonly name?: string | undefined; readonly content?: PlainData; }
 export interface PromptSnapshot { readonly messages: readonly PromptMessageSnapshot[]; readonly dryRun: boolean; }
+export type FinalPromptSnapshot =
+  | { readonly kind: 'chat'; readonly messages: readonly PromptMessageSnapshot[] }
+  | { readonly kind: 'text'; readonly prompt: string };
 export interface HostEventMap {
   readonly 'chat-changed': { readonly name: 'chat-changed'; readonly chatKey: string };
   readonly 'message-received': { readonly name: 'message-received'; readonly chatKey?: string | undefined; readonly messageId: string; readonly message?: ChatMessageSnapshot };
   readonly 'message-sent': { readonly name: 'message-sent'; readonly chatKey?: string | undefined; readonly messageId: string; readonly message?: ChatMessageSnapshot };
   readonly 'message-edited': { readonly name: 'message-edited'; readonly chatKey?: string | undefined; readonly messageId: string; readonly message?: ChatMessageSnapshot };
-  readonly 'message-deleted': { readonly name: 'message-deleted'; readonly chatKey?: string | undefined; readonly messageId: string };
+  readonly 'message-deleted': { readonly name: 'message-deleted'; readonly chatKey?: string | undefined; readonly messageId: string; readonly remainingCount?: number | undefined; readonly fromIndex?: number | undefined; readonly deletedCount?: number | undefined };
+  readonly 'message-swiped': { readonly name: 'message-swiped'; readonly chatKey?: string | undefined; readonly messageId: string; readonly message?: ChatMessageSnapshot };
+  readonly 'message-swipe-deleted': { readonly name: 'message-swipe-deleted'; readonly chatKey?: string | undefined; readonly messageId: string; readonly messageIndex: number; readonly deletedVariantId: string; readonly activeVariantId: string };
   readonly 'generation-started': { readonly name: 'generation-started'; readonly chatKey?: string | undefined; readonly generation: GenerationSnapshot };
   readonly 'generation-ended': { readonly name: 'generation-ended'; readonly chatKey?: string | undefined; readonly generation: GenerationSnapshot };
   readonly 'generation-config-changed': { readonly name: 'generation-config-changed'; readonly generation: GenerationSnapshot };
   readonly 'prompt-ready': { readonly name: 'prompt-ready'; readonly chatKey?: string | undefined; readonly prompt: PromptSnapshot };
+  readonly 'prompt-finalized': { readonly name: 'prompt-finalized'; readonly chatKey?: string | undefined; readonly prompt: FinalPromptSnapshot };
   readonly 'worldbook-updated': { readonly name: 'worldbook-updated'; readonly worldbook: WorldbookSnapshot };
   readonly 'identity-changed': { readonly name: 'identity-changed'; readonly identity: HostIdentitySnapshot };
 }
@@ -88,6 +99,7 @@ export interface PromptContribution { readonly id: string; readonly content: str
 export type PluginRequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export interface PluginApiRequest { readonly path: `/${string}`; readonly method?: PluginRequestMethod; readonly query?: Readonly<Record<string, string | number | boolean>>; readonly body?: PlainData; }
 export interface PluginApiResponse { readonly status: number; readonly ok: boolean; readonly body?: PlainData; }
+export interface PluginRequestOptions { readonly signal?: AbortSignal; }
 export const PLUGIN_BINARY_CONTENT_TYPE = 'application/vnd.sqlite3' as const;
 export const PLUGIN_BINARY_MAX_BYTES = 64 * 1024 * 1024;
 export interface PluginBinaryBodyV0 {
@@ -209,11 +221,11 @@ export type HostPort<G extends HostCapability = HostCapability> = HostPortBase<G
   & GrantedSurface<G, 'tavern.character.read', 'character', { read(): Promise<HostCharacterSnapshot | null> }>
   & GrantedSurface<G, 'tavern.persona.read', 'persona', { read(): Promise<HostPersonaSnapshot | null> }>
   & HostChatPort<G>
-  & GrantedSurface<G, 'tavern.chat.events', 'events', { subscribe<Name extends HostEventName>(name: Name, listener: (event: HostEventMap[Name]) => void): () => void }>
+  & GrantedSurface<G, 'tavern.chat.events', 'events', { subscribe<Name extends HostEventName>(name: Name, listener: (event: HostEventMap[Name]) => void | Promise<void>): () => void }>
   & HostWorldbooksPort<G>
   & HostGenerationPort<G>
   & GrantedSurface<G, 'tavern.prompt.contribute', 'prompt', { set(contribution: PromptContribution): Promise<void>; remove(id: string): Promise<void> }>
-  & GrantedSurface<G, 'tavern.plugin.request', 'request', { send(request: PluginApiRequest): Promise<PluginApiResponse> }>
+  & GrantedSurface<G, 'tavern.plugin.request', 'request', { send(request: PluginApiRequest, options?: PluginRequestOptions): Promise<PluginApiResponse> }>
   & GrantedSurface<G, 'tavern.plugin.binary-request.v0', 'binaryRequest', { send<Mode extends PluginBinaryResponseModeV0>(request: PluginBinaryRequestV0<Mode>, options?: PluginBinaryRequestOptions): Promise<PluginBinaryResponseForModeV0<Mode>> }>
   & GrantedSurface<G, 'tavern.metadata.write', 'metadata', { save(values: Readonly<Record<string, string>>): Promise<void> }>
   & GrantedSurface<G, 'tavern.settings.write', 'settings', { save(): Promise<void> }>

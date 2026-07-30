@@ -1,14 +1,92 @@
-# Settings schema and popup rules
+# 设置生命周期与状态通道规范
 
-Core renders supported ordinary schema field kinds through one settings host.
-Each field supplies its label/description, value contract, validation and
-disabled/degraded semantics; adapters own persistence and reload behavior.
-Validation or adapter failures surface an accessible degraded state without
-breaking unrelated plugins. The host maintains a plugin list with version,
-health, compatibility, and capability information.
+SS-Helper Core 通过 `registerSettings` 渲染插件提供的声明式设置。Schema 只描述 UI；设置值、持久化、动态状态和字段可用性由插件适配器提供。
 
-Schema UI must preserve labels, descriptions, keyboard/focus behavior, and
-accessible error reporting. Plugins may not create old standalone settings
-roots or direct settings mounts. A specialized workbench belongs in the
-Core-owned popup/dialog flow registered by the plugin; popup lifetime is tied
-to its plugin session and Core cleanup.
+## 一、四条独立状态通道
+
+设置中心必须分别管理以下通道，禁止把任意通道失败统一显示为“保存失败”。
+
+| 通道 | Adapter API | 作用 | 失败时的 UI 语义 |
+|---|---|---|---|
+| 设置值 | `load`、`subscribe` | 当前权威配置值 | “设置读取失败，正在等待恢复” |
+| 持久化 | `save`、`reset` | 将用户修改提交到存储和运行时 | 仅该通道失败时显示“保存失败，请检查设置” |
+| 动态状态 | `loadStatus`、`subscribeStatus` | 模型、数据库、连接等只读状态 | “部分状态暂不可用，设置仍可保存” |
+| 字段状态 | `loadFieldState`、`subscribeFieldState` | 动态禁用与禁用原因 | “部分状态暂不可用，设置仍可保存” |
+
+聚合健康状态可以是 `healthy` 或 `degraded`，但底部保存状态必须只由持久化通道决定。动态状态或字段状态失败不得回滚设置值，也不得阻止原本可执行的保存。
+
+## 二、权威值与最后成功值
+
+1. `load()` 返回当前权威设置快照，必须幂等且不产生写操作。
+2. `subscribe(listener)` 用于推送存储恢复、外部修改或插件热重连后的权威快照。
+3. Core 保存最后一次成功提交的 `committedValues`。保存失败时 UI 回滚到该快照，而不是默认值或尚未提交的输入。
+4. 一个有效的订阅快照可以恢复设置读取通道，但不能证明先前失败的写操作已经提交，因此不能清除持久化错误。
+5. 一个成功的保存只能清除持久化错误，不能掩盖仍然存在的状态或字段状态错误。
+
+## 三、并发与新旧结果顺序
+
+所有异步结果必须带有逻辑 revision：
+
+- 较新的订阅快照已经生效后，较旧的 `load()` 成功或失败结果必须丢弃。
+- 较新的保存请求发起后，较旧保存结果不得覆盖当前值。
+- 外部权威快照在延迟保存期间到达时，以外部快照为准。
+- 插件卸载、Core generation 替换或会话关闭后，晚到结果不得更新 UI。
+
+## 四、启动期重试
+
+浏览器扩展、Core 与服务器插件并非同时完成初始化，因此启动失败默认视为可能暂态：
+
+- Core 对设置值、动态状态、字段状态及三类订阅使用短时、有界退避；
+- 重试必须单飞，插件卸载时清除定时器；
+- 服务器或 Workspace 初始化 Promise 若失败，必须清除缓存，允许下一次调用重新初始化；
+- LLM 与 Memory 浏览器入口使用有界自动启动重试，手动 `stop()` 必须取消旧重试，防止插件被意外复活；
+- 超过重试上限后保持安全降级，不进行无限轮询。
+
+当前 Core 设置启动重试间隔为 `120ms → 400ms → 1200ms`；扩展入口自动启动重试为 `立即 → 500ms → 1500ms → 4000ms`。
+
+## 五、订阅契约
+
+- 订阅注册应同步返回清理函数。
+- 适配器已经就绪时，应尽快推送一次当前快照。
+- 适配器尚未就绪时，可先注册监听；完成初始化后必须推送权威快照。
+- 订阅回调异常不能破坏存储提交或其他插件。
+- 重复快照必须允许，消费者不得依赖“仅发送一次”。
+- 所有清理函数必须幂等。
+
+## 六、存储与运行时一致性
+
+需要同时更新持久化数据和运行时路由的插件必须采用 prepare/commit 模式：
+
+1. 根据候选设置准备新的运行时资源；
+2. 持久化事务成功后再 `commit()`；
+3. 持久化失败时 `dispose()` 候选运行时；
+4. 启动读取持久化配置失败时进行有界重试；
+5. UI 恢复后必须保证实际运行时也应用同一份配置，禁止出现“界面显示已恢复、运行时仍使用默认值”。
+
+## 七、错误表达
+
+- 仅真实 `save` 或 `reset` 失败使用持久化错误样式。
+- 设置读取失败、状态失败、字段状态失败必须使用不同的内部错误码。
+- 私密配置值和 Secret 字段不得进入诊断、Toast 或状态描述。
+- 内部 RPC 的业务错误由 JSON `ok/error` 表达；预期的 `WORKSPACE_NOT_FOUND` 不应制造误导性的浏览器资源 404。
+
+## 八、插件接入要求
+
+- Schema 在注册前由 Core 校验，字段 ID 必须全局唯一。
+- 插件不得自行挂载全局设置根节点，也不得绕过 Core 保存队列。
+- `loadStatus` 与 `loadFieldState` 必须只返回 Schema 已声明的字段。
+- `save`、`reset` 必须拒绝未完成的写入，不能先通知成功再异步落盘。
+- 设置订阅必须推送脱敏后的可序列化 PlainData。
+- 专用工作台应通过 Core 管理的 popup/dialog 注册，生命周期跟随插件 Session。
+
+## 九、发布门禁
+
+每次修改设置机制至少验证：
+
+1. 设置值读取失败不会显示为保存失败；
+2. 动态状态失败时设置仍可保存；
+3. 真正保存失败不会被无关订阅误清除；
+4. 较旧异步失败不会覆盖较新快照；
+5. 首次 Workspace 初始化失败后可以重试；
+6. 初始化恢复后会广播权威快照；
+7. Core replacement、插件卸载和手动停止后无残留定时器或晚到写入。

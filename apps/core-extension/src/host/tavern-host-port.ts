@@ -17,6 +17,7 @@ import {
   type HostPort,
   type PluginApiRequest,
   type PluginApiResponse,
+  type PluginRequestOptions,
   type PluginBinaryBodyV0,
   type PluginBinaryRequestOptions,
   type PluginBinaryRequestV0,
@@ -37,7 +38,7 @@ export interface TavernHostAdapter {
   readonly character?: { read(): Promise<HostCharacterSnapshot | null> };
   readonly persona?: { read(): Promise<HostPersonaSnapshot | null> };
   readonly chat?: { readCurrent(): Promise<ChatSnapshot | null>; readMessages(): Promise<readonly ChatMessageSnapshot[]>; list(): Promise<readonly ChatSnapshot[]>; append(message: ChatMessageInput): Promise<ChatMessageSnapshot>; edit(messageId: string, message: ChatMessageInput): Promise<ChatMessageSnapshot>; delete(messageId: string): Promise<void>; navigate(target: ChatNavigationTarget): Promise<void> };
-  readonly events?: { subscribe(name: HostEventName, listener: (event: HostEvent) => void): () => void };
+  readonly events?: { subscribe(name: HostEventName, listener: (event: HostEvent) => void | Promise<void>): () => void };
   readonly worldbooks?: {
     list(): Promise<readonly WorldbookSnapshot[]>;
     load(id: string): Promise<WorldbookSnapshot | null>;
@@ -54,7 +55,7 @@ export interface TavernHostAdapter {
     test(request: GenerationRequest): Promise<GenerationResult>;
   };
   readonly prompt?: { set(contribution: PromptContribution): Promise<void>; remove(id: string): Promise<void> };
-  readonly request?: { send(request: PluginApiRequest): Promise<PluginApiResponse> };
+  readonly request?: { send(request: PluginApiRequest, options?: PluginRequestOptions): Promise<PluginApiResponse> };
   readonly binaryRequest?: { send(request: PluginBinaryRequestV0, options: { readonly signal: AbortSignal }): Promise<PluginBinaryResponseV0> };
   readonly metadata?: { save(values: Readonly<Record<string, string>>): Promise<void> };
   readonly settings?: { save(): Promise<void> };
@@ -63,7 +64,7 @@ export interface TavernHostAdapter {
 }
 
 function unavailable(capability: HostCapability): never {
-  throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'The Tavern capability is unavailable', { capability });
+  throw new SSHelperError('FORBIDDEN', 'The Tavern capability is unavailable', { capability });
 }
 
 function requireAdapter<T>(value: T | undefined, capability: HostCapability): T {
@@ -82,13 +83,13 @@ function guarded<TArgs extends readonly unknown[], TResult>(scope: SessionScope,
           return value;
         }).catch((error: unknown) => {
           if (error instanceof SSHelperError) throw error;
-          throw new SSHelperError('BRIDGE_CORRUPTED', 'The Tavern host adapter failed', { reason: 'host_adapter' });
+          throw new SSHelperError('INTERNAL', 'The Tavern host adapter failed', { reason: 'host_adapter' });
         }) as TResult;
       }
       return result;
     } catch (error) {
       if (error instanceof SSHelperError) throw error;
-      throw new SSHelperError('BRIDGE_CORRUPTED', 'The Tavern host adapter failed', { reason: 'host_adapter' });
+      throw new SSHelperError('INTERNAL', 'The Tavern host adapter failed', { reason: 'host_adapter' });
     }
   };
 }
@@ -102,7 +103,7 @@ const binaryHash = async (body: PluginBinaryBodyV0): Promise<string> => {
 
 const assertBinaryHash = async (body: PluginBinaryBodyV0 | undefined, phase: 'host_input' | 'host_output'): Promise<void> => {
   if (body !== undefined && await binaryHash(body) !== body.sha256) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The binary payload hash does not match its bytes', { phase, reason: 'sha256_mismatch' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The binary payload hash does not match its bytes', { phase, reason: 'sha256_mismatch' });
   }
 };
 
@@ -110,6 +111,28 @@ const isAbortSignal = (value: unknown): value is AbortSignal => typeof value ===
   && typeof (value as AbortSignal).aborted === 'boolean'
   && typeof (value as AbortSignal).addEventListener === 'function'
   && typeof (value as AbortSignal).removeEventListener === 'function';
+
+async function sendPluginRequest(
+  scope: SessionScope,
+  adapter: TavernHostAdapter,
+  request: PluginApiRequest,
+  options: PluginRequestOptions = {},
+): Promise<PluginApiResponse> {
+  scope.assertActive();
+  assertPayload(request, undefined, 'host_input');
+  if (Object.keys(options).some((key) => key !== 'signal')
+    || (options.signal !== undefined && !isAbortSignal(options.signal))) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'The plugin request controls are invalid', { phase: 'host_input' });
+  }
+  try {
+    const response = await requireAdapter(adapter.request, 'tavern.plugin.request').send(request, options);
+    assertPayload(response, undefined, 'host_output');
+    return response;
+  } catch (error) {
+    if (error instanceof SSHelperError) throw error;
+    throw new SSHelperError('INTERNAL', 'The Tavern host adapter failed', { reason: 'host_adapter' });
+  }
+}
 
 function sendBinaryRequest<Mode extends PluginBinaryResponseModeV0>(
   scope: SessionScope,
@@ -123,7 +146,7 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV0>(
   if (optionKeys.some((key) => key !== 'timeoutMs' && key !== 'signal')
     || (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 120_000))
     || (options.signal !== undefined && !isAbortSignal(options.signal))) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The binary request controls are invalid', { phase: 'host_input' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The binary request controls are invalid', { phase: 'host_input' });
   }
   const timeoutMs = options.timeoutMs ?? 30_000;
   return new Promise<PluginBinaryResponseForModeV0<Mode>>((resolve, reject) => {
@@ -133,7 +156,7 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV0>(
     let removeScopeCleanup = (): void => {};
     const onExternalAbort = (): void => {
       controller.abort();
-      finish(new SSHelperError('CALL_ABORTED', 'The binary plugin request was aborted'));
+      finish(new SSHelperError('ABORTED', 'The binary plugin request was aborted'));
     };
     const finish = (error?: unknown, value?: PluginBinaryResponseForModeV0<Mode>): void => {
       if (settled) return;
@@ -145,13 +168,13 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV0>(
     };
     removeScopeCleanup = scope.addCleanup(() => {
       controller.abort();
-      finish(new SSHelperError('PLUGIN_DISPOSED', 'The calling plugin was disposed'));
+      finish(new SSHelperError('STALE_SESSION', 'The calling plugin was disposed'));
     });
     if (options.signal?.aborted === true) onExternalAbort();
     else options.signal?.addEventListener('abort', onExternalAbort, { once: true });
     if (!settled) timer = setTimeout(() => {
       controller.abort();
-      finish(new SSHelperError('CALL_TIMEOUT', 'The binary plugin request timed out'));
+      finish(new SSHelperError('TIMEOUT', 'The binary plugin request timed out'));
     }, timeoutMs);
     void (async () => {
       try {
@@ -159,14 +182,14 @@ function sendBinaryRequest<Mode extends PluginBinaryResponseModeV0>(
         const response = await requireAdapter(adapter.binaryRequest, 'tavern.plugin.binary-request.v0').send(request, { signal: controller.signal });
         assertPayload(response, isPluginBinaryResponseV0, 'host_output');
         if (response.mode !== request.responseMode) {
-          throw new SSHelperError('PAYLOAD_INVALID', 'The binary request response mode does not match the request', { phase: 'host_output', reason: 'response_mode_mismatch' });
+          throw new SSHelperError('INVALID_PAYLOAD', 'The binary request response mode does not match the request', { phase: 'host_output', reason: 'response_mode_mismatch' });
         }
         if (response.mode === 'binary') await assertBinaryHash(response, 'host_output');
         scope.assertActive();
         finish(undefined, response as PluginBinaryResponseForModeV0<Mode>);
       } catch (error) {
         if (settled) return;
-        finish(error instanceof SSHelperError ? error : new SSHelperError('BRIDGE_CORRUPTED', 'The Tavern binary request adapter failed', { reason: 'host_adapter' }));
+        finish(error instanceof SSHelperError ? error : new SSHelperError('INTERNAL', 'The Tavern binary request adapter failed', { reason: 'host_adapter' }));
       }
     })();
   });
@@ -176,28 +199,28 @@ function subscribeToChatEvents(
   scope: SessionScope,
   adapter: TavernHostAdapter,
   name: HostEventName,
-  listener: (event: HostEvent) => void,
+  listener: (event: HostEvent) => void | Promise<void>,
 ): () => void {
   scope.assertActive();
   if (!HOST_EVENT_NAMES.has(name) || typeof listener !== 'function') {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The Tavern event subscription is invalid', { phase: 'host_input' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The Tavern event subscription is invalid', { phase: 'host_input' });
   }
   try {
     const cleanup = requireAdapter(adapter.events, 'tavern.chat.events').subscribe(name, (event) => {
       assertPayload(event, (value) => isHostEvent(name, value), 'host_output');
-      listener(event);
+      return listener(event);
     });
-    if (typeof cleanup !== 'function') throw new SSHelperError('BRIDGE_CORRUPTED', 'The Tavern host adapter returned an invalid cleanup', { reason: 'host_adapter' });
+    if (typeof cleanup !== 'function') throw new SSHelperError('INTERNAL', 'The Tavern host adapter returned an invalid cleanup', { reason: 'host_adapter' });
     return scope.addCleanup(cleanup);
   } catch (error) {
     if (error instanceof SSHelperError) throw error;
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The Tavern host adapter failed', { reason: 'host_adapter' });
+    throw new SSHelperError('INTERNAL', 'The Tavern host adapter failed', { reason: 'host_adapter' });
   }
 }
 
 const HOST_EVENT_NAMES = new Set<HostEventName>([
-  'chat-changed', 'message-received', 'message-sent', 'message-edited', 'message-deleted',
-  'generation-started', 'generation-ended', 'generation-config-changed', 'prompt-ready', 'worldbook-updated', 'identity-changed',
+  'chat-changed', 'message-received', 'message-sent', 'message-edited', 'message-deleted', 'message-swiped', 'message-swipe-deleted',
+  'generation-started', 'generation-ended', 'generation-config-changed', 'prompt-ready', 'prompt-finalized', 'worldbook-updated', 'identity-changed',
 ]);
 
 const exactKeys = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean => {
@@ -217,9 +240,10 @@ const isMessage = (value: unknown): boolean => {
       && exactKeys(author, ['kind'], ['displayName', 'avatar', 'originalAvatar'])
       && ['user', 'assistant', 'narrator', 'system'].includes(author.kind as string)
       && optionalString(author.displayName) && optionalString(author.avatar) && optionalString(author.originalAvatar)));
-  return item !== undefined && exactKeys(item, ['id', 'index', 'role', 'text'], ['name', 'createdAt', 'variables', 'messageType', 'visibleToAi', 'author'])
+  return item !== undefined && exactKeys(item, ['id', 'index', 'role', 'text'], ['stableId', 'variantId', 'name', 'createdAt', 'variables', 'messageType', 'visibleToAi', 'author'])
     && typeof item.id === 'string' && Number.isSafeInteger(item.index) && (item.index as number) >= 0
     && (item.role === 'system' || item.role === 'user' || item.role === 'assistant') && typeof item.text === 'string'
+    && optionalString(item.stableId) && optionalString(item.variantId)
     && optionalString(item.name) && optionalString(item.createdAt) && isVariables(item.variables)
     && (item.messageType === undefined || ['conversation', 'system', 'narrator', 'tool', 'reasoning'].includes(item.messageType as string))
     && optionalBoolean(item.visibleToAi) && validAuthor;
@@ -238,6 +262,18 @@ const isPrompt = (value: unknown): boolean => {
   return item.messages.every((entry) => {
     const message = object(entry);
     return message !== undefined && exactKeys(message, [], ['role', 'name', 'content']) && optionalString(message.role) && optionalString(message.name);
+  });
+};
+const isFinalPrompt = (value: unknown): boolean => {
+  const item = object(value);
+  if (item === undefined || typeof item.kind !== 'string') return false;
+  if (item.kind === 'text') return exactKeys(item, ['kind', 'prompt']) && typeof item.prompt === 'string';
+  if (item.kind !== 'chat' || !exactKeys(item, ['kind', 'messages']) || !Array.isArray(item.messages)) return false;
+  return item.messages.every((entry) => {
+    const message = object(entry);
+    return message !== undefined && exactKeys(message, [], ['role', 'name', 'content'])
+      && optionalString(message.role) && optionalString(message.name)
+      && (message.content === undefined || isPlainData(message.content));
   });
 };
 const isWorldbook = (value: unknown): boolean => {
@@ -265,10 +301,22 @@ function isHostEvent(expectedName: HostEventName, value: unknown): boolean {
   if (expectedName === 'message-received' || expectedName === 'message-sent' || expectedName === 'message-edited') {
     return exactKeys(event, ['name', 'messageId'], ['chatKey', 'message']) && typeof event.messageId === 'string' && optionalString(event.chatKey) && (event.message === undefined || isMessage(event.message));
   }
-  if (expectedName === 'message-deleted') return exactKeys(event, ['name', 'messageId'], ['chatKey']) && typeof event.messageId === 'string' && optionalString(event.chatKey);
+  if (expectedName === 'message-deleted') return exactKeys(event, ['name', 'messageId'], ['chatKey', 'remainingCount', 'fromIndex', 'deletedCount'])
+    && typeof event.messageId === 'string' && optionalString(event.chatKey)
+    && (event.remainingCount === undefined || (typeof event.remainingCount === 'number' && Number.isSafeInteger(event.remainingCount) && event.remainingCount >= 0))
+    && (event.fromIndex === undefined || (typeof event.fromIndex === 'number' && Number.isSafeInteger(event.fromIndex) && event.fromIndex >= 0))
+    && (event.deletedCount === undefined || (typeof event.deletedCount === 'number' && Number.isSafeInteger(event.deletedCount) && event.deletedCount > 0))
+    && ((event.fromIndex === undefined) === (event.deletedCount === undefined));
+  if (expectedName === 'message-swiped') return exactKeys(event, ['name', 'messageId'], ['chatKey', 'message'])
+    && typeof event.messageId === 'string' && optionalString(event.chatKey) && (event.message === undefined || isMessage(event.message));
+  if (expectedName === 'message-swipe-deleted') return exactKeys(event, ['name', 'messageId', 'messageIndex', 'deletedVariantId', 'activeVariantId'], ['chatKey'])
+    && typeof event.messageId === 'string' && optionalString(event.chatKey)
+    && typeof event.messageIndex === 'number' && Number.isSafeInteger(event.messageIndex) && event.messageIndex >= 0
+    && typeof event.deletedVariantId === 'string' && typeof event.activeVariantId === 'string';
   if (expectedName === 'generation-started' || expectedName === 'generation-ended') return exactKeys(event, ['name', 'generation'], ['chatKey']) && optionalString(event.chatKey) && isGeneration(event.generation);
   if (expectedName === 'generation-config-changed') return exactKeys(event, ['name', 'generation']) && isGeneration(event.generation);
   if (expectedName === 'prompt-ready') return exactKeys(event, ['name', 'prompt'], ['chatKey']) && optionalString(event.chatKey) && isPrompt(event.prompt);
+  if (expectedName === 'prompt-finalized') return exactKeys(event, ['name', 'prompt'], ['chatKey']) && optionalString(event.chatKey) && isFinalPrompt(event.prompt);
   if (expectedName === 'worldbook-updated') return exactKeys(event, ['name', 'worldbook']) && isWorldbook(event.worldbook);
   return exactKeys(event, ['name', 'identity']) && isIdentity(event.identity);
 }
@@ -310,7 +358,7 @@ export function createTavernHostPort<Granted extends HostCapability>(scope: Sess
     if (has('tavern.chat.navigate')) chat.navigate = guarded(scope, (target: ChatNavigationTarget) => requireAdapter(adapter.chat, 'tavern.chat.navigate').navigate(target));
     port.chat = Object.freeze(new Proxy(chat, { get: (target, property, receiver) => Reflect.has(target, property) ? Reflect.get(target, property, receiver) : () => unavailable('tavern.chat.list') }));
   }
-  if (has('tavern.chat.events')) port.events = { subscribe: (name: HostEventName, listener: (event: HostEvent) => void) => subscribeToChatEvents(scope, adapter, name, listener) };
+  if (has('tavern.chat.events')) port.events = { subscribe: (name: HostEventName, listener: (event: HostEvent) => void | Promise<void>) => subscribeToChatEvents(scope, adapter, name, listener) };
   if (has('tavern.worldbooks.read') || has('tavern.worldbooks.write')) {
     const worldbooks: Record<string, unknown> = {};
     if (has('tavern.worldbooks.read')) {
@@ -339,7 +387,7 @@ export function createTavernHostPort<Granted extends HostCapability>(scope: Sess
     port.generation = Object.freeze(new Proxy(generation, { get: (target, property, receiver) => Reflect.has(target, property) ? Reflect.get(target, property, receiver) : () => unavailable(has('tavern.generation.read') ? 'tavern.generation.execute' : 'tavern.generation.read') }));
   }
   if (has('tavern.prompt.contribute')) port.prompt = { set: guarded(scope, (value: PromptContribution) => requireAdapter(adapter.prompt, 'tavern.prompt.contribute').set(value)), remove: guarded(scope, (id: string) => requireAdapter(adapter.prompt, 'tavern.prompt.contribute').remove(id)) };
-  if (has('tavern.plugin.request')) port.request = { send: guarded(scope, (request: PluginApiRequest) => requireAdapter(adapter.request, 'tavern.plugin.request').send(request)) };
+  if (has('tavern.plugin.request')) port.request = { send: (request: PluginApiRequest, options?: PluginRequestOptions) => sendPluginRequest(scope, adapter, request, options) };
   if (has('tavern.plugin.binary-request.v0')) port.binaryRequest = { send: (request: PluginBinaryRequestV0, options?: PluginBinaryRequestOptions) => sendBinaryRequest(scope, adapter, request, options) };
   if (has('tavern.metadata.write')) port.metadata = { save: guarded(scope, (values: Readonly<Record<string, string>>) => requireAdapter(adapter.metadata, 'tavern.metadata.write').save(values)) };
   if (has('tavern.settings.write')) port.settings = { save: guarded(scope, () => requireAdapter(adapter.settings, 'tavern.settings.write').save()) };

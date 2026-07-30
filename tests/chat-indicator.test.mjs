@@ -93,9 +93,9 @@ test('chat indicator registrations validate metadata, isolate provider failures 
     const realm = new TestRealm();
     const runtime = installCoreRuntime(coreIdentity(), realm, { document });
     const broken = runtime.connect(pluginDescriptor('example.broken'));
-    assert.throws(() => broken.registerChatIndicator({ label: '', icon: 'brain', resolve: () => [] }), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => broken.registerChatIndicator({ label: '', icon: 'brain', resolve: () => [] }), errorCode('INVALID_PAYLOAD'));
     broken.registerChatIndicator({ label: 'Broken', icon: 'triangle-exclamation', resolve: () => { throw new Error('private'); } });
-    assert.throws(() => broken.registerChatIndicator({ label: 'Again', icon: 'circle', resolve: () => [] }), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => broken.registerChatIndicator({ label: 'Again', icon: 'circle', resolve: () => [] }), errorCode('INVALID_PAYLOAD'));
     await runtime.chatIndicators.refresh();
     assert.equal(row.querySelector('[data-ss-helper-chat-indicators="true"]'), null);
     assert.equal(runtime.diagnosticsStore.snapshot().events.at(-1).code, 'CHAT_INDICATOR_PROVIDER_FAILED');

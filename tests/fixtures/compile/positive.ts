@@ -10,24 +10,22 @@ import {
   MEMORY_RECALL_V0,
   MEMORY_UPDATED_V0,
   type CoreDescriptor,
-  type EventPort,
+  type BusPort,
   type HostPort,
   type ChatMessageInput,
   type LlmCompletionRequest,
   type MemoryRecallRequest,
   type PluginDescriptor,
   type PluginSession,
-  type ServicePort,
   type SettingsSchema,
   type VersionAxes,
 } from '@ss-helper/sdk';
 import { CORE_PLUGIN_ID } from '@ss-helper/sdk/contracts/core';
-import type { EventContract } from '@ss-helper/sdk/contracts/events';
+import type { BusEventContract, RequestContract } from '@ss-helper/sdk/contracts/bus';
 import type { HostCapability } from '@ss-helper/sdk/contracts/host';
 import type { LlmCompletionResponse } from '@ss-helper/sdk/contracts/llm';
 import type { MemoryRecallResponse } from '@ss-helper/sdk/contracts/memory';
 import type { SessionCloseInfo } from '@ss-helper/sdk/contracts/plugin';
-import type { ServiceContract } from '@ss-helper/sdk/contracts/services';
 import type { SettingsAdapter } from '@ss-helper/sdk/contracts/settings';
 import type { PopupRegistration, PopupToken, PopupUiContext } from '@ss-helper/sdk/contracts/ui';
 import { SSHelperError } from '@ss-helper/sdk/errors';
@@ -56,8 +54,7 @@ const popup: PopupToken<{ readonly tab: string }> = { kind: 'popup', provider: '
 const legacyPopupRegistration: PopupRegistration<{ readonly tab: string }> = { token: popup, title: 'Legacy', render: (container, input) => { container.dataset.tab = input.tab; } };
 const enhancedPopupRegistration: PopupRegistration<{ readonly tab: string }> = { token: popup, title: 'Enhanced', closeLabel: 'Close enhanced', render: (container, input, ui?: PopupUiContext) => { container.dataset.tab = input.tab; ui?.refreshControls(container); } };
 
-declare const services: ServicePort;
-declare const events: EventPort;
+declare const bus: BusPort;
 declare const host: HostPort<'tavern.chat.read'>;
 declare const combinedHost: HostPort<
   'tavern.chat.read' | 'tavern.chat.list' | 'tavern.generation.read' | 'tavern.generation.execute'
@@ -74,13 +71,13 @@ const recall: MemoryRecallRequest = {
   viewpointOwnerId: 'owner:actor:a',
   mode: 'multi_actor',
 };
-services.call(LLM_COMPLETION_V0, request);
-services.call(LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } });
-services.call(LLM_EMBEDDING_V0, { input: ['hello'] });
-services.call(LLM_RERANK_V0, { query: 'hello', documents: [{ id: '1', text: 'world' }] });
-services.call(MEMORY_RECALL_V0, recall);
-events.publish(LLM_ROUTE_CHANGED_V0, { route: 'primary', reason: 'configured' });
-events.publish(MEMORY_UPDATED_V0, { chatKey: 'chat:1', operation: 'updated', recordIds: ['r1'] });
+bus.request(LLM_COMPLETION_V0, request);
+bus.request(LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object' } });
+bus.request(LLM_EMBEDDING_V0, { input: ['hello'] });
+bus.request(LLM_RERANK_V0, { query: 'hello', documents: [{ id: '1', text: 'world' }] });
+bus.request(MEMORY_RECALL_V0, recall);
+bus.publish(LLM_ROUTE_CHANGED_V0, { route: 'primary', reason: 'configured' });
+bus.publish(MEMORY_UPDATED_V0, { chatKey: 'chat:1', operation: 'updated', recordIds: ['r1'] });
 host.chat.readCurrent();
 combinedHost.chat.readCurrent();
 combinedHost.chat.list();
@@ -96,7 +93,7 @@ acknowledgement.body.data;
 session.registerSettings(settings, adapter);
 session.registerPopup(legacyPopupRegistration);
 session.registerPopup(enhancedPopupRegistration);
-session.registerExtensionMenuItem?.({
+session.registerExtensionMenuItem({
   id: 'open-tool',
   label: '打开工具',
   icon: 'wrench',
@@ -105,8 +102,8 @@ session.registerExtensionMenuItem?.({
 });
 session.ui.openPopup(popup, { tab: 'main' });
 
-const serviceToken: ServiceContract<'ss-helper.llm', 'completion', 0, LlmCompletionRequest, LlmCompletionResponse> = LLM_COMPLETION_V0;
-const eventToken: EventContract<'ss-helper.llm', 'route-changed', 0, { readonly route: string }> = LLM_ROUTE_CHANGED_V0;
+const serviceToken: RequestContract<'ss-helper.llm.completion', 0, LlmCompletionRequest, LlmCompletionResponse> = LLM_COMPLETION_V0;
+const eventToken: BusEventContract<'ss-helper.llm.route-changed', 0, { readonly route: string; readonly reason: 'configured' | 'fallback' | 'availability' }> = LLM_ROUTE_CHANGED_V0;
 const memoryResponse: MemoryRecallResponse = {
   mode: 'multi_actor',
   world: { ownerId: 'owner:world', owner: '世界', memories: [] },
@@ -115,7 +112,7 @@ const memoryResponse: MemoryRecallResponse = {
 };
 const closeInfo: SessionCloseInfo = { reason: 'core_replaced', generation: 1, nextGeneration: 2 };
 const capability: HostCapability = 'tavern.chat.read';
-const error = new SSHelperError('CORE_MISSING', 'Core missing');
+const error = new SSHelperError('CORE_UNAVAILABLE', 'Core missing');
 const memoryMessage: ChatMessageInput = { role: 'assistant', text: 'state', variables: [{ initialized_lorebooks: { lore: [] }, stat_data: { world: { day: 5 }, inventory: ['core'] } }] };
 const serverSession = null as unknown as ServerPluginSession;
 

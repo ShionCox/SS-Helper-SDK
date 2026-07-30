@@ -1,36 +1,18 @@
 import type { PlainData } from './contracts/plain-data.js';
-import type {
-  WorkspaceCollectionRequest,
-  WorkspaceHealth,
-  WorkspaceInfo,
-  WorkspaceOpenRequest,
-  WorkspaceQueryPage,
-  WorkspaceQueryRequest,
-  WorkspaceRecord,
-  WorkspaceRecordRequest,
-  WorkspaceRecoveryRepairRequest,
-  WorkspaceRecoveryRepairResult,
-  WorkspaceSecretMetadata,
-  WorkspaceTransactionRequest,
-  WorkspaceTransactionResult,
-} from './contracts/workspace.js';
+import type { WorkspacePort } from './contracts/workspace.js';
+import type { WorkspaceSecretMetadata } from './contracts/secrets.js';
+import { createSSHelperError } from './errors.js';
 
-export type ServerCapability = 'workspace.read' | 'workspace.write' | 'workspace.recovery' | 'secrets.read' | 'secrets.write' | 'services.register';
+export type ServerCapability =
+  | 'workspace.read'
+  | 'workspace.write'
+  | 'workspace.recovery'
+  | 'secrets.read'
+  | 'secrets.write'
+  | 'services.register';
 
-export interface ServerSecretRecord extends WorkspaceSecretMetadata { readonly value: string; }
-export interface ServerWorkspacePort {
-  health(): Promise<WorkspaceHealth>;
-  open(request: WorkspaceOpenRequest): Promise<WorkspaceInfo>;
-  defineCollection(request: WorkspaceCollectionRequest): Promise<void>;
-  get(request: WorkspaceRecordRequest): Promise<WorkspaceRecord | null>;
-  upsert(request: WorkspaceRecordRequest): Promise<WorkspaceRecord>;
-  delete(request: Omit<WorkspaceRecordRequest, 'value'>): Promise<boolean>;
-  query(request: WorkspaceQueryRequest): Promise<WorkspaceQueryPage>;
-  transaction(request: WorkspaceTransactionRequest): Promise<WorkspaceTransactionResult>;
-  clearOwned(request?: { readonly preserveWorkspaceIds?: readonly string[]; readonly idempotencyKey?: string }): Promise<number>;
-  exportAll(): Promise<{ readonly archive: PlainData; readonly sha256: string }>;
-  importAll(request: { readonly archive: PlainData; readonly sha256: string }): Promise<void>;
-  repair(request: WorkspaceRecoveryRepairRequest): Promise<WorkspaceRecoveryRepairResult>;
+export interface ServerSecretRecord extends WorkspaceSecretMetadata {
+  readonly value: string;
 }
 
 export interface ServerSecretPort {
@@ -43,7 +25,7 @@ export interface ServerSecretPort {
 export interface ServerPluginSession {
   readonly pluginId: string;
   readonly capabilities: ReadonlySet<ServerCapability>;
-  readonly workspace: ServerWorkspacePort;
+  readonly workspace: WorkspacePort;
   readonly secrets: ServerSecretPort;
   dispose(): void;
 }
@@ -67,7 +49,5 @@ export async function connectServerPlugin(input: {
     if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   } while (true);
-  const error = new Error('SS-Helper SDK server bridge is unavailable') as Error & { code?: string };
-  error.code = 'SDK_SERVER_BRIDGE_UNAVAILABLE';
-  throw error;
+  throw createSSHelperError('CORE_BRIDGE_UNAVAILABLE', { stage: 'sdk.server.connect' });
 }

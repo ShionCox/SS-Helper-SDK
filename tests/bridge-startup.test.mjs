@@ -70,19 +70,45 @@ test('handled bridge errors are not retried as startup failures', async () => {
         if (operation === 'workspace.health') {
           return { status: 200, ok: true, body: { ok: true, data: { ready: true } } };
         }
-        return { status: 409, ok: false, body: { ok: false, error: 'WORKSPACE_CONFLICT' } };
+        return { status: 409, ok: false, body: { ok: false, error: 'WORKSPACE_CONFLICT', details: { reasonCode: 'WORKSPACE_CONFLICT', stage: 'server.workspace', requestId: request.body.requestId } } };
       },
     },
   }, { startupDeadlineMs: 100, startupRetryDelaysMs: [0] });
 
   await assert.rejects(
     client.call(scope(), 'ss-helper.memory', 'workspace.upsert', {}),
-    error => error?.code === 'WORKSPACE_CONFLICT',
+    error => error?.code === 'CONFLICT'
+      && error?.details?.reasonCode === 'WORKSPACE_CONFLICT'
+      && error?.details?.stage === 'server.workspace',
   );
   assert.deepEqual(operations, ['workspace.health', 'workspace.upsert']);
 });
 
-test('structured business 404 is returned once and never mistaken for a missing route', async () => {
+test('invalid payload exposes only the server safe validation reason', async () => {
+  const client = new InternalBridgeClient({
+    request: {
+      async send(request) {
+        if (request.body.operation === 'workspace.health') {
+          return { status: 200, ok: true, body: { ok: true, data: { ready: true } } };
+        }
+        return {
+          status: 400,
+          ok: false,
+          body: { ok: false, error: 'INVALID_PAYLOAD', details: { reasonCode: 'INVALID_PAYLOAD', stage: 'server.validation', requestId: request.body.requestId } },
+        };
+      },
+    },
+  }, { startupDeadlineMs: 100, startupRetryDelaysMs: [0] });
+
+  await assert.rejects(
+    client.call(scope(), 'ss-helper.memory', 'workspace.commit', {}),
+    error => error?.code === 'INVALID_PAYLOAD'
+      && error?.details?.reasonCode === 'INVALID_PAYLOAD'
+      && error?.message === '请求参数无效',
+  );
+});
+
+test('structured missing-workspace result is returned once and never mistaken for a missing route', async () => {
   const operations = [];
   const client = new InternalBridgeClient({
     request: {
@@ -92,14 +118,14 @@ test('structured business 404 is returned once and never mistaken for a missing 
         if (operation === 'workspace.health') {
           return { status: 200, ok: true, body: { ok: true, data: { ready: true } } };
         }
-        return { status: 404, ok: false, body: { ok: false, error: 'WORKSPACE_NOT_FOUND' } };
+        return { status: 200, ok: true, body: { ok: false, error: 'WORKSPACE_NOT_FOUND', details: { reasonCode: 'WORKSPACE_NOT_FOUND', stage: 'server.workspace', requestId: request.body.requestId } } };
       },
     },
   }, { startupDeadlineMs: 100, startupRetryDelaysMs: [0] });
 
   await assert.rejects(
     client.call(scope(), 'ss-helper.memory', 'workspace.get', {}),
-    error => error?.code === 'WORKSPACE_NOT_FOUND',
+    error => error?.code === 'NOT_FOUND' && error?.details?.reasonCode === 'WORKSPACE_NOT_FOUND',
   );
   assert.deepEqual(operations, ['workspace.health', 'workspace.get']);
 });

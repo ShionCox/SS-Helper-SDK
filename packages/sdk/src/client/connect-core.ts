@@ -33,14 +33,14 @@ export type ConnectDescriptor<Capabilities extends HostCapability> = Omit<
 function targetOrGlobal(target?: DiscoveryTarget): DiscoveryTarget {
   const value = target ?? (globalThis as unknown as DiscoveryTarget);
   if (typeof value.addEventListener !== 'function' || typeof value.removeEventListener !== 'function') {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The discovery target is not an event target');
+    throw new SSHelperError('INTERNAL', 'The discovery target is not an event target');
   }
   return value;
 }
 
 function readSnapshot(target: DiscoveryTarget): unknown {
   try { return Reflect.get(target as object, CORE_DISCOVERY_SYMBOL); } catch {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The Core discovery snapshot could not be read');
+    throw new SSHelperError('INTERNAL', 'The Core discovery snapshot could not be read');
   }
 }
 
@@ -78,14 +78,14 @@ function connectSnapshot<Capabilities extends HostCapability>(
 ): PluginSession<Capabilities> | undefined {
   if (snapshot.descriptor.state !== 'ready') return undefined;
   if (compareSemVer(snapshot.descriptor.apiVersion, descriptor.minApiVersion) < 0) {
-    throw new SSHelperError('API_INCOMPATIBLE', 'Core API version is incompatible', {
+    throw new SSHelperError('INVALID_PAYLOAD', 'Core API version is incompatible', {
       requiredVersion: descriptor.minApiVersion,
       actualVersion: snapshot.descriptor.apiVersion,
     });
   }
   const missing = descriptor.capabilities.filter((capability) => !snapshot.descriptor.capabilities.includes(capability));
   if (missing.length > 0) {
-    throw new SSHelperError('API_INCOMPATIBLE', 'Core capabilities are incompatible', { missing });
+    throw new SSHelperError('INVALID_PAYLOAD', 'Core capabilities are incompatible', { missing });
   }
   return snapshot.port.connect(descriptor);
 }
@@ -134,7 +134,7 @@ export async function connectSSHelper<Capabilities extends HostCapability = Host
       if (value === undefined) return;
       sawSnapshot = true;
       if (!isSnapshot(value)) {
-        finish(() => reject(new SSHelperError('BRIDGE_CORRUPTED', 'The Core discovery snapshot is invalid')));
+        finish(() => reject(new SSHelperError('INTERNAL', 'The Core discovery snapshot is invalid')));
         return;
       }
       if (value.descriptor.generation < lastSeenGeneration) return;
@@ -151,7 +151,7 @@ export async function connectSSHelper<Capabilities extends HostCapability = Host
       if (detail !== undefined && detail.generation < lastSeenGeneration) return;
       try { inspect(readSnapshot(target)); } catch (error) { finish(() => reject(error)); }
     };
-    const onAbort = (): void => finish(() => reject(new SSHelperError('CALL_ABORTED', 'Core connection was aborted')));
+    const onAbort = (): void => finish(() => reject(new SSHelperError('ABORTED', 'Core connection was aborted')));
 
     let first: unknown;
     try { first = readSnapshot(target); } catch (error) { finish(() => reject(error)); return; }
@@ -168,7 +168,7 @@ export async function connectSSHelper<Capabilities extends HostCapability = Host
     }
     options.signal?.addEventListener('abort', onAbort, { once: true });
     timer = setTimeout(() => finish(() => reject(new SSHelperError(
-      sawSnapshot ? 'CORE_TIMEOUT' : 'CORE_MISSING',
+      sawSnapshot ? 'TIMEOUT' : 'CORE_UNAVAILABLE',
       sawSnapshot ? 'Core did not become ready before the deadline' : 'SS-Helper Core is not installed',
     ))), Math.max(0, deadline - Date.now()));
   });

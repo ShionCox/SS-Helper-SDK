@@ -1,4 +1,9 @@
-import { SSHelperError, type PlainData } from '@ss-helper/sdk';
+import {
+  createSSHelperError,
+  isSSHelperReasonCode,
+  type PlainData,
+  type SSHelperFailureContext,
+} from '@ss-helper/sdk';
 import type { TavernHostAdapter } from '../host/tavern-host-port.js';
 import type { ResourceScope } from '../plugins/session-scope.js';
 
@@ -10,7 +15,7 @@ type BridgeResponse = {
   readonly ok?: unknown;
   readonly data?: unknown;
   readonly error?: unknown;
-  readonly message?: unknown;
+  readonly details?: unknown;
 };
 
 export interface InternalBridgeClientOptions {
@@ -34,6 +39,21 @@ function isMissingBridgeRoute(response: { readonly status: number; readonly body
   return response.status === 404 && !isHandledBridgeResponse(response);
 }
 
+function bridgeDetails(value: unknown): Partial<SSHelperFailureContext> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const source = value as Record<string, unknown>;
+  const output: Record<string, string | number> = {};
+  for (const key of ['stage', 'requestId', 'attemptId', 'collection', 'path', 'keyword', 'expected', 'providerKind', 'resourceId', 'model']) {
+    const item = source[key];
+    if (typeof item === 'string' && item.length > 0 && item.length <= 256) output[key] = item;
+  }
+  for (const key of ['batchIndex', 'httpStatus']) {
+    const item = source[key];
+    if (typeof item === 'number' && Number.isFinite(item) && item >= 0) output[key] = item;
+  }
+  return output;
+}
+
 /**
  * Private Core transport. Consumer plugins receive ports backed by this client
  * and never receive a route name, request headers, or caller identity hook.
@@ -45,6 +65,7 @@ export class InternalBridgeClient {
   #readiness: Promise<void> | undefined;
   readonly #startupDeadlineMs: number;
   readonly #startupRetryDelaysMs: readonly number[];
+  #sequence = 0;
 
   constructor(
     private readonly hostAdapter: TavernHostAdapter,
@@ -56,14 +77,14 @@ export class InternalBridgeClient {
       : DEFAULT_STARTUP_RETRY_DELAYS_MS;
   }
 
-  async #send(pluginId: string, operation: string, input: unknown): Promise<Awaited<ReturnType<NonNullable<TavernHostAdapter['request']>['send']>>> {
+  async #send(pluginId: string, operation: string, input: unknown, requestId = `bridge:${Date.now()}:${++this.#sequence}`): Promise<Awaited<ReturnType<NonNullable<TavernHostAdapter['request']>['send']>>> {
     if (this.hostAdapter.request === undefined) {
-      throw new SSHelperError('HOST_NOT_READY', 'The SillyTavern plugin request bridge is unavailable');
+      throw createSSHelperError('CORE_BRIDGE_UNAVAILABLE', { stage: 'core.bridge.send', requestId });
     }
     return this.hostAdapter.request.send({
       path: BRIDGE_PATH,
       method: 'POST',
-      body: { version: 0, pluginId, operation, input: input as PlainData },
+      body: { version: 0, pluginId, operation, requestId, input: input as PlainData },
     });
   }
 
@@ -83,8 +104,9 @@ export class InternalBridgeClient {
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        throw new SSHelperError('HOST_NOT_READY', 'The SS-Helper server bridge was not registered before the startup deadline', {
-          status: 404,
+        throw createSSHelperError('BRIDGE_STARTUP_TIMEOUT', {
+          stage: 'core.bridge.probe',
+          httpStatus: 404,
           retryAttempts: attempt,
         });
       }
@@ -104,7 +126,8 @@ export class InternalBridgeClient {
 
   async call<T>(scope: ResourceScope, pluginId: string, operation: string, input: unknown = {}): Promise<T> {
     await this.#ensureReady(scope, pluginId);
-    let response = await this.#send(pluginId, operation, input);
+    const requestId = `bridge:${Date.now()}:${++this.#sequence}`;
+    let response = await this.#send(pluginId, operation, input, requestId);
     scope.assertActive();
     // A hot server-plugin reload can temporarily remove the route after the
     // browser Core was already marked ready. Retry only an unhandled 404 page;
@@ -113,16 +136,19 @@ export class InternalBridgeClient {
     if (isMissingBridgeRoute(response)) {
       this.#bridgeReady = false;
       await this.#ensureReady(scope, pluginId);
-      response = await this.#send(pluginId, operation, input);
+      response = await this.#send(pluginId, operation, input, requestId);
       scope.assertActive();
     }
     const body = (response.body ?? {}) as BridgeResponse;
     if (!response.ok || body.ok !== true) {
-      const error = new Error('The workspace bridge request could not be completed') as Error & { code?: string };
-      error.code = typeof body.error === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/u.test(body.error)
-        ? body.error
-        : 'WORKSPACE_UNAVAILABLE';
-      throw error;
+      const reasonCode = isSSHelperReasonCode(body.error) ? body.error : 'INTERNAL_ERROR';
+      const details = bridgeDetails(body.details);
+      throw createSSHelperError(reasonCode, {
+        ...details,
+        stage: typeof details.stage === 'string' ? details.stage : 'core.bridge.response',
+        requestId: typeof details.requestId === 'string' ? details.requestId : requestId,
+        ...(response.status > 0 ? { httpStatus: response.status } : {}),
+      });
     }
     return body.data as T;
   }

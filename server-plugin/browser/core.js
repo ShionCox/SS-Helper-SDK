@@ -3,12 +3,32 @@ import { createSillyTavernHostBridge } from './lib/host/silly-tavern-adapter.js'
 import { API_VERSION, CORE_DISCOVERY_SYMBOL, SDK_PACKAGE_VERSION } from './vendor/sdk/contracts/core.js';
 import { SSHelperError } from './vendor/sdk/errors.js';
 import { waitForTavernReady } from './vendor/sdk/client/tavern-ready.js';
+import { startSSHelperPerformanceSpan } from './vendor/sdk/performance.js';
 
 const styleId = 'ss-helper-sdk-core-style';
 const iconStyleId = 'ss-helper-sdk-icon-style';
 let loading;
 let iconStyleFailed = false;
 export let coreRuntime;
+
+const earlyHostCapabilities = Object.freeze([
+  'tavern.context.read',
+  'tavern.character.read',
+  'tavern.persona.read',
+  'tavern.chat.read',
+  'tavern.chat.navigate',
+  'tavern.chat.events',
+  'tavern.worldbooks.read',
+  'tavern.prompt.contribute',
+  'tavern.plugin.request',
+  'tavern.plugin.binary-request.v0',
+  'tavern.generation.read',
+  'tavern.generation.execute',
+]);
+
+function canStartBeforeAppReady(host) {
+  return earlyHostCapabilities.every((capability) => host.capabilities.includes(capability));
+}
 
 function activeCoreSnapshot() {
   const candidate = Reflect.get(globalThis, CORE_DISCOVERY_SYMBOL);
@@ -85,37 +105,43 @@ export function ensureCoreReady() {
   if (active !== undefined) return Promise.resolve(active);
   if (coreRuntime?.active) return Promise.resolve(coreRuntime);
   if (loading !== undefined) return loading;
+  const finish = startSSHelperPerformanceSpan('core', 'runtime.install');
   const attempt = (async () => {
-    await waitForTavernReady({ timeoutMs: 15_000 });
-    // The extension entry and the hosted fallback may be separate ESM module
-    // instances.  They share the discovery slot but not their module-local
-    // runtime ownership map, so always reuse a Core another instance published
-    // while this attempt was waiting.
-    const published = activeCoreSnapshot();
-    if (published !== undefined) return published;
-    const [host, artifactDigest] = await Promise.all([
-      Promise.resolve(createSillyTavernHostBridge(globalThis)),
-      loadArtifactDigest(),
-    ]);
-    if (host.capabilities.length === 0) {
-      throw new SSHelperError('HOST_NOT_READY', 'SillyTavern host capabilities are not available yet');
+    try {
+      const earlyHost = createSillyTavernHostBridge(globalThis);
+      if (!canStartBeforeAppReady(earlyHost)) await waitForTavernReady({ timeoutMs: 15_000 });
+      // The extension entry and the hosted fallback may be separate ESM module
+      // instances.  They share the discovery slot but not their module-local
+      // runtime ownership map, so always reuse a Core another instance published
+      // while this attempt was waiting.
+      const published = activeCoreSnapshot();
+      if (published !== undefined) { finish(); return published; }
+      const host = canStartBeforeAppReady(earlyHost) ? earlyHost : createSillyTavernHostBridge(globalThis);
+      const artifactDigest = await loadArtifactDigest();
+      if (host.capabilities.length === 0) {
+        throw new SSHelperError('CORE_UNAVAILABLE', 'SillyTavern host capabilities are not available yet');
+      }
+      ensureCoreStyle(artifactDigest);
+      const runtime = installCoreRuntime({
+        coreVersion: SDK_PACKAGE_VERSION,
+        sdkPackageVersion: SDK_PACKAGE_VERSION,
+        apiVersion: API_VERSION,
+        buildId: 'ss-helper-sdk',
+        contentDigest: artifactDigest ?? 'runtime',
+        capabilities: [...host.capabilities, 'workspace.recovery', 'secrets.read', 'secrets.write'],
+      }, globalThis, {
+        hostAdapter: host.hostAdapter,
+        document: globalThis.document,
+        settingsContainer: globalThis.document?.querySelector?.('#extensions_settings') ?? globalThis.document?.body,
+      });
+      coreRuntime = runtime;
+      if (iconStyleFailed) runtime.diagnosticsStore.record({ type: 'core.ui.icon.degraded', code: 'ICON_STYLESHEET_LOAD_FAILED' });
+      finish();
+      return runtime;
+    } catch (error) {
+      finish('error');
+      throw error;
     }
-    ensureCoreStyle(artifactDigest);
-    const runtime = installCoreRuntime({
-      coreVersion: SDK_PACKAGE_VERSION,
-      sdkPackageVersion: SDK_PACKAGE_VERSION,
-      apiVersion: API_VERSION,
-      buildId: 'ss-helper-sdk',
-      contentDigest: artifactDigest ?? 'runtime',
-      capabilities: [...host.capabilities, 'workspace.recovery', 'secrets.read', 'secrets.write'],
-    }, globalThis, {
-      hostAdapter: host.hostAdapter,
-      document: globalThis.document,
-      settingsContainer: globalThis.document?.querySelector?.('#extensions_settings') ?? globalThis.document?.body,
-    });
-    coreRuntime = runtime;
-    if (iconStyleFailed) runtime.diagnosticsStore.record({ type: 'core.ui.icon.degraded', code: 'ICON_STYLESHEET_LOAD_FAILED' });
-    return runtime;
   })();
   loading = attempt;
   return attempt.finally(() => { if (loading === attempt) loading = undefined; });

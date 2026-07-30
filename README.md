@@ -3,10 +3,10 @@
 This workspace delivers the two SS-Helper platform artifacts:
 
 - `@ss-helper/sdk` is a stateless, ESM-only public client. It exports typed
-  connection, plugin, service, event, HostPort, settings, UI, LLM, and Memory
+  connection, plugin, Bus, HostPort, settings, UI, LLM, and Memory
   contracts; it never creates a fallback runtime.
 - `@ss-helper/core-extension` is the sole SillyTavern runtime owner. It owns
-  discovery, lifecycle generations, plugin sessions, typed service/event
+  discovery, lifecycle generations, plugin sessions, the typed message Bus,
   communication, the capability-gated HostPort, settings host, popup host, and
   diagnostics.
 
@@ -30,7 +30,7 @@ const session = await connectSSHelper({
   pluginVersion: '0.0.1',
   capabilities: [],
 });
-await session.services.call(LLM_COMPLETION_V0, {
+await session.bus.request(LLM_COMPLETION_V0, {
   messages: [{ role: 'user', content: 'Hello' }],
 });
 await session.dispose();
@@ -56,8 +56,9 @@ settings card or direct legacy-settings-container mount.
 
 Browser consumers access shared data only through `session.workspace` and the
 capability-gated `session.secrets`; the Core-owned internal bridge is the only
-browser storage transport. Use `open/defineCollection/query/transaction` for
-records and `secrets.set/get/delete/list` for credentials. The server plugin
+browser storage transport. Declare collections once in `open({ id, schema })`,
+read through `get/query`, and perform all writes through atomic `commit`.
+Use `secrets.set/get/delete/list` for credentials. The server plugin
 creates `data/_ss-helper-v0/ss-helper.sqlite3` and its AES-256-GCM key on first
 startup. Backups never contain Secret values.
 

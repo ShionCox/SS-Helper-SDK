@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { contentDigest, createDeterministicZip, inventory, rewriteSdkImports, sha256File, verifyInventory, walkFiles } from './artifact-lib.mjs';
 import { createEvidenceSanitizer } from './evidence-sanitizer.mjs';
 import { systemTool } from './platform-tools.mjs';
@@ -107,7 +108,7 @@ function assertCanonicalPackedText(tarball) {
   }
 }
 
-function sdkGate() {
+async function sdkGate() {
   command('pnpm', ['build:sdk']);
   command('pnpm', ['verify:migration']);
   command('pnpm', ['pack:sdk']);
@@ -147,10 +148,10 @@ function sdkGate() {
     dependencies: { '@ss-helper/sdk': `file:./${path.basename(externalTarball)}` },
   }, null, 2)}\n`);
   writeFileSync(path.join(consumer, 'consumer.ts'), [
-    "import { LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, LLM_ROUTE_DIAGNOSTICS_V0, type LlmCompletionRequest } from '@ss-helper/sdk';",
+    "import { LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, type LlmCompletionRequest } from '@ss-helper/sdk';",
     "import { CORE_PLUGIN_ID } from '@ss-helper/sdk/contracts/core';",
     "const request: LlmCompletionRequest = { messages: [{ role: 'user', content: 'artifact' }] };",
-    "if (CORE_PLUGIN_ID !== 'ss-helper.core' || [LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0, LLM_ROUTE_DIAGNOSTICS_V0].some(token => token.version !== 0) || request.messages.length !== 1) throw new Error('runtime export smoke failed');",
+    "if (CORE_PLUGIN_ID !== 'ss-helper.core' || [LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0].some(token => token.version !== 0) || request.messages.length !== 1) throw new Error('runtime export smoke failed');",
   ].join('\n'));
   writeFileSync(path.join(consumer, 'tsconfig.nodenext.json'), `${JSON.stringify({
     compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext' },
@@ -170,17 +171,21 @@ function sdkGate() {
   command('node', ['runtime.mjs'], { cwd: consumer });
   const installedSdk = realpathSync(path.join(consumer, 'node_modules/@ss-helper/sdk'));
   if (installedSdk.startsWith(realpathSync(root))) throw new Error('Fresh SDK consumer resolved into the repository');
+  const sdkRuntime = await import(`${pathToFileURL(path.join(installedSdk, 'dist', 'index.js')).href}?artifact=${Date.now()}`);
+  const apiVersion = String(sdkRuntime.API_VERSION ?? '');
+  if (!/^\d+\.\d+\.\d+$/u.test(apiVersion)) throw new Error('Installed SDK does not export a valid API_VERSION');
   return {
     tarball,
     listing,
     packageVersion: packageJson.version,
+    apiVersion,
     sha256: sha256File(tarball),
     size: readFileSync(tarball).byteLength,
     installedSdk,
   };
 }
 
-function buildCoreArtifact() {
+function buildCoreArtifact(apiVersion) {
   command('pnpm', ['build:core']);
   const stage = path.join(externalRoot, 'core-stage');
   const extensionRoot = path.join(stage, 'third-party', 'SS-Helper-SDK');
@@ -228,7 +233,7 @@ function buildCoreArtifact() {
     '}',
     'async function loadArtifact() {',
     "  const response = await fetch(new URL('./artifact-manifest.json', import.meta.url));",
-    "  if (!response.ok) throw new SSHelperError('HOST_NOT_READY', `SS-Helper Core artifact manifest could not be loaded (${response.status})`);",
+    "  if (!response.ok) throw new SSHelperError('CORE_UNAVAILABLE', `SS-Helper Core artifact manifest could not be loaded (${response.status})`);",
     '  return response.json();',
     '}',
     'export function ensureCoreReady() {',
@@ -241,7 +246,7 @@ function buildCoreArtifact() {
     '    const published = activeCoreSnapshot();',
     '    if (published !== undefined) return published;',
     '    const [artifact, host] = await Promise.all([loadArtifact(), Promise.resolve(createSillyTavernHostBridge(globalThis))]);',
-    "    if (host.capabilities.length === 0) throw new SSHelperError('HOST_NOT_READY', 'SillyTavern host capabilities are not available yet');",
+    "    if (host.capabilities.length === 0) throw new SSHelperError('CORE_UNAVAILABLE', 'SillyTavern host capabilities are not available yet');",
     '    const runtime = installCoreRuntime({',
     '      coreVersion: artifact.coreVersion,',
     '      sdkPackageVersion: artifact.sdkPackageVersion,',
@@ -275,8 +280,8 @@ function buildCoreArtifact() {
     installDirectory: 'third-party/SS-Helper-SDK',
     coreVersion: extensionManifest.version,
     sdkPackageVersion: packageJson.version,
-    apiVersion: '0.0.1',
-    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-0.0.1`,
+    apiVersion,
+    buildId: `core-${extensionManifest.version}-sdk-${packageJson.version}-api-${apiVersion}`,
     contentDigest: contentDigest(files),
     toolchain,
     files,
@@ -297,7 +302,7 @@ function buildCoreArtifact() {
   };
 }
 
-function makeConsumerBundle(name, installedSdk, source) {
+function makeConsumerBundle(name, installedSdk, version, source) {
   const bundle = path.join(externalRoot, name);
   cpSync(path.join(installedSdk, 'dist'), path.join(bundle, 'sdk'), { recursive: true });
   writeFileSync(path.join(bundle, 'manifest.json'), `${JSON.stringify({
@@ -307,7 +312,7 @@ function makeConsumerBundle(name, installedSdk, source) {
     optional: [],
     js: 'index.js',
     author: 'SS-Helper artifact gate',
-    version: '0.0.1',
+    version,
     auto_update: false,
   }, null, 2)}\n`);
   writeFileSync(path.join(bundle, 'index.js'), source);
@@ -344,7 +349,7 @@ function artifactSmoke(core, sdk) {
     throw new Error('Installed Core manifest differs from the built manifest');
   }
 
-  const consumerA = makeConsumerBundle('gate-consumer-a', sdk.installedSdk, [
+  const consumerA = makeConsumerBundle('gate-consumer-a', sdk.installedSdk, core.manifest.coreVersion, [
     "import * as sdk from './sdk/index.js';",
     "const discoverySymbol = Symbol.for('@ss-helper/core.discovery');",
     'globalThis.__SSHelperArtifactConsumers ??= {};',
@@ -353,7 +358,7 @@ function artifactSmoke(core, sdk) {
     '  try {',
     '    await sdk.waitForTavernReady({ timeoutMs: 15_000 });',
     "    const requested = ['tavern.context.read','tavern.chat.read','tavern.chat.events','tavern.worldbooks.read','tavern.worldbooks.write','tavern.generation.read','tavern.prompt.contribute','tavern.plugin.request','tavern.plugin.binary-request.v0'];",
-    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:'0.0.1', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiVersion:'0.0.1', minApiVersion:'0.0.1', capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
+    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-a', displayName:'A', pluginVersion:${JSON.stringify(core.manifest.coreVersion)}, sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiVersion:${JSON.stringify(core.manifest.apiVersion)}, minApiVersion:${JSON.stringify(core.manifest.apiVersion)}, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
     '    const discoveryBefore = globalThis[discoverySymbol];',
     '    state.discoveryBefore = discoveryBefore?.descriptor;',
     '    state.generationBefore = discoveryBefore?.descriptor?.generation;',
@@ -378,9 +383,9 @@ function artifactSmoke(core, sdk) {
     "    const binaryExport = await session.host.binaryRequest.send({ version:0, path:'/api/plugins/ss-helper-gate-binary/export', method:'POST', responseMode:'binary' });",
     "    const binaryImport = await session.host.binaryRequest.send({ version:0, path:'/api/plugins/ss-helper-gate-binary/import', method:'POST', responseMode:'json', body:binaryBody });",
     '    state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey }, chat:chat===null?null:{ key:chat.key, messageCount:chat.messageCount }, events:{ subscribedAndRemoved:true }, worldbooks:{ granted:true, listed:worldbookListed, loadedEntry:worldbookLoaded?.entries?.[0], active:worldbookActive, updatedEntry:worldbookUpdated?.entries?.[0], deleted:worldbookDeleted }, generation:{ available:generationAvailable, active:generation.active, provider:generation.provider, model:generation.model }, prompt:{ setAndRemoved:true }, request:{ status:requestResponse.status, ok:requestResponse.ok }, binaryRequest:{ export:{ status:binaryExport.status, ok:binaryExport.ok, contentType:binaryExport.contentType, data:binaryExport.data, byteLength:binaryExport.byteLength, sha256:binaryExport.sha256, filename:binaryExport.filename }, import:{ status:binaryImport.status, ok:binaryImport.ok, body:binaryImport.body } } };',
-    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:0, schemaId:'fixture.consumer-a.echo.v0' });",
+    "    const contract = Object.freeze({ kind:'request', id:'fixture.consumer-a.echo', version:0 });",
     "    session.registerSettings({ id:'fixture.consumer-a', title:'A', fields:[{ kind:'select', id:'mode', label:'模式', options:[{value:'balanced',label:'均衡'},{value:'precise',label:'精确'},{value:'creative',label:'创意'},{value:'economy',label:'省用'}] }] }, { load:()=>({mode:'balanced'}), save:()=>{}, reset:()=>({mode:'balanced'}) });",
-    '    session.services.expose(contract, (request) => ({ value:request.value }));',
+    '    session.bus.handle(contract, (request) => ({ value:request.value }));',
     '    state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
     '    state.sameDiscovery = globalThis[discoverySymbol] === discoveryBefore;',
     '    state.generationAfter = globalThis[discoverySymbol].descriptor.generation;',
@@ -389,7 +394,7 @@ function artifactSmoke(core, sdk) {
     '};',
     'void start();',
   ].join('\n'));
-  const consumerB = makeConsumerBundle('gate-consumer-b', sdk.installedSdk, [
+  const consumerB = makeConsumerBundle('gate-consumer-b', sdk.installedSdk, core.manifest.coreVersion, [
     "import * as sdk from './sdk/index.js';",
     "const discoverySymbol = Symbol.for('@ss-helper/core.discovery');",
     'globalThis.__SSHelperArtifactConsumers ??= {};',
@@ -398,13 +403,15 @@ function artifactSmoke(core, sdk) {
     '  try {',
     '    await sdk.waitForTavernReady({ timeoutMs: 15_000 });',
     "    const requested = ['tavern.context.read'];",
-    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:'0.0.1', sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiVersion:'0.0.1', minApiVersion:'0.0.1', capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
+    `    const session = await sdk.connectSSHelper({ id:'fixture.consumer-b', displayName:'B', pluginVersion:${JSON.stringify(core.manifest.coreVersion)}, sdkPackageVersion:${JSON.stringify(sdk.packageVersion)}, apiVersion:${JSON.stringify(core.manifest.apiVersion)}, minApiVersion:${JSON.stringify(core.manifest.apiVersion)}, capabilities:requested }, { target: globalThis, timeoutMs:10000 });`,
     '    const discoveryBefore = globalThis[discoverySymbol];',
     '    state.discoveryBefore = discoveryBefore?.descriptor;',
     '    const context = await session.host.context.read(); state.host = { requested, granted:[...session.host.capabilities], context:{ chatKey:context.chatKey } };',
-    "    const contract = Object.freeze({ kind:'service', provider:'fixture.consumer-a', name:'echo', version:0, schemaId:'fixture.consumer-a.echo.v0' });",
-    '    await session.services.waitFor(contract, { timeoutMs:10000 });',
-    "    state.response = await session.services.call(contract, { value:'artifact', apiKey:'GATE_API_KEY_SENTINEL', prompt:'GATE_PROMPT_SENTINEL', cookie:'GATE_COOKIE_SENTINEL', csrf:'GATE_CSRF_SENTINEL', authorization:'Bearer GATE_AUTH_SENTINEL', sqliteBase64:'U1FMaXRlIEdBVEVfU1FMSVRFX1NFTlRJTkVM', userContent:'GATE_USER_CONTENT_SENTINEL' }, { timeoutMs:10000 });",
+    '    const providerDeadline = Date.now() + 10_000;',
+    '    while (globalThis.__SSHelperArtifactConsumers?.a?.state !== "ready" && Date.now() < providerDeadline) await new Promise(resolve => setTimeout(resolve, 25));',
+    '    if (globalThis.__SSHelperArtifactConsumers?.a?.state !== "ready") throw new Error("fixture consumer A did not register its request handler");',
+    "    const contract = Object.freeze({ kind:'request', id:'fixture.consumer-a.echo', version:0 });",
+    "    state.response = await session.bus.request(contract, { value:'artifact', apiKey:'GATE_API_KEY_SENTINEL', prompt:'GATE_PROMPT_SENTINEL', cookie:'GATE_COOKIE_SENTINEL', csrf:'GATE_CSRF_SENTINEL', authorization:'Bearer GATE_AUTH_SENTINEL', sqliteBase64:'U1FMaXRlIEdBVEVfU1FMSVRFX1NFTlRJTkVM', userContent:'GATE_USER_CONTENT_SENTINEL' }, { timeoutMs:10000 });",
     '    state.discoveryAfter = globalThis[discoverySymbol].descriptor;',
     '    state.sameDiscovery = globalThis[discoverySymbol] === discoveryBefore;',
     '    state.generationAfter = globalThis[discoverySymbol].descriptor.generation;',
@@ -450,8 +457,8 @@ try {
   rmSync(path.join(root, 'packages/sdk/dist'), { recursive: true, force: true });
   rmSync(path.join(root, 'apps/core-extension/dist'), { recursive: true, force: true });
   mkdirSync(artifactDirectory, { recursive: true });
-  const sdk = sdkGate();
-  const core = buildCoreArtifact();
+  const sdk = await sdkGate();
+  const core = buildCoreArtifact(sdk.apiVersion);
   const smoke = artifactSmoke(core, sdk);
   const evidence = {
     schemaVersion: 0,

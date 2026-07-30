@@ -69,23 +69,23 @@ export function chatIndicatorTargetFromRow(row: HTMLElement): ChatIndicatorTarge
 
 function normalizeRegistration(registration: ChatIndicatorRegistration): Readonly<ChatIndicatorRegistration> {
   if (typeof registration !== 'object' || registration === null) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The chat indicator registration is invalid', { reason: 'chat_indicator.registration' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The chat indicator registration is invalid', { reason: 'chat_indicator.registration' });
   }
   const label = typeof registration.label === 'string' ? registration.label.trim() : '';
   const icon = typeof registration.icon === 'string' ? registration.icon.trim() : '';
   const order = registration.order ?? 100;
   if (!label || label.length > MAX_LABEL_LENGTH || /[\u0000-\u001f\u007f]/u.test(label)) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The chat indicator label is invalid', { reason: 'chat_indicator.label' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The chat indicator label is invalid', { reason: 'chat_indicator.label' });
   }
   if (!ICON_NAME.test(icon) || icon.length > MAX_ICON_LENGTH) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The chat indicator icon is invalid', { reason: 'chat_indicator.icon' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The chat indicator icon is invalid', { reason: 'chat_indicator.icon' });
   }
   if (registration.kind !== undefined && registration.kind !== 'direct' && registration.kind !== 'dependency') {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The chat indicator kind is invalid', { reason: 'chat_indicator.kind' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The chat indicator kind is invalid', { reason: 'chat_indicator.kind' });
   }
   if (!Number.isSafeInteger(order) || order < -1_000 || order > 1_000 || typeof registration.resolve !== 'function'
     || (registration.subscribe !== undefined && typeof registration.subscribe !== 'function')) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The chat indicator registration is invalid', { reason: 'chat_indicator.registration' });
+    throw new SSHelperError('INVALID_PAYLOAD', 'The chat indicator registration is invalid', { reason: 'chat_indicator.registration' });
   }
   return Object.freeze({
     label,
@@ -151,9 +151,9 @@ export class ChatIndicatorHost {
 
   register(scope: SessionScope, registration: ChatIndicatorRegistration): () => void {
     scope.assertActive();
-    if (this.#disposed) throw new SSHelperError('CORE_DISPOSED', 'Core is disposed');
+    if (this.#disposed) throw new SSHelperError('CORE_UNAVAILABLE', 'Core is disposed');
     if (this.#entries.has(scope.id)) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'A plugin may register only one chat indicator', { pluginId: scope.id, reason: 'chat_indicator.duplicate' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'A plugin may register only one chat indicator', { pluginId: scope.id, reason: 'chat_indicator.duplicate' });
     }
     const normalized = normalizeRegistration(registration);
     const entry: IndicatorEntry = { scope, registration: normalized, cache: new Map(), unsubscribe: () => undefined };

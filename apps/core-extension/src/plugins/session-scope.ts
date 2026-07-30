@@ -21,7 +21,7 @@ export class ResourceScope implements SessionScope {
       pluginId: this.id,
       generation: this.generation,
     });
-    if (this.#disposed) throw new SSHelperError('PLUGIN_DISPOSED', 'The plugin session is disposed', { pluginId: this.id });
+    if (this.#disposed) throw new SSHelperError('STALE_SESSION', 'The plugin session is disposed', { pluginId: this.id });
   }
 
   addCleanup(cleanup: () => void): () => void {

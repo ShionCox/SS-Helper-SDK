@@ -1,6 +1,5 @@
 import { MEMORY_PLUGIN_ID } from './core.js';
-import type { EventContract } from './events.js';
-import type { ServiceContract } from './services.js';
+import type { BusEventContract, RequestContract } from './bus.js';
 
 export type MemoryRecallMode = 'strict_pov' | 'multi_actor' | 'omniscient';
 
@@ -155,18 +154,18 @@ function isMemoryGraphResponse(value: unknown): value is MemoryGraphResponse {
     && candidate.edges.every(isMemoryGraphEdge);
 }
 
-export const MEMORY_RECALL_V0: ServiceContract<typeof MEMORY_PLUGIN_ID, 'recall', 0, MemoryRecallRequest, MemoryRecallResponse> = Object.freeze({
-  kind: 'service', provider: MEMORY_PLUGIN_ID, name: 'recall', version: 0, schemaId: 'ss-helper.memory.recall.v0',
+export const MEMORY_RECALL_V0: RequestContract<`${typeof MEMORY_PLUGIN_ID}.recall`, 0, MemoryRecallRequest, MemoryRecallResponse> = Object.freeze({
+  kind: 'request', id: 'ss-helper.memory.recall', version: 0,
   validateRequest: isMemoryRecallRequest,
   validateResponse: isMemoryRecallResponse,
 });
 
-export const MEMORY_GRAPH_V0: ServiceContract<typeof MEMORY_PLUGIN_ID, 'graph', 0, MemoryGraphRequest, MemoryGraphResponse> = Object.freeze({
-  kind: 'service', provider: MEMORY_PLUGIN_ID, name: 'graph', version: 0, schemaId: 'ss-helper.memory.graph.v0',
+export const MEMORY_GRAPH_V0: RequestContract<`${typeof MEMORY_PLUGIN_ID}.graph`, 0, MemoryGraphRequest, MemoryGraphResponse> = Object.freeze({
+  kind: 'request', id: 'ss-helper.memory.graph', version: 0,
   validateRequest: isMemoryGraphRequest,
   validateResponse: isMemoryGraphResponse,
 });
 
-export const MEMORY_UPDATED_V0: EventContract<typeof MEMORY_PLUGIN_ID, 'updated', 0, MemoryUpdatedPayload> = Object.freeze({
-  kind: 'event', provider: MEMORY_PLUGIN_ID, name: 'updated', version: 0, schemaId: 'ss-helper.memory.updated.v0',
+export const MEMORY_UPDATED_V0: BusEventContract<`${typeof MEMORY_PLUGIN_ID}.updated`, 0, MemoryUpdatedPayload> = Object.freeze({
+  kind: 'event', id: 'ss-helper.memory.updated', version: 0,
 });

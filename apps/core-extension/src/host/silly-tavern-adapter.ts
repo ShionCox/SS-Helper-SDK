@@ -1,8 +1,8 @@
-import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES } from '@ss-helper/sdk';
+import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, createSSHelperError, readSSHelperFailure } from '@ss-helper/sdk';
 import type {
   ChatMessageInput, ChatMessageSnapshot, ChatMessageType, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot,
   HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName, HostMessageAuthorSnapshot,
-  HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse,
+  HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse, PluginRequestOptions,
   PluginBinaryBodyV0, PluginBinaryRequestV0, PluginBinaryResponseV0, PluginJsonAcknowledgementV0,
   PromptContribution, WorldbookSnapshot,
 } from '@ss-helper/sdk';
@@ -13,6 +13,67 @@ type HostFunction = (...args: unknown[]) => unknown;
 const record = (value: unknown): UnknownRecord | undefined => typeof value === 'object' && value !== null ? value as UnknownRecord : undefined;
 const fn = (value: unknown): HostFunction | undefined => typeof value === 'function' ? value as HostFunction : undefined;
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 ? value : undefined;
+
+const RESPONSE_FORMAT_PROVIDER_CODES = new Set([
+  'response_format_unsupported',
+  'unsupported_response_format',
+  'response_format_unavailable',
+]);
+const structuredProviderFailures = (error: unknown): UnknownRecord[] => {
+  const root = record(error);
+  const cause = record(root?.cause);
+  return [
+    root,
+    record(root?.details),
+    record(root?.error),
+    cause,
+    record(cause?.details),
+    record(cause?.error),
+  ].filter((value): value is UnknownRecord => value !== undefined);
+};
+const responseFormatFailureContext = (error: unknown): {
+  readonly httpStatus?: number;
+  readonly providerErrorCode?: string;
+  readonly providerErrorType?: string;
+  readonly providerErrorParam?: string;
+} | undefined => {
+  const root = record(error);
+  const rootStatus = root?.httpStatus ?? root?.status ?? root?.statusCode;
+  for (const value of structuredProviderFailures(error)) {
+    const providerErrorCode = text(value.providerErrorCode) ?? text(value.code);
+    const providerErrorType = text(value.providerErrorType) ?? text(value.type);
+    const providerErrorParam = text(value.providerErrorParam) ?? text(value.param);
+    const normalizedCode = providerErrorCode?.toLowerCase();
+    const normalizedType = providerErrorType?.toLowerCase();
+    const normalizedParam = providerErrorParam?.toLowerCase();
+    const explicitlyNamesFormat = normalizedParam === 'response_format'
+      || normalizedParam?.startsWith('response_format.') === true
+      || (normalizedCode !== undefined && RESPONSE_FORMAT_PROVIDER_CODES.has(normalizedCode))
+      || (normalizedType !== undefined && RESPONSE_FORMAT_PROVIDER_CODES.has(normalizedType));
+    if (!explicitlyNamesFormat) continue;
+    const status = value.httpStatus ?? value.status ?? value.statusCode ?? rootStatus;
+    const httpStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status
+      : undefined;
+    return {
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(providerErrorCode === undefined ? {} : { providerErrorCode }),
+      ...(providerErrorType === undefined ? {} : { providerErrorType }),
+      ...(providerErrorParam === undefined ? {} : { providerErrorParam }),
+    };
+  }
+  return undefined;
+};
+
+const mapGenerationFailure = (error: unknown): unknown => {
+  if (readSSHelperFailure(error)?.reasonCode === 'RESPONSE_FORMAT_UNSUPPORTED') return error;
+  const context = responseFormatFailureContext(error);
+  return context === undefined ? error : createSSHelperError('RESPONSE_FORMAT_UNSUPPORTED', {
+    stage: 'host.generation.response-format',
+    providerKind: 'tavern',
+    ...context,
+  });
+};
 const plain = (value: unknown): PlainData | undefined => {
   try { return JSON.parse(JSON.stringify(value)) as PlainData; } catch { return undefined; }
 };
@@ -106,10 +167,18 @@ const message = (value: unknown, index: number): ChatMessageSnapshot => {
   const item = record(value) ?? {};
   const extra = record(item.extra);
   const variables = messageVariables(item.variables);
-  const isSystem = item.is_system === true || item.role === 'system';
+  // SillyTavern overloads `is_system`: `/hide` sets it on ordinary user and
+  // assistant floors. Treat only explicit/native system provenance as a system
+  // message; the generic flag below remains a prompt-visibility signal.
+  const isSystem = item.role === 'system'
+    || item.messageType === 'system'
+    || extra?.type === 'system'
+    || text(item.name) === 'SillyTavern System'
+    || extra?.uses_system_ui === true
+    || extra?.isSmallSys === true;
   const isTool = item.role === 'tool' || extra?.type === 'tool';
   const isReasoning = item.is_reasoning === true;
-  const isHidden = item.is_hidden === true || item.hidden === true || extra?.hidden === true;
+  const isHidden = item.is_system === true || item.is_hidden === true || item.hidden === true || extra?.hidden === true;
   // Tool/reasoning provenance wins over a generic system marker so internal
   // outputs can never become opt-in historical正文 by accident.
   const isNarrator = item.messageType === 'narrator' || item.role === 'narrator' || extra?.type === 'narrator' || item.is_narrator === true;
@@ -121,8 +190,15 @@ const message = (value: unknown, index: number): ChatMessageSnapshot => {
     ...(text(item.avatar) === undefined ? {} : { avatar: text(item.avatar) }),
     ...(text(item.original_avatar) === undefined ? {} : { originalAvatar: text(item.original_avatar) }),
   };
+  const stableId = text(item.id) ?? text(item.messageId);
+  const rawVariantId = item.swipe_id ?? item.swipeId ?? item.variantId;
+  const variantId = typeof rawVariantId === 'string' || typeof rawVariantId === 'number'
+    ? String(rawVariantId).trim()
+    : '';
   return {
-    id: text(item.id) ?? text(item.messageId) ?? String(index), index,
+    id: stableId ?? String(index), index,
+    ...(stableId === undefined ? {} : { stableId }),
+    ...(variantId === '' ? {} : { variantId }),
     role: messageType === 'system' ? 'system' : item.is_user === true ? 'user' : 'assistant',
     ...(text(item.name) === undefined ? {} : { name: text(item.name) }), text: text(item.mes) ?? text(item.text) ?? '',
     ...(text(item.send_date) === undefined ? {} : { createdAt: text(item.send_date) }),
@@ -231,7 +307,7 @@ const messageEvent = (name: 'message-received' | 'message-sent' | 'message-edite
   const list = Array.isArray(context.chat) ? context.chat : [];
   const raw = index === undefined ? item : list[index] ?? item;
   const key = chatKey(context);
-  if (name === 'message-deleted') return { name, messageId: id, ...(key === undefined ? {} : { chatKey: key }) };
+  if (name === 'message-deleted') return { name, messageId: id, ...(key === undefined ? {} : { chatKey: key }), ...(index === undefined ? {} : { remainingCount: index }) };
   const snapshot = raw === undefined ? undefined : message(raw, index ?? 0);
   return { name, messageId: id, ...(key === undefined ? {} : { chatKey: key }), ...(snapshot === undefined ? {} : { message: snapshot }) };
 };
@@ -264,6 +340,41 @@ const promptEvent = (context: UnknownRecord, payload: unknown): HostEvent => {
   });
   const key = chatKey(context);
   return { name: 'prompt-ready', ...(key === undefined ? {} : { chatKey: key }), prompt: { messages, dryRun: value.dryRun === true } };
+};
+const swipeDeletedEvent = (context: UnknownRecord, payload: unknown): HostEvent | undefined => {
+  const item = record(payload);
+  const messageIndex = integer(item?.messageId);
+  const deletedVariant = integer(item?.swipeId) ?? text(item?.swipeId);
+  const activeVariant = integer(item?.newSwipeId) ?? text(item?.newSwipeId);
+  if (messageIndex === undefined || deletedVariant === undefined || activeVariant === undefined) return undefined;
+  const list = Array.isArray(context.chat) ? context.chat : [];
+  const snapshot = list[messageIndex] === undefined ? undefined : message(list[messageIndex], messageIndex);
+  const key = chatKey(context);
+  return {
+    name: 'message-swipe-deleted',
+    messageId: snapshot?.stableId ?? String(messageIndex),
+    messageIndex,
+    deletedVariantId: String(deletedVariant),
+    activeVariantId: String(activeVariant),
+    ...(key === undefined ? {} : { chatKey: key }),
+  };
+};
+const finalizedPromptEvent = (context: UnknownRecord, payload: unknown, source: 'chat' | 'text'): HostEvent | undefined => {
+  const value = record(payload) ?? {};
+  if (value.dryRun === true) return undefined;
+  const key = chatKey(context);
+  if (source === 'text') {
+    const prompt = text(value.prompt) ?? (typeof payload === 'string' ? payload : undefined);
+    return prompt === undefined ? undefined : { name: 'prompt-finalized', ...(key === undefined ? {} : { chatKey: key }), prompt: { kind: 'text', prompt } };
+  }
+  const rawMessages = Array.isArray(value.chat) ? value.chat : Array.isArray(value.messages) ? value.messages : [];
+  if (rawMessages.length === 0) return undefined;
+  const messages = rawMessages.map((entry) => {
+    const item = record(entry) ?? {};
+    const content = plain(item.content);
+    return { ...(text(item.role) === undefined ? {} : { role: text(item.role) }), ...(text(item.name) === undefined ? {} : { name: text(item.name) }), ...(content === undefined ? {} : { content }) };
+  });
+  return { name: 'prompt-finalized', ...(key === undefined ? {} : { chatKey: key }), prompt: { kind: 'chat', messages } };
 };
 const worldbookSnapshot = (context: UnknownRecord, nameValue: unknown, payload: unknown, active?: boolean): WorldbookSnapshot => {
   const name = text(nameValue) ?? '';
@@ -324,7 +435,6 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
       navigate: async (destination) => navigateToMessage(target, destination),
     };
     capabilities.push('tavern.chat.navigate');
-    const chat = adapter.chat;
     if (fn(initial.addOneMessage) !== undefined && fn(initial.saveChat) !== undefined && fn(initial.deleteMessage) !== undefined) capabilities.push('tavern.chat.write');
   }
 
@@ -333,28 +443,74 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
   const on = fn(eventSource?.on); const off = fn(eventSource?.off) ?? fn(eventSource?.removeListener);
   if (eventSource !== undefined && on !== undefined && off !== undefined) {
     capabilities.push('tavern.chat.events');
-    const names: Record<HostEventName, string> = { 'chat-changed': 'CHAT_CHANGED', 'message-received': 'MESSAGE_RECEIVED', 'message-sent': 'MESSAGE_SENT', 'message-edited': 'MESSAGE_EDITED', 'message-deleted': 'MESSAGE_DELETED', 'generation-started': 'GENERATION_STARTED', 'generation-ended': 'GENERATION_ENDED', 'generation-config-changed': 'GENERATION_CONFIG_CHANGED', 'prompt-ready': 'CHAT_COMPLETION_PROMPT_READY', 'worldbook-updated': 'WORLDINFO_UPDATED', 'identity-changed': 'CHARACTER_EDITED' };
+    const names: Record<HostEventName, string> = { 'chat-changed': 'CHAT_CHANGED', 'message-received': 'MESSAGE_RECEIVED', 'message-sent': 'MESSAGE_SENT', 'message-edited': 'MESSAGE_EDITED', 'message-deleted': 'MESSAGE_DELETED', 'message-swiped': 'MESSAGE_SWIPED', 'message-swipe-deleted': 'MESSAGE_SWIPE_DELETED', 'generation-started': 'GENERATION_STARTED', 'generation-ended': 'GENERATION_ENDED', 'generation-config-changed': 'GENERATION_CONFIG_CHANGED', 'prompt-ready': 'CHAT_COMPLETION_PROMPT_READY', 'prompt-finalized': 'CHAT_COMPLETION_PROMPT_READY', 'worldbook-updated': 'WORLDINFO_UPDATED', 'identity-changed': 'CHARACTER_EDITED' };
     adapter.events = { subscribe: (name, listener) => {
-      const primaryKeys = name === 'generation-config-changed' ? ['MAIN_API_CHANGED', 'ONLINE_STATUS_CHANGED'] : [names[name]];
+      let active = true;
+      if (name === 'message-deleted') {
+        const currentChat = (): unknown[] => { const value = getContext().chat; return Array.isArray(value) ? [...value] : []; };
+        let previous = currentChat();
+        const subscriptions: Array<{ hostName: string; callback: (...args: unknown[]) => void | Promise<void> }> = [];
+        const attach = (key: string, callback: (...args: unknown[]) => void | Promise<void>): void => {
+          const hostName = text(eventTypes[key]) ?? key;
+          on.call(eventSource, hostName, callback);
+          subscriptions.push({ hostName, callback });
+        };
+        const sync = (): void => { if (active) previous = currentChat(); };
+        for (const key of ['CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_SWIPED']) attach(key, sync);
+        attach('MESSAGE_DELETED', async (payload: unknown) => {
+          if (!active) return;
+          const context = getContext();
+          const current = Array.isArray(context.chat) ? [...context.chat] : [];
+          const deletedCount = previous.length - current.length;
+          let fromIndex: number | undefined;
+          if (deletedCount > 0) {
+            const firstDifference = current.findIndex((item, index) => previous[index] !== item);
+            const candidate = firstDifference < 0 ? current.length : firstDifference;
+            const aligned = current.every((item, index) => previous[index < candidate ? index : index + deletedCount] === item);
+            if (aligned) fromIndex = candidate;
+          }
+          previous = current;
+          const base = messageEvent(name, context, payload);
+          if (base.name !== 'message-deleted') return;
+          await listener(fromIndex === undefined ? base : { ...base, fromIndex, deletedCount });
+        });
+        return () => { active = false; subscriptions.forEach(({ hostName, callback }) => off.call(eventSource, hostName, callback)); };
+      }
+      const primaryKeys = name === 'generation-config-changed' ? ['MAIN_API_CHANGED', 'ONLINE_STATUS_CHANGED']
+        : name === 'prompt-finalized' ? ['CHAT_COMPLETION_PROMPT_READY', 'GENERATE_AFTER_COMBINE_PROMPTS'] : [names[name]];
       const optionalKeys = name === 'generation-config-changed'
         ? ['CHATCOMPLETION_SOURCE_CHANGED', 'CHATCOMPLETION_MODEL_CHANGED', 'CONNECTION_PROFILE_LOADED', 'CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED']
         : name === 'identity-changed' ? ['PERSONA_CHANGED', 'PERSONA_UPDATED', 'PERSONA_RENAMED', 'PERSONA_DELETED', 'GROUP_UPDATED'] : [];
       const keys = [...primaryKeys, ...optionalKeys.filter((key) => text(eventTypes[key]) !== undefined)];
       const subscriptions = [...new Set(keys.map((key) => `${key}\u0000${String(eventTypes[key] ?? key)}`))].map((entry) => {
         const [key, hostName] = entry.split('\u0000', 2) as [string, string];
-        const callback = (...args: unknown[]): void => {
+        const callback = async (...args: unknown[]): Promise<void> => {
+        if (!active) return;
         const context = getContext();
-        if (name === 'chat-changed') listener({ name, chatKey: text(args[0]) ?? chatKey(context) ?? '' });
-        else if (name === 'message-received' || name === 'message-sent' || name === 'message-edited' || name === 'message-deleted') listener(messageEvent(name, context, args[0]));
-        else if (name === 'generation-started' || name === 'generation-ended' || name === 'generation-config-changed') listener(generationEvent(name, context, args));
-        else if (name === 'prompt-ready') listener(promptEvent(context, args[0]));
-        else if (name === 'worldbook-updated') listener(worldbookEvent(context, args[0], args[1]));
-        else { const detail = key === 'CHARACTER_EDITED' ? record(record(args[0])?.detail) : undefined; listener({ name, identity: identity(context, detail?.id) }); }
+        if (name === 'chat-changed') await listener({ name, chatKey: text(args[0]) ?? chatKey(context) ?? '' });
+        else if (name === 'message-received' || name === 'message-sent' || name === 'message-edited') await listener(messageEvent(name, context, args[0]));
+        else if (name === 'message-swiped') {
+          const event = messageEvent('message-edited', context, args[0]);
+          if (event.name === 'message-edited') await listener({ ...event, name: 'message-swiped' });
+        }
+        else if (name === 'message-swipe-deleted') { const event = swipeDeletedEvent(context, args[0]); if (event !== undefined) await listener(event); }
+        else if (name === 'generation-started' || name === 'generation-ended' || name === 'generation-config-changed') await listener(generationEvent(name, context, args));
+        else if (name === 'prompt-ready') await listener(promptEvent(context, args[0]));
+        else if (name === 'prompt-finalized') {
+          const source = key === 'GENERATE_AFTER_COMBINE_PROMPTS' ? 'text' : 'chat';
+          setTimeout(() => {
+            if (!active) return;
+            const event = finalizedPromptEvent(getContext(), args[0], source);
+            if (event !== undefined) listener(event);
+          }, 0);
+        }
+        else if (name === 'worldbook-updated') await listener(worldbookEvent(context, args[0], args[1]));
+        else { const detail = key === 'CHARACTER_EDITED' ? record(record(args[0])?.detail) : undefined; await listener({ name, identity: identity(context, detail?.id) }); }
         };
         on.call(eventSource, hostName, callback);
         return { hostName, callback };
       });
-      return () => { subscriptions.forEach(({ hostName, callback }) => off.call(eventSource, hostName, callback)); };
+      return () => { active = false; subscriptions.forEach(({ hostName, callback }) => off.call(eventSource, hostName, callback)); };
     } };
   }
 
@@ -363,7 +519,7 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
   const headers = fn(initial.getRequestHeaders) ?? fn(root.getRequestHeaders);
   if (headers !== undefined && typeof target.fetch === 'function') {
     capabilities.push('tavern.plugin.request', 'tavern.plugin.binary-request.v0');
-    adapter.request = { send: async (request: PluginApiRequest): Promise<PluginApiResponse> => { if (!request.path.startsWith('/') || request.path.startsWith('//') || request.path.includes('://')) throw new Error('relative same-origin path required'); const url = new URL(request.path, target.location?.origin ?? 'http://localhost'); if (target.location?.origin !== undefined && url.origin !== target.location.origin) throw new Error('cross-origin request denied'); for (const [key, value] of Object.entries(request.query ?? {})) url.searchParams.set(key, String(value)); const response = await target.fetch(url, { method: request.method ?? 'GET', headers: headers() as HeadersInit, ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }) }); const contentType = response.headers.get('content-type') ?? ''; const body = response.status === 204 ? undefined : plain(contentType.includes('json') ? await response.json() : await response.text()); return { status: response.status, ok: response.ok, ...(body === undefined ? {} : { body }) }; } };
+    adapter.request = { send: async (request: PluginApiRequest, options?: PluginRequestOptions): Promise<PluginApiResponse> => { if (!request.path.startsWith('/') || request.path.startsWith('//') || request.path.includes('://')) throw new Error('relative same-origin path required'); const url = new URL(request.path, target.location?.origin ?? 'http://localhost'); if (target.location?.origin !== undefined && url.origin !== target.location.origin) throw new Error('cross-origin request denied'); for (const [key, value] of Object.entries(request.query ?? {})) url.searchParams.set(key, String(value)); const response = await target.fetch(url, { method: request.method ?? 'GET', headers: headers() as HeadersInit, ...(options?.signal === undefined ? {} : { signal: options.signal }), ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }) }); const contentType = response.headers.get('content-type') ?? ''; const body = response.status === 204 ? undefined : plain(contentType.includes('json') ? await response.json() : await response.text()); return { status: response.status, ok: response.ok, ...(body === undefined ? {} : { body }) }; } };
     adapter.binaryRequest = { send: async (request: PluginBinaryRequestV0, options): Promise<PluginBinaryResponseV0> => {
       if (!/^\/api\/plugins\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(request.path) || request.path.split('/').some((segment) => segment === '.' || segment === '..')) throw new Error('plugin API path required');
       const url = new URL(request.path, target.location?.origin ?? 'http://localhost');
@@ -401,18 +557,23 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
     const generateRaw = fn(initial.generateRaw);
     const execute = async (request: GenerationRequest): Promise<GenerationResult> => {
       const context = getContext();
-      const result = request.contextMode === 'isolated'
-        ? await (() => {
-          if (generateRaw === undefined) throw new Error('SillyTavern isolated generation is unavailable');
-          return generateRaw.call(context, {
-            prompt: request.prompt,
+      let result: unknown;
+      try {
+        result = request.contextMode === 'isolated'
+          ? await (() => {
+            if (generateRaw === undefined) throw new Error('SillyTavern isolated generation is unavailable');
+            return generateRaw.call(context, {
+              prompt: request.prompt,
+              ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
+            });
+          })()
+          : await generateQuietPrompt.call(context, {
+            quietPrompt: request.prompt,
             ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
           });
-        })()
-        : await generateQuietPrompt.call(context, {
-          quietPrompt: request.prompt,
-          ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
-        });
+      } catch (error) {
+        throw mapGenerationFailure(error);
+      }
       const selected = generationSelection(getContext());
       return { text: String(result ?? ''), ...(selected.provider === undefined ? {} : { provider: selected.provider }), ...(selected.model === undefined ? {} : { model: selected.model }) };
     };

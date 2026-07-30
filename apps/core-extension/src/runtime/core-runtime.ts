@@ -9,8 +9,7 @@ import {
   type PluginSession,
   type SessionCloseReason,
 } from '@ss-helper/sdk';
-import { EventHub } from '../communication/event-hub.js';
-import { ServiceRegistry } from '../communication/service-registry.js';
+import { MessageBus } from '../communication/message-bus.js';
 import { DiagnosticsStore } from '../diagnostics/diagnostics-store.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { dispatchLifecycle, type CoreRealm } from './lifecycle.js';
@@ -20,6 +19,7 @@ import { SettingsHost } from '../settings/settings-host.js';
 import type { TavernHostAdapter } from '../host/tavern-host-port.js';
 import { InternalBridgeClient } from '../bridge/internal-bridge.js';
 import { ChatIndicatorHost } from '../chat/chat-indicator-host.js';
+import { ChatMessageActionHost } from '../chat/chat-message-action-host.js';
 import { ensureIconElement } from '../ui/icon-element.js';
 import { ExtensionMenuHost } from '../ui/extension-menu-host.js';
 
@@ -41,13 +41,13 @@ export interface CoreRuntimeOptions {
 export class CoreRuntime {
   readonly descriptor: CoreDescriptor;
   readonly diagnosticsStore: DiagnosticsStore;
-  readonly services: ServiceRegistry;
-  readonly events: EventHub;
+  readonly bus: MessageBus;
   readonly plugins: PluginRegistry;
   readonly settings: SettingsHost;
   readonly popups: PopupHost;
   readonly toasts: ToastHost;
   readonly chatIndicators: ChatIndicatorHost;
+  readonly chatMessageActions: ChatMessageActionHost;
   readonly extensionMenus: ExtensionMenuHost;
   readonly port: CorePort;
   #active = true;
@@ -63,7 +63,10 @@ export class CoreRuntime {
     const document = options.document ?? options.settingsContainer?.ownerDocument;
     const capabilities = Object.freeze([...new Set([
       ...(identity.capabilities ?? []),
-      ...(document === undefined ? [] : ['core.ui.notification.v0' as const]),
+      ...(document === undefined ? [] : [
+        'core.ui.notification.v0' as const,
+        'core.ui.chat-message-action.v0' as const,
+      ]),
     ])]);
     this.descriptor = Object.freeze({
       kind: 'ss-helper-core',
@@ -80,18 +83,19 @@ export class CoreRuntime {
     if (document !== undefined && !ensureIconElement(document)) {
       this.diagnosticsStore.record({ type: 'core.ui.icon.degraded', code: 'CUSTOM_ELEMENT_UNAVAILABLE' });
     }
-    this.services = new ServiceRegistry(this.diagnosticsStore);
-    this.events = new EventHub(this.diagnosticsStore);
+    this.bus = new MessageBus(this.diagnosticsStore);
     this.settings = new SettingsHost(this.descriptor);
     this.popups = new PopupHost(document);
     this.toasts = new ToastHost(document, this.diagnosticsStore);
     this.chatIndicators = new ChatIndicatorHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
+    this.chatMessageActions = new ChatMessageActionHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
     this.extensionMenus = new ExtensionMenuHost(document, this.diagnosticsStore, this.toasts);
     const bridge = new InternalBridgeClient(options.hostAdapter ?? {});
     this.plugins = new PluginRegistry(
       generation, identity.apiVersion, capabilities,
-      () => this.#active, this.services, this.events, this.diagnosticsStore,
-      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts, this.chatIndicators, this.extensionMenus, bridge,
+      () => this.#active, this.bus, this.diagnosticsStore,
+      options.hostAdapter ?? {}, this.settings, this.popups, this.toasts,
+      this.chatIndicators, this.chatMessageActions, this.extensionMenus, bridge,
     );
     if (options.settingsContainer !== undefined) this.settings.mount(options.settingsContainer);
     this.port = Object.freeze({
@@ -105,12 +109,12 @@ export class CoreRuntime {
 
   attachSnapshot(snapshot: CoreDiscoverySnapshot): void { this.#snapshot = snapshot; }
   snapshot(): CoreDiscoverySnapshot {
-    if (this.#snapshot === undefined) throw new SSHelperError('BRIDGE_CORRUPTED', 'Core snapshot was not installed');
+    if (this.#snapshot === undefined) throw new SSHelperError('INTERNAL', 'Core snapshot was not installed');
     return this.#snapshot;
   }
 
   connect<Capabilities extends HostCapability>(descriptor: PluginDescriptor<Capabilities>): PluginSession<Capabilities> {
-    if (!this.#active) throw new SSHelperError('CORE_DISPOSED', 'Core is disposed');
+    if (!this.#active) throw new SSHelperError('CORE_UNAVAILABLE', 'Core is disposed');
     return this.plugins.register(descriptor);
   }
 
@@ -120,9 +124,9 @@ export class CoreRuntime {
     this.settings.dispose();
     this.plugins.closeAll(reason, nextGeneration);
     this.extensionMenus.dispose();
+    this.chatMessageActions.dispose();
     this.chatIndicators.dispose();
-    this.services.dispose();
-    this.events.dispose();
+    this.bus.dispose();
     this.popups.dispose();
     this.toasts.dispose();
     this.diagnosticsStore.record({ type: 'core.disposed' });

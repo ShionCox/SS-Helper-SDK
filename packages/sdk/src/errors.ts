@@ -1,14 +1,237 @@
 export const SS_HELPER_ERROR_CODES = [
-  'CORE_MISSING', 'CORE_TIMEOUT', 'API_INCOMPATIBLE', 'CORE_ALREADY_ACTIVE', 'CORE_DISPOSED',
-  'CORE_RECONNECT_EXHAUSTED', 'BRIDGE_CORRUPTED', 'STALE_SESSION', 'CAPABILITY_NOT_GRANTED',
-  'DUPLICATE_PLUGIN_ID', 'UNKNOWN_SERVICE', 'SERVICE_VERSION_MISMATCH', 'PAYLOAD_INVALID',
-  'CALL_TIMEOUT', 'CALL_ABORTED', 'PLUGIN_DISPOSED', 'SETTINGS_ADAPTER_ERROR',
-  'HOST_NOT_READY', 'BOOTSTRAP_CALLBACK_TIMEOUT',
+  'CORE_UNAVAILABLE', 'STALE_SESSION', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
+  'INVALID_PAYLOAD', 'TIMEOUT', 'ABORTED', 'INTERNAL',
 ] as const;
 
 export type SSHelperErrorCode = (typeof SS_HELPER_ERROR_CODES)[number];
 
-export interface SSHelperErrorDetails { readonly [key: string]: null | boolean | number | string | readonly string[] | undefined; }
+export interface SSHelperErrorDetails {
+  readonly [key: string]: null | boolean | number | string | readonly string[] | undefined;
+}
+
+export interface SSHelperFailureContext extends SSHelperErrorDetails {
+  readonly reasonCode: SSHelperReasonCode;
+  readonly stage: string;
+  readonly requestId?: string;
+  readonly attemptId?: string;
+  readonly batchIndex?: number;
+  readonly collection?: string;
+  readonly path?: string;
+  readonly keyword?: string;
+  readonly expected?: string;
+  readonly httpStatus?: number;
+  readonly providerKind?: string;
+  readonly providerErrorCode?: string;
+  readonly providerErrorType?: string;
+  readonly providerErrorParam?: string;
+  readonly resourceId?: string;
+  readonly model?: string;
+}
+
+export interface SSHelperDiagnosticDefinition {
+  readonly transportCode: SSHelperErrorCode;
+  readonly title: string;
+  readonly reason: string;
+  readonly action: string;
+  readonly retryable: boolean;
+}
+
+export interface SSHelperDiagnostic extends SSHelperFailureContext, SSHelperDiagnosticDefinition {}
+
+const diagnostic = (
+  transportCode: SSHelperErrorCode,
+  title: string,
+  reason: string,
+  action: string,
+  retryable: boolean,
+): SSHelperDiagnosticDefinition => Object.freeze({ transportCode, title, reason, action, retryable });
+
+/**
+ * SS-Helper 唯一错误目录。
+ *
+ * Provider、Core、Bridge、LLM、Memory 与 UI 必须引用这里的 code 和中文说明，
+ * 不得在业务模块维护第二份错误字典，也不得从 error.message 猜测 code。
+ */
+export const SS_HELPER_DIAGNOSTICS = Object.freeze({
+  INTERNAL_ERROR: diagnostic('INTERNAL', '程序内部错误', '当前步骤发生了无法进一步分类的内部异常。', '保留请求 ID 和步骤信息后重试；持续出现时检查服务日志。', false),
+  CLIPBOARD_WRITE_FAILED: diagnostic('INTERNAL', '复制失败', '浏览器未允许当前页面写入剪贴板。', '检查浏览器剪贴板权限后重新点击复制。', true),
+  CANCELLED: diagnostic('ABORTED', '操作已取消', '用户在操作完成前主动取消了请求。', '如仍需执行，请重新发起操作。', false),
+  REQUEST_ABORTED: diagnostic('ABORTED', '请求已中止', '请求关联的中止信号在完成前触发。', '确认当前会话仍有效后重新操作。', false),
+  CORE_BRIDGE_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', 'SDK 服务端桥接不可用', '浏览器 Core 无法连接 SillyTavern 服务端插件。', '确认服务端插件已启用并重启 SillyTavern。', true),
+  BRIDGE_STARTUP_TIMEOUT: diagnostic('CORE_UNAVAILABLE', 'SDK 服务端桥接启动超时', '服务端桥接未在启动期限内完成注册。', '检查服务端插件日志并重启 SillyTavern。', true),
+  BRIDGE_ENVELOPE_INVALID: diagnostic('INVALID_PAYLOAD', 'Bridge 请求结构无效', '服务端收到的 Bridge 信封不符合 v0 契约。', '重新部署同一次构建生成的 SDK、LLM 与 Memory。', false),
+  BRIDGE_OPERATION_DENIED: diagnostic('FORBIDDEN', 'Bridge 操作不允许', '请求的 Bridge 操作没有公开或不属于当前能力范围。', '检查插件调用的公共 SDK 接口。', false),
+  SERVER_CAPABILITY_DENIED: diagnostic('FORBIDDEN', '服务端能力未授权', '当前插件没有执行该服务端操作的能力。', '检查 SDK 能力策略与插件标识。', false),
+  SERVER_SESSION_CLOSED: diagnostic('STALE_SESSION', '服务端会话已关闭', '操作使用的服务端插件会话已经失效。', '刷新页面或重启插件后重试。', true),
+  BUS_HANDLER_INVALID: diagnostic('INVALID_PAYLOAD', '服务处理器无效', '注册的 Bus 处理器不是可调用函数。', '修正插件的服务注册实现。', false),
+  BUS_NAMESPACE_FORBIDDEN: diagnostic('FORBIDDEN', '服务命名空间不属于当前插件', '插件尝试注册或发布其他插件命名空间的契约。', '使用当前插件自己的契约标识。', false),
+  BUS_HANDLER_CONFLICT: diagnostic('CONFLICT', '服务处理器重复注册', '同一个 Bus 契约已经存在活动处理器。', '清理旧会话或重复注册逻辑。', false),
+  BUS_PROVIDER_CLOSED: diagnostic('STALE_SESSION', '服务提供方会话已关闭', '请求执行期间服务提供方被卸载或重连。', '等待插件重新连接后重试。', true),
+  BUS_CONTRACT_VERSION_NOT_FOUND: diagnostic('NOT_FOUND', '服务契约版本不可用', '已有同名服务，但没有请求所需的契约版本。', '部署来自同一次构建的插件产物。', false),
+  BUS_HANDLER_NOT_FOUND: diagnostic('NOT_FOUND', '请求的服务不可用', '当前 Core 中没有该契约的处理器。', '确认提供该服务的插件已经连接。', true),
+  BUS_CALLER_ABORTED: diagnostic('ABORTED', '调用方已中止请求', '调用方在服务完成前取消了请求。', '需要时重新发起请求。', false),
+  BUS_CALLER_CLOSED: diagnostic('STALE_SESSION', '调用方会话已关闭', '请求执行期间调用插件会话已经失效。', '刷新页面后重试。', true),
+  BUS_REQUEST_TIMEOUT: diagnostic('TIMEOUT', '插件服务请求超时', 'Bus 请求没有在限定时间内完成。', '检查服务状态或适当增加超时时间。', true),
+  BUS_HANDLER_FAILED: diagnostic('INTERNAL', '插件服务处理失败', '服务处理器抛出了未结构化的内部异常。', '保留请求 ID 并检查提供方日志。', false),
+  BUS_LISTENER_INVALID: diagnostic('INVALID_PAYLOAD', '事件监听器无效', '注册的事件监听器不是可调用函数。', '修正插件的事件订阅实现。', false),
+  BUS_CORE_DISPOSED: diagnostic('CORE_UNAVAILABLE', 'SDK Core 已关闭', 'Core 在请求完成前被释放。', '刷新页面并等待 Core 重新启动。', true),
+  BUS_CONTRACT_INVALID: diagnostic('INVALID_PAYLOAD', '服务契约无效', '契约标识、类型或版本不符合公共规则。', '修正契约声明并重新构建。', false),
+  PUBLIC_DATA_CONTRACT_INVALID: diagnostic('INVALID_PAYLOAD', '插件通信数据不符合契约', '请求或响应没有通过契约校验。', '部署来自同一次构建的 SDK、LLM 与 Memory。', false),
+  PUBLIC_DATA_NOT_PLAIN: diagnostic('INVALID_PAYLOAD', '插件通信数据不是普通 JSON 数据', '数据包含循环、函数、访问器或自定义实例。', '只传递可序列化的普通 JSON 数据。', false),
+  INVALID_PAYLOAD: diagnostic('INVALID_PAYLOAD', '请求参数无效', '请求缺少必需字段或字段值不符合约束。', '检查输入后重新提交。', false),
+  WORKSPACE_ACCESS_DENIED: diagnostic('FORBIDDEN', '工作区访问被拒绝', '当前插件不是该工作区的所有者。', '检查插件身份和工作区绑定。', false),
+  WORKSPACE_NOT_FOUND: diagnostic('NOT_FOUND', '工作区数据不存在', '请求的工作区、集合或记录尚未创建。', '先初始化对应工作区后重试。', true),
+  WORKSPACE_CONFLICT: diagnostic('CONFLICT', '工作区数据发生并发冲突', '写入所依据的 revision 已被其他操作更新。', '重新读取最新数据后重试。', true),
+  WORKSPACE_INDEX_REQUIRED: diagnostic('INVALID_PAYLOAD', '工作区索引未声明', '查询字段没有在 Workspace Schema 中声明索引。', '更新集合 Schema 后重新打开工作区。', false),
+  WORKSPACE_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', '工作区服务不可用', 'SDK 工作区服务当前无法完成请求。', '检查服务端插件和数据目录权限。', true),
+  WORKSPACE_DATABASE_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', 'SQLite 数据库不可用', '工作区数据库无法打开或初始化。', '检查数据目录权限与服务端日志。', true),
+  WORKSPACE_SECRET_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', '工作区密钥不可用', '服务端无法读取或创建加密密钥。', '检查数据目录权限后重启服务。', false),
+  WORKSPACE_RECOVERY_DENIED: diagnostic('FORBIDDEN', '工作区恢复未授权', '当前插件没有执行恢复操作的权限。', '从 SDK 管理界面执行恢复。', false),
+  WORKSPACE_RECOVERY_CONFIRMATION_REQUIRED: diagnostic('INVALID_PAYLOAD', '工作区恢复需要确认', '恢复操作缺少明确的用户确认。', '确认备份状态后重新执行。', false),
+  WORKSPACE_RECOVERY_NOT_REQUIRED: diagnostic('CONFLICT', '当前无需恢复工作区', '工作区健康状态不满足恢复条件。', '返回工作区状态页重新检查。', false),
+  WORKSPACE_RECOVERY_IN_PROGRESS: diagnostic('CONFLICT', '工作区正在恢复', '已有恢复任务正在执行。', '等待当前恢复完成。', true),
+  WORKSPACE_RECOVERY_BACKUP_FAILED: diagnostic('INTERNAL', '工作区恢复备份失败', '恢复前的安全备份未能创建或验证。', '检查备份目录权限和磁盘空间。', false),
+  WORKSPACE_RECOVERY_REBUILD_FAILED: diagnostic('INTERNAL', '工作区重建失败', '恢复过程未能创建可用的新工作区。', '保留备份并检查服务端日志。', false),
+  BACKUP_INTEGRITY_INVALID: diagnostic('INVALID_PAYLOAD', '备份完整性校验失败', '备份内容与其完整性摘要不一致。', '不要导入该备份，重新生成可信备份。', false),
+  BACKUP_TOO_LARGE: diagnostic('INVALID_PAYLOAD', '备份超过大小限制', '备份内容超过 SDK 允许的安全上限。', '减少数据范围后重新生成备份。', false),
+  BACKUP_FORMAT_INVALID: diagnostic('INVALID_PAYLOAD', '备份格式无效', '备份不符合当前 v0 Workspace 格式。', '使用当前版本重新生成备份。', false),
+  HTTP_URL_INVALID: diagnostic('INVALID_PAYLOAD', '服务地址无效', 'Base URL 不是允许的 HTTP 或 HTTPS 地址。', '修正资源的 Base URL。', false),
+  HTTP_ADDRESS_FORBIDDEN: diagnostic('FORBIDDEN', '服务地址不允许访问', '目标地址解析到受保护的本机或私有网络范围。', '使用允许访问的公网服务地址。', false),
+  HTTP_METHOD_INVALID: diagnostic('INVALID_PAYLOAD', 'HTTP 方法不受支持', 'Bridge 只允许声明的 HTTP 方法。', '修正 Provider 请求实现。', false),
+  HTTP_HEADERS_INVALID: diagnostic('INVALID_PAYLOAD', 'HTTP 请求头无效', '请求包含未授权、非法或过大的 Header。', '只发送 Provider 必需的白名单 Header。', false),
+  HTTP_BODY_INVALID: diagnostic('INVALID_PAYLOAD', 'HTTP 请求正文无效', '请求正文不是字符串或超过安全上限。', '缩小请求并重新发送。', false),
+  HTTP_DNS_FAILED: diagnostic('INTERNAL', '无法解析服务地址', 'DNS 没有返回可用的目标地址。', '检查域名、DNS 和网络连接。', true),
+  HTTP_CONNECT_FAILED: diagnostic('INTERNAL', '无法连接模型服务', '到目标主机的 TCP 连接失败或被重置。', '检查地址、端口及服务状态。', true),
+  HTTP_TLS_FAILED: diagnostic('INTERNAL', '模型服务安全连接失败', 'TLS 证书或握手未能通过验证。', '检查 HTTPS 证书和代理配置。', false),
+  HTTP_REQUEST_TIMEOUT: diagnostic('TIMEOUT', '模型请求超时', '请求没有在限定时间内完成。', '检查网络后重试，或适当增加超时时间。', true),
+  HTTP_REQUEST_ABORTED: diagnostic('ABORTED', 'HTTP 请求已中止', '请求在响应完成前被取消。', '需要时重新发起请求。', false),
+  HTTP_TRANSPORT_ERROR: diagnostic('INTERNAL', 'HTTP 传输失败', '底层传输返回了无法进一步分类的结构化异常。', '保留请求 ID 并检查服务端日志。', true),
+  HTTP_REDIRECT_REJECTED: diagnostic('FORBIDDEN', '模型服务返回了不允许的重定向', 'Bridge 为防止请求越界拒绝了重定向响应。', '将 Base URL 改为最终服务地址。', false),
+  HTTP_RESPONSE_TOO_LARGE: diagnostic('INVALID_PAYLOAD', '模型响应超过安全上限', '响应正文大小超过 Bridge 限制。', '减小模型输出或请求范围。', false),
+  HTTP_RESPONSE_PROTOCOL_INVALID: diagnostic('INTERNAL', '模型响应格式无法识别', '响应正文或 Content-Type 不符合 Provider 协议。', '检查兼容接口实现。', false),
+  PROVIDER_HTTP_ERROR: diagnostic('INTERNAL', '模型服务返回 HTTP 错误', '服务返回了未能进一步分类的非成功状态。', '根据状态码检查资源配置或服务状态。', false),
+  AUTH_FAILED: diagnostic('FORBIDDEN', '模型服务认证失败', 'API Key 缺失、无效或没有访问权限。', '检查并重新保存资源密钥。', false),
+  RATE_LIMITED: diagnostic('TIMEOUT', '模型服务请求受限', 'Provider 拒绝了当前频率或配额下的请求。', '等待限流窗口结束后重试。', true),
+  MODEL_NOT_FOUND: diagnostic('NOT_FOUND', '配置的模型不存在', 'Provider 无法找到请求中指定的模型。', '刷新模型列表并选择可用模型。', false),
+  ENDPOINT_NOT_FOUND: diagnostic('NOT_FOUND', '模型服务端点不存在', 'Base URL 对应的接口路径不存在。', '检查 Base URL 和 Provider 类型。', false),
+  PROVIDER_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', '没有可用的模型资源', '路由无法找到满足任务能力的已启用资源。', '在 LLM 设置中配置并启用对应资源。', true),
+  PROVIDER_RESPONSE_INVALID: diagnostic('INTERNAL', '模型服务响应不符合协议', 'Provider 返回值缺少当前协议要求的字段。', '检查兼容接口或更换 Provider。', false),
+  RESPONSE_FORMAT_UNSUPPORTED: diagnostic('INVALID_PAYLOAD', '模型服务不支持结构化响应格式', '当前资源不支持请求的 JSON Schema 或 JSON Object 通道。', '修改资源能力配置或使用提示词模式。', false),
+  CONTENT_FILTERED: diagnostic('FORBIDDEN', '模型服务拒绝了请求内容', 'Provider 的内容安全策略阻止了生成。', '调整输入内容或资源策略。', false),
+  CIRCUIT_OPEN: diagnostic('CORE_UNAVAILABLE', '模型资源已暂时熔断', '该资源连续失败，路由保护暂时阻止继续调用。', '等待熔断恢复或选择其他资源。', true),
+  TOKEN_LIMIT_EXCEEDED: diagnostic('INVALID_PAYLOAD', '模型输出达到长度上限', '生成在内容完成前达到 token 限制。', '缩小输入或提高输出上限。', true),
+  OUTPUT_SCHEMA_REQUIRED: diagnostic('INVALID_PAYLOAD', '结构化任务缺少 Schema', '任务要求结构化结果但没有提供输出 Schema。', '修正任务声明。', false),
+  STRUCTURED_OUTPUT_EMPTY: diagnostic('INTERNAL', '模型没有返回结构化内容', 'Provider 调用成功，但响应正文为空。', '检查模型内容过滤状态后从当前批次重试。', true),
+  STRUCTURED_OUTPUT_TRUNCATED: diagnostic('INVALID_PAYLOAD', '模型结构化输出被截断', '模型达到输出上限，JSON 没有完整结束。', '减少批次内容或提高输出上限后重试。', true),
+  INVALID_JSON: diagnostic('INVALID_PAYLOAD', '模型返回内容不是有效 JSON', '模型输出无法解析为单一完整 JSON。', '允许一次结构修复；持续失败时更换模型。', true),
+  SCHEMA_VALIDATION_FAILED: diagnostic('INVALID_PAYLOAD', '模型返回内容不符合记忆结构', 'JSON 字段、类型或必填项不满足任务 Schema。', '根据字段路径执行一次定向修复。', true),
+  LOG_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', 'LLM 请求日志不可用', '系统无法在调用模型前持久化 queued 日志。', '恢复 LLM Workspace 后重试；本次没有调用模型。', true),
+  LLM_REQUEST_INVALID: diagnostic('INVALID_PAYLOAD', 'LLM 请求参数无效', '任务类型或请求字段不符合 LLM 公共契约。', '修正调用参数。', false),
+  LLM_PROFILE_NOT_FOUND: diagnostic('NOT_FOUND', 'LLM 配置档不存在', '请求选择的路由配置档没有注册或已被删除。', '选择现有配置档后重试。', false),
+  LLM_DISABLED: diagnostic('CORE_UNAVAILABLE', 'LLM 服务未启用', 'LLM 服务当前没有启动或已经关闭。', '启用 LLM 插件后重试。', true),
+  LLM_TASK_UNSUPPORTED: diagnostic('INVALID_PAYLOAD', 'LLM 任务类型不受支持', '请求的任务类型没有对应执行器。', '使用公开的 completion、structured-task、embedding 或 rerank 契约。', false),
+  LLM_MODEL_DISCOVERY_UNSUPPORTED: diagnostic('INVALID_PAYLOAD', '资源不支持模型发现', '当前 Provider 没有公开模型列表接口。', '手动填写模型名称。', false),
+  LLM_MODEL_DISCOVERY_FAILED: diagnostic('INTERNAL', '模型列表获取失败', 'Provider 模型列表请求没有成功完成。', '检查资源连接后重试。', true),
+  LLM_MODEL_PROBE_FAILED: diagnostic('INTERNAL', '模型验证失败', '候选模型没有通过最小连接验证。', '检查模型名称和资源权限。', true),
+  LLM_CAPABILITY_UNAVAILABLE: diagnostic('INVALID_PAYLOAD', '资源能力不匹配', '该资源不支持当前任务要求的能力。', '选择支持该用途的 Provider 或模型。', false),
+  LLM_PROVIDER_TEST_FAILED: diagnostic('INTERNAL', '模型资源连接测试失败', '资源测试遇到了无法进一步分类的内部异常。', '检查请求 ID 对应的服务日志。', false),
+  MEMORY_LLM_CLIENT_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', 'Memory 无法连接 LLM 服务', '当前会话没有可用的 LLM structured-task 客户端。', '确认 LLM 插件已连接后重试。', true),
+  MEMORY_RETIRED_STORAGE_DETECTED: diagnostic('CONFLICT', '检测到已退休的 Memory 数据', '当前 v0 运行时检测到旧存储结构。', '删除活动旧数据目录后重新初始化。', false),
+  MEMORY_ARCHIVE_EXPORT_DISABLED: diagnostic('FORBIDDEN', 'Memory 归档导出已禁用', '当前断代版本不从业务层导出运行时数据库。', '部署回滚仅使用停机后的目录级备份。', false),
+  MEMORY_ARCHIVE_IMPORT_DISABLED: diagnostic('FORBIDDEN', 'Memory 归档导入已禁用', '当前断代版本不读取旧归档。', '使用当前运行时重新初始化聊天。', false),
+  PLAIN_DATA_BOUNDARY_INVALID: diagnostic('INVALID_PAYLOAD', 'Memory 数据不符合公共边界', '待提交的数据包含不允许的值或结构。', '根据安全路径修正数据生产逻辑。', false),
+  ENTITY_REF_UNSUPPORTED: diagnostic('INVALID_PAYLOAD', '实体引用缺少来源支持', '模型返回的实体引用无法由本次来源或实体目录确认。', '将该项目送入定向修复。', true),
+  CAPTURE_ITEM_INVALID: diagnostic('INVALID_PAYLOAD', '记忆项目未通过业务校验', '结构合法的项目不满足 Memory 业务约束。', '检查拒绝原因；该项目不会写入事实。', false),
+  REPAIR_UNRESOLVED: diagnostic('INVALID_PAYLOAD', '结构化修复仍未解决', '定向修复后项目仍未通过结构或引用校验。', '保留待修复状态并人工检查。', true),
+  MEMORY_REPAIR_SOURCE_UNAVAILABLE: diagnostic('NOT_FOUND', '修复来源暂时不可用', '待修复项目找不到原始锚点或可用的来源窗口。', '恢复原聊天来源后继续处理；本次不会调用模型或消耗修复次数。', true),
+  MEMORY_CAPTURE_ROLLBACK_FAILED: diagnostic('INTERNAL', '记忆批次回滚失败', '捕获提交失败后未能恢复到批次开始前的状态。', '停止继续写入并检查 Workspace 事务日志。', false),
+  MEMORY_CAPTURE_INTEGRITY_FAILED: diagnostic('INTERNAL', '记忆批次完整性校验失败', '批次提交结果与预期的事实、证据或变更集不一致。', '保留请求 ID 和批次序号后检查 Workspace 日志。', false),
+  MEMORY_CAPTURE_NOT_BOUND: diagnostic('CORE_UNAVAILABLE', '记忆捕获尚未绑定工作区', '当前聊天的捕获服务尚未完成 Workspace 与实体目录绑定。', '重新绑定当前聊天后再初始化。', true),
+  MEMORY_STALE_GENERATION_SCOPE: diagnostic('STALE_SESSION', '生成上下文已经过期', '聊天或身份在生成任务完成前发生了变化。', '在当前聊天中重新发起操作。', false),
+  MEMORY_CHAT_BIND_FAILED: diagnostic('CORE_UNAVAILABLE', '当前聊天记忆绑定失败', 'Memory 未能为当前聊天打开并绑定 Workspace 会话。', '重新检查 SDK Core 与当前聊天状态。', true),
+  MEMORY_CHAT_READ_FAILED: diagnostic('INTERNAL', '当前聊天记忆读取失败', '已绑定工作区，但读取当前聊天的记忆状态失败。', '保留请求 ID 后重新读取。', true),
+} satisfies Record<string, SSHelperDiagnosticDefinition>);
+
+export type SSHelperReasonCode = keyof typeof SS_HELPER_DIAGNOSTICS;
+export const SS_HELPER_REASON_CODES = Object.freeze(Object.keys(SS_HELPER_DIAGNOSTICS) as SSHelperReasonCode[]);
+
+const errorCodeSet = new Set<string>(SS_HELPER_ERROR_CODES);
+const reasonCodeSet = new Set<string>(SS_HELPER_REASON_CODES);
+const contextKeys = new Set([
+  'requestId', 'attemptId', 'batchIndex', 'collection', 'path', 'keyword',
+  'expected', 'httpStatus', 'providerKind', 'resourceId', 'model',
+  'providerErrorCode', 'providerErrorType', 'providerErrorParam',
+]);
+
+export function isSSHelperReasonCode(value: unknown): value is SSHelperReasonCode {
+  return typeof value === 'string' && reasonCodeSet.has(value);
+}
+
+export function transportCodeFor(reasonCode: SSHelperReasonCode): SSHelperErrorCode {
+  return SS_HELPER_DIAGNOSTICS[reasonCode].transportCode;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function safeContextValue(key: string, value: unknown): string | number | undefined {
+  if (typeof value === 'string' && value.length > 0 && value.length <= 256) return value;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  return undefined;
+}
+
+export function readSSHelperFailure(
+  error: unknown,
+  fallback?: Pick<SSHelperFailureContext, 'reasonCode' | 'stage'> & Partial<SSHelperFailureContext>,
+): SSHelperFailureContext | undefined {
+  const source = plainRecord(error);
+  const details = plainRecord(source?.details);
+  const candidateReason = details?.reasonCode ?? source?.reasonCode;
+  const candidateStage = details?.stage ?? source?.stage;
+  const reasonCode = isSSHelperReasonCode(candidateReason)
+    ? candidateReason
+    : fallback?.reasonCode;
+  const stage = typeof candidateStage === 'string' && candidateStage.length > 0
+    ? candidateStage
+    : fallback?.stage;
+  if (
+    !isSSHelperReasonCode(candidateReason)
+    && source?.cause !== undefined
+    && source.cause !== error
+  ) {
+    const nested = readSSHelperFailure(source.cause, fallback);
+    if (nested !== undefined) return nested;
+  }
+  if (reasonCode === undefined || stage === undefined) return undefined;
+  const output: Record<string, string | number> = { reasonCode, stage };
+  for (const key of contextKeys) {
+    const value = safeContextValue(key, details?.[key] ?? source?.[key] ?? fallback?.[key]);
+    if (value !== undefined) output[key] = value;
+  }
+  return output as unknown as SSHelperFailureContext;
+}
+
+export function describeSSHelperFailure(
+  error: unknown,
+  fallback: Pick<SSHelperFailureContext, 'reasonCode' | 'stage'> & Partial<SSHelperFailureContext> = {
+    reasonCode: 'INTERNAL_ERROR',
+    stage: 'unknown',
+  },
+): SSHelperDiagnostic {
+  const context = readSSHelperFailure(error, fallback) ?? fallback as SSHelperFailureContext;
+  return Object.freeze({ ...SS_HELPER_DIAGNOSTICS[context.reasonCode], ...context });
+}
+
+export function createSSHelperError(
+  reasonCode: SSHelperReasonCode,
+  context: Omit<SSHelperFailureContext, 'reasonCode'>,
+): SSHelperError {
+  const definition = SS_HELPER_DIAGNOSTICS[reasonCode];
+  return new SSHelperError(definition.transportCode, definition.title, { ...context, reasonCode });
+}
 
 export class SSHelperError extends Error {
   readonly code: SSHelperErrorCode;
@@ -19,4 +242,11 @@ export class SSHelperError extends Error {
     this.code = code;
     if (details !== undefined) this.details = details;
   }
+}
+
+export function isSSHelperError(value: unknown): value is SSHelperError {
+  const record = plainRecord(value);
+  return record?.name === 'SSHelperError'
+    && typeof record.code === 'string'
+    && errorCodeSet.has(record.code);
 }

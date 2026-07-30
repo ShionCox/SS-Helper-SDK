@@ -4,17 +4,15 @@ import {
   LLM_ROUTE_CHANGED_V0,
   MEMORY_RECALL_V0,
   type CoreDescriptor,
-  type EventPort,
+  type BusPort,
   type HostPort,
   type ChatMessageInput,
   type PluginDescriptor,
-  type ServicePort,
   type SettingsSchema,
   type VersionAxes,
 } from '@ss-helper/sdk';
 
-declare const services: ServicePort;
-declare const events: EventPort;
+declare const bus: BusPort;
 declare const chatOnlyHost: HostPort<'tavern.chat.read'>;
 declare const binaryHost: HostPort<'tavern.plugin.binary-request.v0'>;
 
@@ -42,19 +40,19 @@ const coreWithPluginVersion: CoreDescriptor = { kind: 'ss-helper-core', id: 'ss-
 const pluginWithCoreAxes: PluginDescriptor = { id: 'example.plugin', displayName: 'Example', coreVersion: '0.0.1', sdkPackageVersion: '0.0.1', apiVersion: '0.0.1', minApiVersion: '0.0.1', capabilities: [] };
 
 // @ts-expect-error public service API requires a typed structural token
-services.call('ss-helper.llm:completion', { messages: [] });
+bus.request('ss-helper.llm:completion', { messages: [] });
 // @ts-expect-error wrong request DTO
-services.call(LLM_COMPLETION_V0, { prompt: 'not messages' });
+bus.request(LLM_COMPLETION_V0, { prompt: 'not messages' });
 // @ts-expect-error embedding input must be text or a non-empty text array at runtime
-services.call(LLM_EMBEDDING_V0, { input: 42 });
+bus.request(LLM_EMBEDDING_V0, { input: 42 });
 // @ts-expect-error wrong recall DTO
-services.call(MEMORY_RECALL_V0, { query: 'x' });
+bus.request(MEMORY_RECALL_V0, { query: 'x' });
 // @ts-expect-error handler response must satisfy the contract response DTO
-services.expose(LLM_COMPLETION_V0, async () => ({ content: 'wrong' }));
+bus.handle(LLM_COMPLETION_V0, async () => ({ content: 'wrong' }));
 // @ts-expect-error public event API requires a typed structural token
-events.publish('ss-helper.llm:route-changed', { route: 'x' });
+bus.publish('ss-helper.llm:route-changed', { route: 'x' });
 // @ts-expect-error invalid event payload reason
-events.publish(LLM_ROUTE_CHANGED_V0, { route: 'x', reason: 'manual' });
+bus.publish(LLM_ROUTE_CHANGED_V0, { route: 'x', reason: 'manual' });
 
 chatOnlyHost.chat.readCurrent();
 // @ts-expect-error generation is absent without a generation capability

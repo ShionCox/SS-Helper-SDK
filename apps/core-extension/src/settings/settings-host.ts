@@ -23,6 +23,7 @@ import {
 } from './settings-center-controller.js';
 import { createSelectControl } from '../ui/select-control.js';
 import { createIconElement } from '../ui/icon-element.js';
+import { mountPopupConfirmation } from '../popup/popup-confirmation.js';
 
 export const SETTINGS_ROOT_ID = 'ss-helper-settings-root';
 export { SETTINGS_CENTER_ID, SETTINGS_CENTER_OVERLAY_ID };
@@ -34,6 +35,11 @@ export interface SettingsPluginIdentity {
   readonly capabilities: readonly string[];
 }
 
+function valueFields(schema: SettingsSchema): readonly Exclude<SettingsField, { kind: 'section' | 'action' | 'status' }>[] {
+  return fields(schema).filter((field): field is Exclude<SettingsField, { kind: 'section' | 'action' | 'status' }> =>
+    field.kind !== 'section' && field.kind !== 'action' && field.kind !== 'status');
+}
+
 export interface SettingsContributionSnapshot extends SettingsPluginIdentity {
   readonly schema: SettingsSchema;
   readonly health: 'healthy' | 'degraded';
@@ -42,6 +48,25 @@ export interface SettingsContributionSnapshot extends SettingsPluginIdentity {
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type SettingsIssueChannel =
+  | 'values-load'
+  | 'values-subscribe'
+  | 'status-load'
+  | 'status-subscribe'
+  | 'field-state-load'
+  | 'field-state-subscribe'
+  | 'persistence';
+
+const SETTINGS_STARTUP_RETRY_DELAYS_MS = Object.freeze([120, 400, 1_200] as const);
+const SETTINGS_ISSUE_PRIORITY: readonly SettingsIssueChannel[] = Object.freeze([
+  'persistence',
+  'values-load',
+  'values-subscribe',
+  'status-load',
+  'status-subscribe',
+  'field-state-load',
+  'field-state-subscribe',
+]);
 
 interface Contribution {
   readonly identity: SettingsPluginIdentity;
@@ -54,6 +79,8 @@ interface Contribution {
   saveRevision: number;
   saveQueue: Promise<void>;
   lastError?: string;
+  readonly issues: Partial<Record<SettingsIssueChannel, string>>;
+  readonly retryTimers: Set<ReturnType<typeof setTimeout>>;
   unsubscribe?: () => void;
   unsubscribeStatus?: () => void;
   unsubscribeFieldState?: () => void;
@@ -81,6 +108,26 @@ const SETTINGS_FIELD_KINDS = new Set([
   'section', 'toggle', 'checkbox', 'text', 'number', 'range', 'select', 'radio', 'multiSelect', 'action', 'status',
 ]);
 const SETTINGS_TONES = new Set<SettingsTone>(['neutral', 'success', 'warning', 'error']);
+const SETTINGS_SCHEMA_KEYS = new Set(['id', 'title', 'fields']);
+const SETTINGS_FIELD_BASE_KEYS = ['kind', 'id', 'label', 'description', 'disabledReason', 'aria'] as const;
+const SETTINGS_FIELD_KEYS: Readonly<Record<SettingsField['kind'], ReadonlySet<string>>> = Object.freeze({
+  section: new Set([...SETTINGS_FIELD_BASE_KEYS, 'children']),
+  toggle: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue']),
+  checkbox: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue', 'validation']),
+  text: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue', 'placeholder', 'validation', 'secret']),
+  number: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue', 'validation', 'step', 'unit', 'showStepper']),
+  range: new Set([...SETTINGS_FIELD_BASE_KEYS, 'min', 'max', 'step', 'defaultValue']),
+  select: new Set([...SETTINGS_FIELD_BASE_KEYS, 'options', 'defaultValue', 'validation']),
+  radio: new Set([...SETTINGS_FIELD_BASE_KEYS, 'options', 'defaultValue', 'validation']),
+  multiSelect: new Set([...SETTINGS_FIELD_BASE_KEYS, 'options', 'defaultValue', 'placeholder', 'validation']),
+  action: new Set([...SETTINGS_FIELD_BASE_KEYS, 'actionId', 'tone', 'popup', 'placement', 'buttonLabel']),
+  status: new Set([...SETTINGS_FIELD_BASE_KEYS, 'value', 'tone', 'action']),
+});
+const SETTINGS_VALIDATION_KEYS = new Set(['required', 'min', 'max', 'pattern', 'message']);
+const SETTINGS_ARIA_KEYS = new Set(['label', 'description']);
+const SETTINGS_OPTION_KEYS = new Set(['value', 'label']);
+const MAX_SETTINGS_FIELDS = 512;
+const MAX_SETTINGS_DEPTH = 16;
 
 /**
  * Emits static, opt-in checkpoints for the isolated browser smoke fixture.
@@ -104,11 +151,25 @@ function settingsValuesEqual(left: SettingsValues, right: SettingsValues): boole
 
 function fields(schema: SettingsSchema): readonly SettingsField[] {
   const result: SettingsField[] = [];
-  const visit = (field: SettingsField): void => {
+  const seen = new Set<object>();
+  const stack = schema.fields.map((field) => ({ field: field as unknown, depth: 0 })).reverse();
+  while (stack.length > 0) {
+    const entry = stack.pop()!;
+    if (typeof entry.field !== 'object' || entry.field === null || Array.isArray(entry.field)) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'The settings field must be an object', { reason: 'settings_field_object' });
+    }
+    if (seen.has(entry.field)) throw new SSHelperError('INVALID_PAYLOAD', 'The settings schema contains a field cycle', { reason: 'settings_field_cycle' });
+    if (entry.depth > MAX_SETTINGS_DEPTH || result.length >= MAX_SETTINGS_FIELDS) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'The settings schema is too large', { reason: 'settings_schema_limit' });
+    }
+    seen.add(entry.field);
+    const field = entry.field as SettingsField;
     result.push(field);
-    if (field.kind === 'section') field.children.forEach(visit);
-  };
-  schema.fields.forEach(visit);
+    if (field.kind === 'section') {
+      if (!Array.isArray(field.children)) throw new SSHelperError('INVALID_PAYLOAD', 'Settings section children are invalid', { reason: 'settings_section_children', field: field.id });
+      for (let index = field.children.length - 1; index >= 0; index -= 1) stack.push({ field: field.children[index], depth: entry.depth + 1 });
+    }
+  }
   return result;
 }
 
@@ -123,7 +184,7 @@ function statusFields(schema: SettingsSchema): readonly Extract<SettingsField, {
 function validateNavigationTarget(target: SettingsNavigationTarget, reason: string): void {
   const value = target as unknown as Record<string, unknown>;
   if (typeof target !== 'object' || target === null || Object.keys(value).some((key) => !['pluginId', 'tabId', 'fieldId'].includes(key)) || typeof target.pluginId !== 'string' || target.pluginId.trim() === '' || (target.tabId !== undefined && (typeof target.tabId !== 'string' || target.tabId.trim() === '')) || (target.fieldId !== undefined && (typeof target.fieldId !== 'string' || target.fieldId.trim() === ''))) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'Settings navigation target is invalid', { reason });
+    throw new SSHelperError('INVALID_PAYLOAD', 'Settings navigation target is invalid', { reason });
   }
 }
 
@@ -132,7 +193,7 @@ function validateStatusMap(schema: SettingsSchema, status: Readonly<Record<strin
   const allowed = new Set(statusFields(schema).map((field) => field.id));
   for (const [id, snapshot] of Object.entries(status)) {
     if (!allowed.has(id) || typeof snapshot !== 'object' || snapshot === null || Object.keys(snapshot).some((key) => !['value', 'tone', 'description'].includes(key)) || typeof snapshot.value !== 'string' || snapshot.value.trim() === '' || !SETTINGS_TONES.has(snapshot.tone) || (snapshot.description !== undefined && typeof snapshot.description !== 'string')) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'Settings status is invalid', { phase, field: id });
+      throw new SSHelperError('INVALID_PAYLOAD', 'Settings status is invalid', { phase, field: id });
     }
   }
   return Object.freeze({ ...status });
@@ -148,7 +209,7 @@ function validateFieldStateMap(schema: SettingsSchema, state: SettingsFieldState
       || typeof snapshot.disabled !== 'boolean'
       || (snapshot.disabledReason !== undefined && (typeof snapshot.disabledReason !== 'string' || snapshot.disabledReason.trim() === ''))
       || (snapshot.disabled && snapshot.disabledReason === undefined)) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'Settings field state is invalid', { phase, field: id });
+      throw new SSHelperError('INVALID_PAYLOAD', 'Settings field state is invalid', { phase, field: id });
     }
     next[id] = Object.freeze({ disabled: snapshot.disabled, ...(snapshot.disabledReason === undefined ? {} : { disabledReason: snapshot.disabledReason.trim() }) });
   }
@@ -156,45 +217,122 @@ function validateFieldStateMap(schema: SettingsSchema, state: SettingsFieldState
 }
 
 function validateOptions(field: Extract<SettingsField, { kind: 'select' | 'radio' | 'multiSelect' }>): void {
-  if (field.options.length === 0 || new Set(field.options.map((option) => option.value)).size !== field.options.length) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'Settings options are invalid', { reason: 'settings_options' });
+  if (field.options.length === 0 || new Set(field.options.map((option) => option.value)).size !== field.options.length
+    || field.options.some((option) => Object.keys(option).some((key) => !SETTINGS_OPTION_KEYS.has(key))
+      || typeof option.value !== 'string' || option.value.trim() === ''
+      || typeof option.label !== 'string' || option.label.trim() === '')) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'Settings options are invalid', { reason: 'settings_options' });
+  }
+}
+
+function validateValidationRule(field: SettingsField): void {
+  if (!('validation' in field) || field.validation === undefined) return;
+  const rule = field.validation;
+  if (typeof rule !== 'object' || rule === null || Object.keys(rule).some((key) => !SETTINGS_VALIDATION_KEYS.has(key))
+    || (rule.required !== undefined && typeof rule.required !== 'boolean')
+    || (rule.min !== undefined && (typeof rule.min !== 'number' || !Number.isFinite(rule.min)))
+    || (rule.max !== undefined && (typeof rule.max !== 'number' || !Number.isFinite(rule.max)))
+    || (rule.min !== undefined && rule.max !== undefined && rule.min > rule.max)
+    || (rule.pattern !== undefined && (typeof rule.pattern !== 'string' || rule.pattern.trim() === ''))
+    || (rule.message !== undefined && (typeof rule.message !== 'string' || rule.message.trim() === ''))) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'Settings validation rule is invalid', { reason: 'settings_validation', field: field.id });
+  }
+  if (rule.pattern !== undefined) {
+    try { new RegExp(rule.pattern, 'u'); }
+    catch { throw new SSHelperError('INVALID_PAYLOAD', 'Settings validation pattern is invalid', { reason: 'settings_validation_pattern', field: field.id }); }
+  }
+}
+
+function validateFieldMetadata(field: SettingsField): void {
+  const allowed = SETTINGS_FIELD_KEYS[field.kind];
+  if (Object.keys(field).some((key) => !allowed.has(key))) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'The settings field contains unsupported properties', { reason: 'settings_field_keys', field: field.id });
+  }
+  if (field.description !== undefined && (typeof field.description !== 'string' || field.description.trim() === '')) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'The settings field description is invalid', { reason: 'settings_field_description', field: field.id });
+  }
+  if (field.disabledReason !== undefined && (typeof field.disabledReason !== 'string' || field.disabledReason.trim() === '')) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'The settings field disabled reason is invalid', { reason: 'settings_field_disabled_reason', field: field.id });
+  }
+  if (field.aria !== undefined) {
+    if (typeof field.aria !== 'object' || field.aria === null || Object.keys(field.aria).some((key) => !SETTINGS_ARIA_KEYS.has(key))
+      || (field.aria.label !== undefined && (typeof field.aria.label !== 'string' || field.aria.label.trim() === ''))
+      || (field.aria.description !== undefined && (typeof field.aria.description !== 'string' || field.aria.description.trim() === ''))) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'The settings field accessibility metadata is invalid', { reason: 'settings_field_aria', field: field.id });
+    }
+  }
+  validateValidationRule(field);
+  if (field.kind === 'text') {
+    if ((field.placeholder !== undefined && typeof field.placeholder !== 'string')
+      || (field.secret !== undefined && typeof field.secret !== 'boolean')) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'Text field metadata is invalid', { reason: 'settings_text_metadata', field: field.id });
+    }
+  } else if (field.kind === 'number') {
+    if ((field.step !== undefined && (typeof field.step !== 'number' || !Number.isFinite(field.step) || field.step <= 0))
+      || (field.unit !== undefined && (typeof field.unit !== 'string' || field.unit.trim() === ''))
+      || (field.showStepper !== undefined && typeof field.showStepper !== 'boolean')) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'Number field metadata is invalid', { reason: 'settings_number_metadata', field: field.id });
+    }
+  } else if (field.kind === 'range') {
+    if (typeof field.min !== 'number' || !Number.isFinite(field.min) || typeof field.max !== 'number' || !Number.isFinite(field.max)
+      || (field.step !== undefined && (typeof field.step !== 'number' || !Number.isFinite(field.step) || field.step <= 0))) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'Range field metadata is invalid', { reason: 'settings_range_metadata', field: field.id });
+    }
+  } else if (field.kind === 'multiSelect') {
+    if (field.placeholder !== undefined && typeof field.placeholder !== 'string') {
+      throw new SSHelperError('INVALID_PAYLOAD', 'Multi-select placeholder is invalid', { reason: 'settings_multiselect_metadata', field: field.id });
+    }
+  } else if (field.kind === 'action') {
+    if (typeof field.actionId !== 'string' || field.actionId.trim() === ''
+      || (field.tone !== undefined && field.tone !== 'neutral' && field.tone !== 'danger')) {
+      throw new SSHelperError('INVALID_PAYLOAD', 'Action field metadata is invalid', { reason: 'settings_action_metadata', field: field.id });
+    }
   }
 }
 
 function validateSchema(pluginId: string, schema: SettingsSchema): void {
-  if (schema.id !== pluginId || schema.title.trim() === '') throw new SSHelperError('PAYLOAD_INVALID', 'The settings schema is invalid', { reason: 'schema_identity' });
+  if (typeof schema !== 'object' || schema === null || Object.keys(schema).some((key) => !SETTINGS_SCHEMA_KEYS.has(key))
+    || schema.id !== pluginId || typeof schema.title !== 'string' || schema.title.trim() === '' || !Array.isArray(schema.fields)) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'The settings schema is invalid', { reason: 'schema_identity' });
+  }
   const ids = new Set<string>();
   for (const field of fields(schema)) {
-    if (!SETTINGS_FIELD_KINDS.has(field.kind)) throw new SSHelperError('PAYLOAD_INVALID', 'The settings field kind is invalid', { reason: 'settings_schema_invalid' });
-    if (!/^[a-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*$/u.test(field.id) || ids.has(field.id) || field.label.trim() === '') {
-      throw new SSHelperError('PAYLOAD_INVALID', 'The settings field is invalid', { reason: 'field_identity' });
+    if (!SETTINGS_FIELD_KINDS.has(field.kind)) throw new SSHelperError('INVALID_PAYLOAD', 'The settings field kind is invalid', { reason: 'settings_schema_invalid' });
+    if (typeof field.id !== 'string' || !/^[a-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*$/u.test(field.id)
+      || ids.has(field.id) || typeof field.label !== 'string' || field.label.trim() === '') {
+      throw new SSHelperError('INVALID_PAYLOAD', 'The settings field is invalid', { reason: 'field_identity' });
     }
     ids.add(field.id);
+    validateFieldMetadata(field);
     if (field.kind === 'select' || field.kind === 'radio' || field.kind === 'multiSelect') validateOptions(field);
     if (field.kind === 'range' && (field.min > field.max || (field.step ?? 1) <= 0)) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'Range field bounds are invalid', { reason: 'range_bounds' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'Range field bounds are invalid', { reason: 'range_bounds' });
     }
     if (field.kind === 'number' && field.step !== undefined && field.step <= 0) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'Number field step is invalid', { reason: 'number_step' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'Number field step is invalid', { reason: 'number_step' });
     }
     if (field.kind === 'action') {
       if (field.placement !== undefined && field.placement !== 'footer' && field.placement !== 'inline') {
-        throw new SSHelperError('PAYLOAD_INVALID', 'Action field placement is invalid', { reason: 'action_placement' });
+        throw new SSHelperError('INVALID_PAYLOAD', 'Action field placement is invalid', { reason: 'action_placement' });
       }
       if (field.buttonLabel !== undefined && (typeof field.buttonLabel !== 'string' || field.buttonLabel.trim() === '')) {
-        throw new SSHelperError('PAYLOAD_INVALID', 'Action field button label is invalid', { reason: 'action_button_label' });
+        throw new SSHelperError('INVALID_PAYLOAD', 'Action field button label is invalid', { reason: 'action_button_label' });
       }
     }
     if (field.kind === 'status' && (typeof field.value !== 'string' || field.value.trim() === '' || (field.tone !== undefined && !SETTINGS_TONES.has(field.tone)))) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'Status field is invalid', { reason: 'status_field' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'Status field is invalid', { reason: 'status_field' });
     }
     if (field.kind === 'status' && field.action !== undefined) {
       const action = field.action as unknown as Record<string, unknown>;
-      if (Object.keys(action).some((key) => !['buttonLabel', 'target', 'showWhen'].includes(key)) || typeof field.action.buttonLabel !== 'string' || field.action.buttonLabel.trim() === '') throw new SSHelperError('PAYLOAD_INVALID', 'Status action button label is invalid', { reason: 'status_action_label' });
+      if (Object.keys(action).some((key) => !['buttonLabel', 'target', 'showWhen'].includes(key)) || typeof field.action.buttonLabel !== 'string' || field.action.buttonLabel.trim() === '') throw new SSHelperError('INVALID_PAYLOAD', 'Status action button label is invalid', { reason: 'status_action_label' });
       validateNavigationTarget(field.action.target, 'status_action_target');
       if (field.action.showWhen !== undefined && (!Array.isArray(field.action.showWhen) || field.action.showWhen.length === 0 || field.action.showWhen.some((tone) => !SETTINGS_TONES.has(tone)))) {
-        throw new SSHelperError('PAYLOAD_INVALID', 'Status action visibility is invalid', { reason: 'status_action_visibility' });
+        throw new SSHelperError('INVALID_PAYLOAD', 'Status action visibility is invalid', { reason: 'status_action_visibility' });
       }
+    }
+    if ('defaultValue' in field && field.defaultValue !== undefined) {
+      const message = validateValue(field, field.defaultValue as PlainData);
+      if (message !== undefined) throw new SSHelperError('INVALID_PAYLOAD', 'Settings default value is invalid', { reason: 'settings_default_value', field: field.id });
     }
   }
 }
@@ -221,11 +359,12 @@ function validateValue(field: SettingsField, value: PlainData | undefined): stri
     return typeof value === 'string' && field.options.some((option) => option.value === value) ? undefined : '请选择有效选项';
   }
   if (field.kind === 'multiSelect') {
-    return Array.isArray(value)
-      && value.every((entry) => typeof entry === 'string' && field.options.some((option) => option.value === entry))
-      && new Set(value).size === value.length
-      ? undefined
-      : '请选择有效选项';
+    if (!Array.isArray(value)
+      || !value.every((entry) => typeof entry === 'string' && field.options.some((option) => option.value === entry))
+      || new Set(value).size !== value.length) return '请选择有效选项';
+    if (field.validation?.min !== undefined && value.length < field.validation.min) return field.validation.message ?? `至少选择 ${field.validation.min} 项`;
+    if (field.validation?.max !== undefined && value.length > field.validation.max) return field.validation.message ?? `最多选择 ${field.validation.max} 项`;
+    return undefined;
   }
   if (typeof value !== 'number' || !Number.isFinite(value)) return '请输入有效数值';
   const min = field.kind === 'range' ? field.min : field.validation?.min;
@@ -237,11 +376,19 @@ function validateValue(field: SettingsField, value: PlainData | undefined): stri
 
 function validateValues(schema: SettingsSchema, values: SettingsValues, phase: string): SettingsValues {
   assertPayload(values, undefined, phase);
-  for (const field of fields(schema)) {
-    const message = validateValue(field, values[field.id]);
-    if (message !== undefined) throw new SSHelperError('PAYLOAD_INVALID', message, { pluginId: schema.id, field: field.id });
+  const allowed = new Set(valueFields(schema).map((field) => field.id));
+  const unknown = Object.keys(values).find((key) => !allowed.has(key));
+  if (unknown !== undefined) {
+    throw new SSHelperError('INVALID_PAYLOAD', 'Settings values contain an undeclared field', { pluginId: schema.id, field: unknown, phase });
   }
-  return Object.freeze({ ...values });
+  const next: Record<string, PlainData> = {};
+  for (const field of valueFields(schema)) {
+    const message = validateValue(field, values[field.id]);
+    if (message !== undefined) throw new SSHelperError('INVALID_PAYLOAD', message, { pluginId: schema.id, field: field.id });
+    const value = values[field.id];
+    if (value !== undefined) next[field.id] = Array.isArray(value) ? Object.freeze([...value]) : value;
+  }
+  return Object.freeze(next);
 }
 
 function searchText(field: SettingsField): string {
@@ -282,7 +429,7 @@ export class SettingsHost {
     ensureCoreUiStyles(document);
     const existing = document.getElementById(SETTINGS_ROOT_ID);
     if (existing !== null) {
-      if (existing.dataset.ssHelperOwner !== 'core') throw new SSHelperError('BRIDGE_CORRUPTED', 'The settings root is not owned by Core');
+      if (existing.dataset.ssHelperOwner !== 'core') throw new SSHelperError('INTERNAL', 'The settings root is not owned by Core');
       this.#root = existing;
       this.#center ??= new SettingsCenterController(document);
       this.#renderRoot();
@@ -303,54 +450,22 @@ export class SettingsHost {
   register(scope: SessionScope, identity: SettingsPluginIdentity, schema: SettingsSchema, adapter: SettingsAdapter, openPopup: (token: PopupToken, input: PlainData, restoreFocus?: HTMLElement) => void): () => void {
     scope.assertActive();
     validateSchema(identity.id, schema);
-    if (this.#contributions.has(identity.id)) throw new SSHelperError('PAYLOAD_INVALID', 'The plugin already registered settings', { reason: 'duplicate_settings' });
+    if (this.#contributions.has(identity.id)) throw new SSHelperError('INVALID_PAYLOAD', 'The plugin already registered settings', { reason: 'duplicate_settings' });
     const empty = Object.freeze({});
     const contribution: Contribution = {
       identity, schema, adapter, openPopup, values: empty, committedValues: empty,
       health: 'healthy', saveState: 'idle', saveRevision: 0, saveQueue: Promise.resolve(), status: empty, fieldState: empty,
+      issues: {}, retryTimers: new Set(),
       active: true, valuesRevision: 0, statusRevision: 0, fieldStateRevision: 0,
     };
     this.#contributions.set(identity.id, contribution);
     void this.#load(contribution);
     void this.#loadStatus(contribution);
     void this.#loadFieldState(contribution);
-    if (adapter.subscribe !== undefined) {
-      try {
-        contribution.unsubscribe = adapter.subscribe((values) => {
-          try {
-            const validated = validateValues(contribution.schema, values, 'settings_subscribe');
-            contribution.valuesRevision += 1;
-            if (!settingsValuesEqual(validated, contribution.values)) contribution.saveRevision += 1;
-            contribution.values = validated;
-            contribution.committedValues = validated;
-            contribution.health = 'healthy';
-            this.#syncValuesUi(contribution);
-          } catch { this.#degrade(contribution); }
-        });
-      } catch { this.#degrade(contribution); }
-    }
-    if (adapter.subscribeStatus !== undefined) {
-      try {
-        contribution.unsubscribeStatus = adapter.subscribeStatus((status) => {
-          try {
-            contribution.status = validateStatusMap(contribution.schema, status, 'settings_status_subscribe');
-            contribution.statusRevision += 1;
-            this.#syncStatusUi(contribution);
-          } catch { this.#degrade(contribution); }
-        });
-      } catch { this.#degrade(contribution); }
-    }
-    if (adapter.subscribeFieldState !== undefined) {
-      try {
-        contribution.unsubscribeFieldState = adapter.subscribeFieldState((state) => {
-          try {
-            contribution.fieldState = validateFieldStateMap(contribution.schema, state, 'settings_field_state_subscribe');
-            contribution.fieldStateRevision += 1;
-            this.#syncFieldStateUi(contribution);
-          } catch { this.#degrade(contribution); }
-        });
-      } catch { this.#degrade(contribution); }
-    }
+    this.#attachValuesSubscription(contribution);
+    this.#attachStatusSubscription(contribution);
+    this.#attachFieldStateSubscription(contribution);
+
     this.#renderAll();
     return scope.addCleanup(() => {
       contribution.active = false;
@@ -360,6 +475,8 @@ export class SettingsHost {
       contribution.unsubscribe?.();
       contribution.unsubscribeStatus?.();
       contribution.unsubscribeFieldState?.();
+      for (const timer of contribution.retryTimers) clearTimeout(timer);
+      contribution.retryTimers.clear();
       this.#contributions.delete(identity.id);
       this.#activeTabs.delete(identity.id);
       this.#searchQueries.delete(identity.id);
@@ -370,53 +487,161 @@ export class SettingsHost {
     });
   }
 
-  async #load(contribution: Contribution): Promise<void> {
+  #scheduleRetry(contribution: Contribution, attempt: number, retry: (attempt: number) => void): void {
+    if (!contribution.active || attempt >= SETTINGS_STARTUP_RETRY_DELAYS_MS.length) return;
+    const timer = setTimeout(() => {
+      contribution.retryTimers.delete(timer);
+      if (contribution.active) retry(attempt + 1);
+    }, SETTINGS_STARTUP_RETRY_DELAYS_MS[attempt]);
+    contribution.retryTimers.add(timer);
+    const unref = (timer as unknown as { unref?: () => void }).unref;
+    unref?.call(timer);
+  }
+
+  #refreshHealth(contribution: Contribution): void {
+    const firstIssue = SETTINGS_ISSUE_PRIORITY.find((channel) => contribution.issues[channel] !== undefined);
+    contribution.health = firstIssue === undefined ? 'healthy' : 'degraded';
+    if (firstIssue === undefined) delete contribution.lastError;
+    else contribution.lastError = contribution.issues[firstIssue]!;
+  }
+
+  #markIssue(contribution: Contribution, channel: SettingsIssueChannel, code: string, rerender = true): void {
+    contribution.issues[channel] = code;
+    if (channel === 'persistence') contribution.saveState = 'error';
+    this.#refreshHealth(contribution);
+    if (rerender) this.#renderAll();
+    else this.#syncContributionUi(contribution);
+  }
+
+  #clearIssues(contribution: Contribution, channels: readonly SettingsIssueChannel[]): void {
+    for (const channel of channels) delete contribution.issues[channel];
+    this.#refreshHealth(contribution);
+  }
+
+  #attachValuesSubscription(contribution: Contribution, attempt = 0): void {
+    if (!contribution.active || contribution.adapter.subscribe === undefined || contribution.unsubscribe !== undefined) return;
+    try {
+      contribution.unsubscribe = contribution.adapter.subscribe((values) => {
+        try {
+          const validated = validateValues(contribution.schema, values, 'settings_subscribe');
+          contribution.valuesRevision += 1;
+          if (!settingsValuesEqual(validated, contribution.values)) contribution.saveRevision += 1;
+          contribution.values = validated;
+          contribution.committedValues = validated;
+          this.#clearIssues(contribution, ['values-load', 'values-subscribe']);
+          this.#syncValuesUi(contribution);
+          this.#syncContributionUi(contribution);
+        } catch {
+          this.#markIssue(contribution, 'values-subscribe', 'SETTINGS_VALUES_SUBSCRIPTION_INVALID');
+        }
+      });
+      this.#clearIssues(contribution, ['values-subscribe']);
+      this.#syncContributionUi(contribution);
+    } catch {
+      this.#markIssue(contribution, 'values-subscribe', 'SETTINGS_VALUES_SUBSCRIPTION_UNAVAILABLE');
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachValuesSubscription(contribution, nextAttempt));
+    }
+  }
+
+  #attachStatusSubscription(contribution: Contribution, attempt = 0): void {
+    if (!contribution.active || contribution.adapter.subscribeStatus === undefined || contribution.unsubscribeStatus !== undefined) return;
+    try {
+      contribution.unsubscribeStatus = contribution.adapter.subscribeStatus((status) => {
+        try {
+          contribution.status = validateStatusMap(contribution.schema, status, 'settings_status_subscribe');
+          contribution.statusRevision += 1;
+          this.#clearIssues(contribution, ['status-load', 'status-subscribe']);
+          this.#syncStatusUi(contribution);
+          this.#syncContributionUi(contribution);
+        } catch {
+          this.#markIssue(contribution, 'status-subscribe', 'SETTINGS_STATUS_SUBSCRIPTION_INVALID');
+        }
+      });
+      this.#clearIssues(contribution, ['status-subscribe']);
+      this.#syncContributionUi(contribution);
+    } catch {
+      this.#markIssue(contribution, 'status-subscribe', 'SETTINGS_STATUS_SUBSCRIPTION_UNAVAILABLE');
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachStatusSubscription(contribution, nextAttempt));
+    }
+  }
+
+  #attachFieldStateSubscription(contribution: Contribution, attempt = 0): void {
+    if (!contribution.active || contribution.adapter.subscribeFieldState === undefined || contribution.unsubscribeFieldState !== undefined) return;
+    try {
+      contribution.unsubscribeFieldState = contribution.adapter.subscribeFieldState((state) => {
+        try {
+          contribution.fieldState = validateFieldStateMap(contribution.schema, state, 'settings_field_state_subscribe');
+          contribution.fieldStateRevision += 1;
+          this.#clearIssues(contribution, ['field-state-load', 'field-state-subscribe']);
+          this.#syncFieldStateUi(contribution);
+          this.#syncContributionUi(contribution);
+        } catch {
+          this.#markIssue(contribution, 'field-state-subscribe', 'SETTINGS_FIELD_STATE_SUBSCRIPTION_INVALID');
+        }
+      });
+      this.#clearIssues(contribution, ['field-state-subscribe']);
+      this.#syncContributionUi(contribution);
+    } catch {
+      this.#markIssue(contribution, 'field-state-subscribe', 'SETTINGS_FIELD_STATE_SUBSCRIPTION_UNAVAILABLE');
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachFieldStateSubscription(contribution, nextAttempt));
+    }
+  }
+
+  async #load(contribution: Contribution, attempt = 0): Promise<void> {
     const revision = contribution.valuesRevision;
     try {
       const values = validateValues(contribution.schema, await contribution.adapter.load(), 'settings_load');
       if (!contribution.active || revision !== contribution.valuesRevision) return;
       contribution.values = values;
       contribution.committedValues = values;
-      contribution.health = 'healthy';
-      contribution.saveState = 'idle';
-      delete contribution.lastError;
+      this.#clearIssues(contribution, ['values-load']);
+      if (contribution.issues.persistence === undefined) contribution.saveState = 'idle';
       this.#syncValuesUi(contribution);
-    } catch { if (contribution.active) this.#degrade(contribution); }
+      this.#syncContributionUi(contribution);
+    } catch {
+      if (!contribution.active || revision !== contribution.valuesRevision) return;
+      this.#markIssue(contribution, 'values-load', 'SETTINGS_VALUES_LOAD_FAILED');
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#load(contribution, nextAttempt); });
+    }
   }
 
-  async #loadStatus(contribution: Contribution): Promise<void> {
+  async #loadStatus(contribution: Contribution, attempt = 0): Promise<void> {
     if (contribution.adapter.loadStatus === undefined) return;
     const revision = contribution.statusRevision;
     try {
       const status = validateStatusMap(contribution.schema, await contribution.adapter.loadStatus(), 'settings_status_load');
       if (!contribution.active || revision !== contribution.statusRevision) return;
       contribution.status = status;
+      this.#clearIssues(contribution, ['status-load']);
       this.#syncStatusUi(contribution);
-    } catch { if (contribution.active) this.#degrade(contribution); }
+      this.#syncContributionUi(contribution);
+    } catch {
+      if (!contribution.active || revision !== contribution.statusRevision) return;
+      this.#markIssue(contribution, 'status-load', 'SETTINGS_STATUS_LOAD_FAILED');
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#loadStatus(contribution, nextAttempt); });
+    }
   }
 
-  async #loadFieldState(contribution: Contribution): Promise<void> {
+  async #loadFieldState(contribution: Contribution, attempt = 0): Promise<void> {
     if (contribution.adapter.loadFieldState === undefined) return;
     const revision = contribution.fieldStateRevision;
     try {
       const state = validateFieldStateMap(contribution.schema, await contribution.adapter.loadFieldState(), 'settings_field_state_load');
       if (!contribution.active || revision !== contribution.fieldStateRevision) return;
       contribution.fieldState = state;
+      this.#clearIssues(contribution, ['field-state-load']);
       this.#syncFieldStateUi(contribution);
-    } catch { if (contribution.active) this.#degrade(contribution); }
-  }
-
-  #degrade(contribution: Contribution, rerender = true): void {
-    contribution.health = 'degraded';
-    contribution.saveState = 'error';
-    contribution.lastError = 'SETTINGS_ADAPTER_ERROR';
-    if (rerender) this.#renderAll();
-    else this.#syncContributionUi(contribution);
+      this.#syncContributionUi(contribution);
+    } catch {
+      if (!contribution.active || revision !== contribution.fieldStateRevision) return;
+      this.#markIssue(contribution, 'field-state-load', 'SETTINGS_FIELD_STATE_LOAD_FAILED');
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#loadFieldState(contribution, nextAttempt); });
+    }
   }
 
   async save(pluginId: string, values: SettingsValues): Promise<void> {
     const contribution = this.#contributions.get(pluginId);
-    if (contribution === undefined) throw new SSHelperError('SETTINGS_ADAPTER_ERROR', 'Settings are not registered', { pluginId });
+    if (contribution === undefined) throw new SSHelperError('INTERNAL', 'Settings are not registered', { pluginId });
     const validatedValues = validateValues(contribution.schema, values, 'settings_save');
     const revision = ++contribution.saveRevision;
     contribution.valuesRevision += 1;
@@ -429,17 +654,16 @@ export class SettingsHost {
         if (revision === contribution.saveRevision) {
           contribution.committedValues = validatedValues;
           contribution.values = validatedValues;
-          contribution.health = 'healthy';
           contribution.saveState = 'saved';
-          delete contribution.lastError;
+          this.#clearIssues(contribution, ['persistence', 'values-load']);
           this.#syncContributionUi(contribution);
         }
       } catch {
         if (revision === contribution.saveRevision) {
           contribution.values = contribution.committedValues;
-          this.#degrade(contribution, false);
+          this.#markIssue(contribution, 'persistence', 'SETTINGS_SAVE_FAILED', false);
         }
-        throw new SSHelperError('SETTINGS_ADAPTER_ERROR', '插件设置保存失败', { pluginId });
+        throw new SSHelperError('INTERNAL', '插件设置保存失败', { pluginId });
       }
     });
     contribution.saveQueue = operation.catch(() => undefined);
@@ -448,7 +672,7 @@ export class SettingsHost {
 
   async reset(pluginId: string): Promise<SettingsValues> {
     const contribution = this.#contributions.get(pluginId);
-    if (contribution === undefined) throw new SSHelperError('SETTINGS_ADAPTER_ERROR', 'Settings are not registered', { pluginId });
+    if (contribution === undefined) throw new SSHelperError('INTERNAL', 'Settings are not registered', { pluginId });
     const revision = ++contribution.saveRevision;
     contribution.valuesRevision += 1;
     contribution.saveState = 'saving';
@@ -459,9 +683,8 @@ export class SettingsHost {
         if (!contribution.active || revision !== contribution.saveRevision) return contribution.values;
         contribution.values = values;
         contribution.committedValues = values;
-        contribution.health = 'healthy';
         contribution.saveState = 'saved';
-        delete contribution.lastError;
+        this.#clearIssues(contribution, ['persistence', 'values-load']);
         this.#fieldErrors.delete(pluginId);
         this.#renderAll();
         return values;
@@ -474,9 +697,9 @@ export class SettingsHost {
               contribution.committedValues = authoritative;
             }
           } catch { /* retain the last committed values when authoritative reload also fails */ }
-          if (contribution.active && revision === contribution.saveRevision) this.#degrade(contribution);
+          if (contribution.active && revision === contribution.saveRevision) this.#markIssue(contribution, 'persistence', 'SETTINGS_RESET_FAILED');
         }
-        throw new SSHelperError('SETTINGS_ADAPTER_ERROR', '插件设置恢复失败', { pluginId });
+        throw new SSHelperError('INTERNAL', '插件设置恢复失败', { pluginId });
       }
     });
     contribution.saveQueue = operation.then(() => undefined, () => undefined);
@@ -708,8 +931,9 @@ export class SettingsHost {
     this.#applySearch(fieldContainer, search.value, identity.id);
 
     const footer = document.createElement('footer'); footer.className = 'stx-center-footer';
-    const status = document.createElement('div'); status.className = `stx-save-state stx-save-state-${contribution.saveState}`; status.dataset.saveStatus = identity.id;
-    status.append(icon(document, contribution.saveState === 'error' ? 'circle-exclamation' : contribution.saveState === 'saving' ? 'rotate' : 'circle-check'));
+    const footerState = this.#footerState(contribution);
+    const status = document.createElement('div'); status.className = `stx-save-state stx-save-state-${footerState}`; status.dataset.saveStatus = identity.id;
+    status.append(icon(document, footerState === 'error' || footerState === 'warning' ? 'circle-exclamation' : footerState === 'saving' ? 'rotate' : 'circle-check'));
     const statusText = document.createElement('span'); statusText.textContent = this.#saveStateText(contribution); status.append(statusText);
     const actions = document.createElement('div'); actions.className = 'stx-center-footer-actions';
     for (const field of actionFields(schema).filter((candidate) => candidate.placement !== 'inline')) {
@@ -858,7 +1082,7 @@ export class SettingsHost {
         const flush = (): void => this.#scheduleFieldSave(contribution, field, () => input.value.trim() === '' ? Number.NaN : Number(input.value));
         input.addEventListener('input', flush); input.addEventListener('blur', () => this.#flushDebouncedSave(contribution.identity.id, field.id)); input.addEventListener('keydown', (event: KeyboardEvent) => { if (event.key === 'Enter') this.#flushDebouncedSave(contribution.identity.id, field.id); });
         if (field.showStepper !== false) {
-          const minus = this.#stepButton(document, 'minus', `减少${field.label}`); const plus = this.#stepButton(document, 'plus', `增加${field.label}`);
+          const minus = this.#stepButton(document, 'minus', `减少${field.label}`); const plus = this.#stepButton(document, 'circle-plus', `增加${field.label}`);
           minus.disabled = disabledReason !== undefined; plus.disabled = disabledReason !== undefined;
           minus.addEventListener('click', () => this.#stepNumber(contribution, field, input, -1)); plus.addEventListener('click', () => this.#stepNumber(contribution, field, input, 1)); stepper.append(minus, input, plus);
         } else stepper.append(input);
@@ -1109,8 +1333,14 @@ export class SettingsHost {
   }
 
   async #resetWithConfirmation(contribution: Contribution): Promise<void> {
-    const confirm = this.#root?.ownerDocument.defaultView?.confirm(`恢复 ${contribution.identity.displayName} 的默认设置？`) ?? true;
-    if (!confirm) return;
+    const document = this.#root?.ownerDocument;
+    if (document === undefined) return;
+    const confirmation = mountPopupConfirmation(document, {
+      title: '恢复默认设置？',
+      message: `${contribution.identity.displayName} 的当前设置将被默认值替换。`,
+      confirmLabel: '恢复默认',
+    });
+    if (!await confirmation.result) return;
     try { await this.reset(contribution.identity.id); }
     catch { this.#renderCenter(); }
   }
@@ -1147,9 +1377,23 @@ export class SettingsHost {
 
   #saveStateText(contribution: Contribution): string {
     if (contribution.saveState === 'saving') return '正在自动保存…';
+    if (contribution.saveState === 'error' || contribution.issues.persistence !== undefined) return '保存失败，请检查设置';
+    if (contribution.issues['values-load'] !== undefined || contribution.issues['values-subscribe'] !== undefined) return '设置读取失败，正在等待恢复';
+    if (contribution.issues['status-load'] !== undefined || contribution.issues['status-subscribe'] !== undefined
+      || contribution.issues['field-state-load'] !== undefined || contribution.issues['field-state-subscribe'] !== undefined) {
+      return '部分状态暂不可用，设置仍可保存';
+    }
     if (contribution.saveState === 'saved') return '设置已自动保存';
-    if (contribution.saveState === 'error') return '保存失败，请检查设置';
     return '修改后自动保存';
+  }
+
+  #footerState(contribution: Contribution): SaveState | 'warning' {
+    if (contribution.saveState === 'saving') return 'saving';
+    if (contribution.saveState === 'error' || contribution.issues.persistence !== undefined) return 'error';
+    if (contribution.issues['values-load'] !== undefined || contribution.issues['values-subscribe'] !== undefined) return 'error';
+    if (contribution.health === 'degraded') return 'warning';
+    if (contribution.saveState === 'saved') return 'saved';
+    return 'idle';
   }
 
   #syncContributionUi(contribution: Contribution): void {
@@ -1164,8 +1408,10 @@ export class SettingsHost {
     }
     for (const state of Array.from(document.querySelectorAll<HTMLElement>('[data-save-status]'))) {
       if (state.dataset.saveStatus !== contribution.identity.id) continue;
-      state.className = `stx-save-state stx-save-state-${contribution.saveState}`;
-      const text = state.querySelector('span:last-child'); if (text !== null) text.textContent = this.#saveStateText(contribution);
+      const footerState = this.#footerState(contribution);
+      state.className = `stx-save-state stx-save-state-${footerState}`;
+      const text = document.createElement('span'); text.textContent = this.#saveStateText(contribution);
+      state.replaceChildren(icon(document, footerState === 'error' || footerState === 'warning' ? 'circle-exclamation' : footerState === 'saving' ? 'rotate' : 'circle-check'), text);
     }
   }
 }

@@ -47,10 +47,10 @@ function makeSnapshot(descriptor: CoreDescriptor, runtime: CoreRuntime): CoreDis
 function defineSnapshot(realm: CoreRealm, expected: unknown, snapshot: CoreDiscoverySnapshot): void {
   let current: unknown;
   try { current = Reflect.get(realm as object, CORE_DISCOVERY_SYMBOL); } catch {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The Core discovery bridge could not be read');
+    throw new SSHelperError('INTERNAL', 'The Core discovery bridge could not be read');
   }
   if (current !== expected) {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The Core discovery bridge changed during installation');
+    throw new SSHelperError('INTERNAL', 'The Core discovery bridge changed during installation');
   }
   try {
     Object.defineProperty(realm, CORE_DISCOVERY_SYMBOL, {
@@ -60,7 +60,7 @@ function defineSnapshot(realm: CoreRealm, expected: unknown, snapshot: CoreDisco
       configurable: true,
     });
   } catch {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The Core discovery bridge could not be updated');
+    throw new SSHelperError('INTERNAL', 'The Core discovery bridge could not be updated');
   }
 }
 
@@ -75,27 +75,27 @@ function sameArtifact(snapshot: CoreDiscoverySnapshot, identity: CoreRuntimeIden
 export function installCoreRuntime(identity: CoreRuntimeIdentity, target?: CoreRealm, options: CoreRuntimeOptions = {}): CoreRuntime {
   const realm = target ?? (globalThis as unknown as CoreRealm);
   if (typeof realm.addEventListener !== 'function' || typeof realm.dispatchEvent !== 'function') {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'Core requires an event-capable realm');
+    throw new SSHelperError('INTERNAL', 'Core requires an event-capable realm');
   }
   let current: unknown;
   try { current = Reflect.get(realm as object, CORE_DISCOVERY_SYMBOL); } catch {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The Core discovery bridge could not be read');
+    throw new SSHelperError('INTERNAL', 'The Core discovery bridge could not be read');
   }
   if (current !== undefined && !isSnapshot(current)) {
-    throw new SSHelperError('BRIDGE_CORRUPTED', 'The discovery slot contains an invalid value');
+    throw new SSHelperError('INTERNAL', 'The discovery slot contains an invalid value');
   }
   if (current?.descriptor.state === 'ready') {
-    if (!sameArtifact(current, identity)) throw new SSHelperError('CORE_ALREADY_ACTIVE', 'A different Core artifact is active');
+    if (!sameArtifact(current, identity)) throw new SSHelperError('CONFLICT', 'A different Core artifact is active');
     const existing = runtimes.get(current);
-    if (existing === undefined) throw new SSHelperError('BRIDGE_CORRUPTED', 'The active Core runtime is not owned by this installer');
+    if (existing === undefined) throw new SSHelperError('INTERNAL', 'The active Core runtime is not owned by this installer');
     return existing;
   }
   const generation = current === undefined ? 1 : current.descriptor.generation + 1;
-  if (!Number.isSafeInteger(generation) || generation <= 0) throw new SSHelperError('BRIDGE_CORRUPTED', 'The Core generation is invalid');
+  if (!Number.isSafeInteger(generation) || generation <= 0) throw new SSHelperError('INTERNAL', 'The Core generation is invalid');
   let installed!: CoreDiscoverySnapshot;
   const runtime = new CoreRuntime(generation, identity, realm, (disposing) => {
     if (disposing.snapshot() !== installed || Reflect.get(realm as object, CORE_DISCOVERY_SYMBOL) !== installed) {
-      throw new SSHelperError('BRIDGE_CORRUPTED', 'The discovery bridge was replaced before Core disposal');
+      throw new SSHelperError('INTERNAL', 'The discovery bridge was replaced before Core disposal');
     }
     const disposedDescriptor: CoreDescriptor = Object.freeze({
       ...disposing.descriptor,

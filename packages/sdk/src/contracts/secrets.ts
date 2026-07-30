@@ -1,4 +1,19 @@
-import type { WorkspaceSecretMetadata, WorkspaceSecretSetRequest } from './workspace.js';
+import type { PlainData } from './plain-data.js';
+
+export interface WorkspaceSecretSetRequest {
+  readonly workspaceId: string;
+  readonly secretId: string;
+  readonly value: string;
+  readonly metadata?: PlainData;
+}
+
+export interface WorkspaceSecretMetadata {
+  readonly secretId: string;
+  readonly metadata?: PlainData;
+  readonly maskedValue: string;
+  readonly updatedAt: number;
+  readonly keyVersion: number;
+}
 
 export interface SecretRecord extends WorkspaceSecretMetadata {
   readonly value: string;

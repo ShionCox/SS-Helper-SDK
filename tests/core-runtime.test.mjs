@@ -24,7 +24,7 @@ test('Core installation is atomic, frozen, idempotent, and rejects an active dif
     value: snapshot, writable: false, enumerable: false, configurable: true,
   });
   assert.equal(installCoreRuntime(coreIdentity(), realm), runtime);
-  assert.throws(() => installCoreRuntime(coreIdentity({ buildId: 'other' }), realm), errorCode('CORE_ALREADY_ACTIVE'));
+  assert.throws(() => installCoreRuntime(coreIdentity({ buildId: 'other' }), realm), errorCode('CONFLICT'));
   assert.deepEqual(kinds, ['ready']);
 });
 
@@ -37,7 +37,7 @@ test('dispose preserves a disposed generation and replacement advances exactly o
   first.dispose();
   assert.equal(realm[CORE_DISCOVERY_SYMBOL].descriptor.state, 'disposed');
   assert.deepEqual(await session.closed, { reason: 'core_disposed', generation: 1 });
-  assert.throws(() => session.events.subscribe({ kind: 'event', provider: 'x.y', name: 'z', version: 0 }, () => {}), errorCode('STALE_SESSION'));
+  assert.throws(() => session.bus.subscribe({ kind: 'event', id: 'x.y.z', version: 0 }, () => {}), errorCode('STALE_SESSION'));
   const second = installCoreRuntime(coreIdentity({ buildId: 'replacement' }), realm);
   assert.equal(second.generation, 2);
   assert.deepEqual(details.map((detail) => [detail.kind, detail.generation]), [['ready', 1], ['disposed', 1], ['replaced', 2]]);
@@ -47,7 +47,7 @@ test('dispose preserves a disposed generation and replacement advances exactly o
 test('invalid discovery values fail closed without overwriting the slot', () => {
   const realm = new TestRealm();
   Object.defineProperty(realm, CORE_DISCOVERY_SYMBOL, { value: { bad: true }, configurable: true });
-  assert.throws(() => installCoreRuntime(coreIdentity(), realm), errorCode('BRIDGE_CORRUPTED'));
+  assert.throws(() => installCoreRuntime(coreIdentity(), realm), errorCode('INTERNAL'));
   assert.deepEqual(realm[CORE_DISCOVERY_SYMBOL], { bad: true });
 });
 
@@ -66,7 +66,7 @@ test('malformed discovery snapshots fail closed without publishing a replacement
   for (const value of malformed) {
     const realm = new TestRealm();
     Object.defineProperty(realm, CORE_DISCOVERY_SYMBOL, { value, configurable: true });
-    assert.throws(() => installCoreRuntime(coreIdentity(), realm), errorCode('BRIDGE_CORRUPTED'));
+    assert.throws(() => installCoreRuntime(coreIdentity(), realm), errorCode('INTERNAL'));
     assert.equal(realm[CORE_DISCOVERY_SYMBOL], value);
   }
 });
@@ -92,13 +92,13 @@ test('connectSSHelper waits for late Core and closes the snapshot-subscribe race
 });
 
 test('connectSSHelper reports missing, incompatible, and corrupted bridges with public codes', async () => {
-  await assert.rejects(connectSSHelper(pluginDescriptor('example.missing'), { target: new TestRealm(), timeoutMs: 1 }), errorCode('CORE_MISSING'));
+  await assert.rejects(connectSSHelper(pluginDescriptor('example.missing'), { target: new TestRealm(), timeoutMs: 1 }), errorCode('CORE_UNAVAILABLE'));
   const incompatible = new TestRealm();
   installCoreRuntime(coreIdentity({ apiVersion: '0.0.0' }), incompatible);
-  await assert.rejects(connectSSHelper(pluginDescriptor('example.incompatible'), { target: incompatible, timeoutMs: 10 }), errorCode('API_INCOMPATIBLE'));
+  await assert.rejects(connectSSHelper(pluginDescriptor('example.incompatible'), { target: incompatible, timeoutMs: 10 }), errorCode('INVALID_PAYLOAD'));
   const corrupt = new TestRealm();
   Object.defineProperty(corrupt, CORE_DISCOVERY_SYMBOL, { value: 42, configurable: true });
-  await assert.rejects(connectSSHelper(pluginDescriptor('example.corrupt'), { target: corrupt, timeoutMs: 10 }), errorCode('BRIDGE_CORRUPTED'));
+  await assert.rejects(connectSSHelper(pluginDescriptor('example.corrupt'), { target: corrupt, timeoutMs: 10 }), errorCode('INTERNAL'));
 });
 
 test('bootstrap reconnect is generation-safe, single-flight, bounded, and disposable', async () => {
@@ -126,7 +126,7 @@ test('bootstrap reconnect is generation-safe, single-flight, bounded, and dispos
     reconnect: { maxAttempts: 2, totalDeadlineMs: 30, backoffMs: [1, 1] },
   });
   exhaustedCore.dispose();
-  await assert.rejects(exhausted.closed, errorCode('CORE_RECONNECT_EXHAUSTED'));
+  await assert.rejects(exhausted.closed, errorCode('CORE_UNAVAILABLE'));
 });
 
 test('reconnect deadline starts on closure and a lifecycle event wakes backoff early', async () => {
@@ -168,7 +168,7 @@ test('reconnect backoff and connect timeout share one absolute deadline', async 
     });
     const startedAt = Date.now();
     runtime.dispose();
-    await assert.rejects(bootstrap.closed, errorCode('CORE_RECONNECT_EXHAUSTED'));
+    await assert.rejects(bootstrap.closed, errorCode('CORE_UNAVAILABLE'));
     assert.ok(Date.now() - startedAt < 150, 'reconnect exceeded its absolute deadline allowance');
   }
 });

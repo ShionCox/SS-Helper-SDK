@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import {
   API_VERSION, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY, CORE_PLUGIN_ID,
   LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0,
-  LLM_ROUTE_DIAGNOSTICS_V0, LLM_PLUGIN_ID, LLM_ROUTE_CHANGED_V0, MEMORY_PLUGIN_ID, MEMORY_RECALL_V0,
+  LLM_CONSUMER_DECLARE_V0,
+  LLM_PLUGIN_ID, LLM_ROUTE_CHANGED_V0, MEMORY_PLUGIN_ID, MEMORY_RECALL_V0,
   MEMORY_UPDATED_V0, MEMORY_GRAPH_V0, PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, SDK_PACKAGE_VERSION, SS_HELPER_ERROR_CODES,
   isPluginBinaryRequestV0, isPluginBinaryResponseV0,
 } from '../packages/sdk/dist/index.js';
@@ -13,6 +15,13 @@ import * as sdk from '../packages/sdk/dist/index.js';
 import { connectServerPlugin } from '../packages/sdk/dist/server.js';
 
 const sdkPackage = JSON.parse(readFileSync(new URL('../packages/sdk/package.json', import.meta.url), 'utf8'));
+const completeDiagnostics = {
+  transport: 'json_schema',
+  attemptCount: 1,
+  repairCount: 0,
+  validationOutcome: 'complete',
+  itemRejections: [],
+};
 
 const binaryBody = (bytes) => ({
   encoding: 'base64', contentType: PLUGIN_BINARY_CONTENT_TYPE, data: bytes.toString('base64'), byteLength: bytes.length,
@@ -28,13 +37,12 @@ test('frozen public identities stay exact', () => {
 });
 
 test('tokens are structural, frozen contracts', () => {
-  assert.deepEqual(Object.fromEntries(Object.entries(LLM_COMPLETION_V0).filter(([key]) => !key.startsWith('validate'))), { kind: 'service', provider: 'ss-helper.llm', name: 'completion', version: 0, schemaId: 'ss-helper.llm.completion.v0' });
+  assert.deepEqual(Object.fromEntries(Object.entries(LLM_COMPLETION_V0).filter(([key]) => !key.startsWith('validate'))), { kind: 'request', id: 'ss-helper.llm.completion', version: 0 });
   assert.equal(LLM_COMPLETION_V0.validateRequest({ messages: [{ role: 'user', content: 'hello' }] }), true);
   assert.equal(LLM_COMPLETION_V0.validateRequest({ prompt: 'invalid' }), false);
-  assert.equal(LLM_STRUCTURED_TASK_V0.validateResponse({ output: { ok: true }, route: { route: 'primary' } }), true);
-  assert.equal(LLM_EMBEDDING_V0.validateResponse({ embeddings: [[0.1, 0.2]], route: { route: 'primary' } }), true);
+  assert.equal(LLM_STRUCTURED_TASK_V0.validateResponse({ requestId: 'r', output: { ok: true }, route: { route: 'primary' }, diagnostics: completeDiagnostics }), true);
+  assert.equal(LLM_EMBEDDING_V0.validateResponse({ requestId: 'r', embeddings: [[0.1, 0.2]], route: { route: 'primary' } }), true);
   assert.equal(LLM_RERANK_V0.validateRequest({ query: 'q', documents: [{ id: 'a', text: 'A' }] }), true);
-  assert.equal(LLM_ROUTE_DIAGNOSTICS_V0.validateResponse({ entries: [{ requestId: 'r', state: 'completed' }] }), true);
   assert.equal(Object.isFrozen(LLM_COMPLETION_V0), true);
   assert.equal(Object.isFrozen(LLM_ROUTE_CHANGED_V0), true);
   assert.equal(Object.isFrozen(MEMORY_RECALL_V0), true);
@@ -95,32 +103,108 @@ test('binary plugin request v0 validators keep bytes narrow, canonical, and Plai
 
 test('LLM service validators reject malformed requests and provider responses exactly', () => {
   const cases = [
-    [LLM_COMPLETION_V0, { messages: [{ role: 'user', content: 'hello' }], route: 'primary', maxTokens: 64, temperature: 0.5 }, { text: 'ok', route: 'primary', model: 'model', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } }, [
+    [LLM_COMPLETION_V0, { messages: [{ role: 'user', content: 'hello' }], route: 'primary', maxTokens: 64, temperature: 0.5 }, { requestId: 'r', text: 'ok', route: 'primary', model: 'model', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } }, [
       { messages: [{ role: 'user', content: 'hello' }], route: 1 }, { messages: [{ role: 'user', content: 'hello' }], maxTokens: 0 },
       { messages: [{ role: 'user', content: 'hello' }], maxTokens: Number.POSITIVE_INFINITY }, { messages: [{ role: 'user', content: 'hello', raw: true }] },
     ], [{ text: 'ok', route: '', model: 'model' }, { text: 'ok', route: 'primary', model: 'model', usage: { totalTokens: -1 } }, { text: 'ok', route: 'primary', model: 'model', raw: true }]],
-    [LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object', properties: { value: { type: 'string' } } }, route: 'primary', timeoutMs: 1000 }, { output: { value: 'ok' }, route: { route: 'primary', provider: 'p', model: 'm' } }, [
+    [LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object', properties: { value: { type: 'string' } } }, route: 'primary', timeoutMs: 1000 }, { requestId: 'r', output: { value: 'ok' }, route: { route: 'primary', provider: 'p', model: 'm' }, diagnostics: completeDiagnostics }, [
       { task: 'extract', input: {}, outputSchema: [] }, { task: 'extract', input: {}, timeoutMs: 0 }, { task: 'extract', input: () => 'raw' },
     ], [{ output: () => 'raw', route: { route: 'primary' } }, { output: {}, route: { route: 'primary', fallback: 'yes' } }]],
-    [LLM_EMBEDDING_V0, { input: ['a', 'b'], model: 'embed', route: 'primary', dimensions: 2, timeoutMs: 1000 }, { embeddings: [[0.1, 0.2], [0.3, 0.4]], route: { route: 'primary' } }, [
+    [LLM_EMBEDDING_V0, { input: ['a', 'b'], model: 'embed', route: 'primary', dimensions: 2, timeoutMs: 1000 }, { requestId: 'r', embeddings: [[0.1, 0.2], [0.3, 0.4]], route: { route: 'primary' } }, [
       { input: 'a', dimensions: 0 }, { input: 'a', dimensions: 1.5 }, { input: [], timeoutMs: 100 }, { input: 'a', timeoutMs: Number.NaN },
     ], [{ embeddings: [], route: { route: 'primary' } }, { embeddings: [[Number.POSITIVE_INFINITY]], route: { route: 'primary' } }]],
-    [LLM_RERANK_V0, { query: 'q', documents: [{ id: 'a', text: 'A', metadata: { source: 'x' } }], topN: 1, model: 'rank', route: 'primary', timeoutMs: 1000 }, { results: [{ id: 'a', score: 0.9, index: 0 }], route: { route: 'primary' } }, [
+    [LLM_RERANK_V0, { query: 'q', documents: [{ id: 'a', text: 'A', metadata: { source: 'x' } }], topN: 1, model: 'rank', route: 'primary', timeoutMs: 1000 }, { requestId: 'r', results: [{ id: 'a', score: 0.9, index: 0 }], route: { route: 'primary' } }, [
       { query: 'q', documents: [{ id: 'a', text: 'A' }], topN: 0 }, { query: 'q', documents: [{ id: 'a', text: 'A' }], topN: 2 },
       { query: 'q', documents: [{ id: 'a', text: 'A', metadata: [] }] }, { query: 'q', documents: [{ id: 'a', text: 'A' }], timeoutMs: -1 },
     ], [{ results: [{ id: 'a', score: 1, index: -1 }], route: { route: 'primary' } }, { results: [{ id: 'a', score: Number.NaN, index: 0 }], route: { route: 'primary' } }]],
-    [LLM_ROUTE_DIAGNOSTICS_V0, { requestId: 'r' }, { entries: [{ requestId: 'r', state: 'completed', route: { route: 'primary' }, durationMs: 2 }] }, [
-      { requestId: '' }, { requestId: 'r', raw: true },
-    ], [{ entries: [{ requestId: 'r', state: 'completed', route: 'primary' }] }, { entries: [{ requestId: 'r', state: 'failed', durationMs: -1, errorCode: 42 }] }]],
   ];
   for (const [token, validRequest, validResponse, invalidRequests, invalidResponses] of cases) {
-    assert.equal(token.validateRequest(validRequest), true, `${token.name} valid request`);
-    assert.equal(token.validateResponse(validResponse), true, `${token.name} valid response`);
-    for (const request of invalidRequests) assert.equal(token.validateRequest(request), false, `${token.name} accepted malformed request`);
-    for (const response of invalidResponses) assert.equal(token.validateResponse(response), false, `${token.name} accepted malformed response`);
+    assert.equal(token.validateRequest(validRequest), true, `${token.id} valid request`);
+    assert.equal(token.validateResponse(validResponse), true, `${token.id} valid response`);
+    for (const request of invalidRequests) assert.equal(token.validateRequest(request), false, `${token.id} accepted malformed request`);
+    for (const response of invalidResponses) assert.equal(token.validateResponse(response), false, `${token.id} accepted malformed response`);
   }
   assert.equal(LLM_ROUTE_CHANGED_V0.validatePayload({ route: '', reason: 'configured' }), false);
   assert.equal(LLM_ROUTE_CHANGED_V0.validatePayload({ route: 'primary', reason: 'configured', raw: true }), false);
+});
+
+test('structured task validation accepts shared JSON-schema nodes but still rejects cycles', () => {
+  const sharedStringSchema = { type: 'string', minLength: 1 };
+  const outputSchema = {
+    type: 'object',
+    properties: {
+      actorId: sharedStringSchema,
+      locationId: sharedStringSchema,
+    },
+  };
+  assert.equal(LLM_STRUCTURED_TASK_V0.validateRequest({
+    task: 'memory_capture',
+    input: { messages: [{ role: 'user', content: 'hello' }] },
+    outputSchema,
+  }), true);
+
+  const cyclicSchema = { type: 'object' };
+  cyclicSchema.properties = { self: cyclicSchema };
+  assert.equal(LLM_STRUCTURED_TASK_V0.validateRequest({
+    task: 'memory_capture',
+    input: {},
+    outputSchema: cyclicSchema,
+  }), false);
+});
+
+test('LLM consumer declaration accepts only the bounded structured repair policy', () => {
+  const valid = {
+    displayName: 'Memory',
+    registrationVersion: 1,
+    tasks: [{
+      taskKey: 'memory_capture',
+      taskKind: 'generation',
+      structuredPolicy: {
+        maxProviderAttempts: 2,
+        repairOn: ['INVALID_JSON', 'SCHEMA_VALIDATION_FAILED'],
+        itemFailure: 'return_partial',
+        envelopeFailure: 'repair_once',
+        itemCollections: ['actorCandidates', 'locationCandidates', 'episodes', 'claims'],
+      },
+    }],
+  };
+  assert.equal(LLM_CONSUMER_DECLARE_V0.validateRequest(valid), true);
+  assert.equal(LLM_CONSUMER_DECLARE_V0.validateRequest({
+    ...valid,
+    tasks: [{ ...valid.tasks[0], structuredPolicy: { maxProviderAttempts: 3, repairOn: ['SCHEMA_VALIDATION_FAILED'] } }],
+  }), false);
+});
+
+test('structured task validation accepts plain JSON objects from another realm', () => {
+  const foreignOutput = vm.runInNewContext(
+    '({ actorCandidates: [], locationCandidates: [], episodes: [], claims: [] })',
+  );
+  assert.equal(LLM_STRUCTURED_TASK_V0.validateResponse({
+    requestId: 'r',
+    output: foreignOutput,
+    route: { route: '__builtin_tavern__' },
+    diagnostics: {
+      transport: 'tavern_json_schema',
+      attemptCount: 2,
+      repairCount: 1,
+      validationOutcome: 'complete',
+      itemRejections: [],
+    },
+  }), true);
+
+  const ForeignRecord = vm.runInNewContext('(class ForeignRecord { constructor() { this.value = 1; } })');
+  assert.equal(LLM_STRUCTURED_TASK_V0.validateResponse({
+    requestId: 'r',
+    output: new ForeignRecord(),
+    route: { route: '__builtin_tavern__' },
+    diagnostics: {
+      transport: 'tavern_json_schema',
+      attemptCount: 1,
+      repairCount: 0,
+      validationOutcome: 'complete',
+      itemRejections: [],
+    },
+  }), false);
 });
 
 test('version axes are not conflated by exported metadata', () => {
@@ -131,22 +215,19 @@ test('version axes are not conflated by exported metadata', () => {
 
 test('the complete frozen error-code set is exported', () => {
   assert.deepEqual(SS_HELPER_ERROR_CODES, [
-    'CORE_MISSING', 'CORE_TIMEOUT', 'API_INCOMPATIBLE', 'CORE_ALREADY_ACTIVE', 'CORE_DISPOSED',
-    'CORE_RECONNECT_EXHAUSTED', 'BRIDGE_CORRUPTED', 'STALE_SESSION', 'CAPABILITY_NOT_GRANTED',
-    'DUPLICATE_PLUGIN_ID', 'UNKNOWN_SERVICE', 'SERVICE_VERSION_MISMATCH', 'PAYLOAD_INVALID',
-    'CALL_TIMEOUT', 'CALL_ABORTED', 'PLUGIN_DISPOSED', 'SETTINGS_ADAPTER_ERROR',
-    'HOST_NOT_READY', 'BOOTSTRAP_CALLBACK_TIMEOUT',
+    'CORE_UNAVAILABLE', 'STALE_SESSION', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
+    'INVALID_PAYLOAD', 'TIMEOUT', 'ABORTED', 'INTERNAL',
   ]);
 });
 
-test('every exported v0 service and event token has one canonical schema identity', () => {
+test('every exported v0 request and event token has one canonical id', () => {
   const tokens = Object.entries(sdk)
-    .filter(([name, value]) => /^[A-Z0-9_]+_V0$/u.test(name) && value && (value.kind === 'service' || value.kind === 'event'))
+    .filter(([name, value]) => /^[A-Z0-9_]+_V0$/u.test(name) && value && (value.kind === 'request' || value.kind === 'event'))
     .map(([, value]) => value);
   assert.ok(tokens.length > 0);
   for (const token of tokens) {
-    assert.equal(token.version, 0, `${token.provider}.${token.name} version`);
-    assert.equal(token.schemaId, `${token.provider}.${token.name}.v${token.version}`, `${token.provider}.${token.name} schemaId`);
+    assert.equal(token.version, 0, `${token.id} version`);
+    assert.match(token.id, /^[a-z0-9-]+(?:\.[a-z0-9-]+){2,}$/u);
   }
 });
 

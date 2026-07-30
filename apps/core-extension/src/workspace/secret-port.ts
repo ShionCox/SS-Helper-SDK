@@ -19,7 +19,7 @@ export function createSecretPort(
 ): SecretPort {
   const requireCapability = (capability: 'secrets.read' | 'secrets.write'): void => {
     if (!capabilities.includes(capability)) {
-      throw new SSHelperError('CAPABILITY_NOT_GRANTED', 'Secret access is unavailable', { capability });
+      throw new SSHelperError('FORBIDDEN', 'Secret access is unavailable', { capability });
     }
   };
   return Object.freeze({

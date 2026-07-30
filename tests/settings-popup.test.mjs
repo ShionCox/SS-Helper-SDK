@@ -27,6 +27,26 @@ const schema = (id) => ({
   ],
 });
 
+test('a stale initial load failure cannot overwrite a newer authoritative subscription snapshot', async () => {
+  const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
+  const session = runtime.connect(pluginDescriptor('example.stale-load'));
+  let rejectLoad;
+  let emitValues;
+  session.registerSettings(schema('example.stale-load'), {
+    load: () => new Promise((_resolve, reject) => { rejectLoad = reject; }),
+    save: async () => {},
+    reset: async () => ({ enabled: false, 'api-key': 'reset', count: 1, volume: 0, mode: 'a' }),
+    subscribe: (listener) => { emitValues = listener; return () => {}; },
+  });
+  emitValues({ enabled: true, 'api-key': 'ready', count: 2, volume: 5, mode: 'a' });
+  rejectLoad(new Error('late startup failure'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
+  assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+  session.dispose();
+  runtime.dispose();
+});
+
 test('Core owns one idempotent launcher and one settings center with dynamic plugin navigation', async () => {
   const restore = installFakeDomGlobals();
   const originalFetch = globalThis.fetch;
@@ -95,7 +115,7 @@ test('Core owns one idempotent launcher and one settings center with dynamic plu
     assert.equal(selectWrap.children[1].hidden, true);
     await runtime.settings.save('example.settings', { enabled: false, 'api-key': 'next', count: 3, mode: 'a' });
     assert.equal(saved.length, 1);
-    await assert.rejects(runtime.settings.save('example.settings', { enabled: false, 'api-key': '', count: 9, mode: 'x' }), errorCode('PAYLOAD_INVALID'));
+    await assert.rejects(runtime.settings.save('example.settings', { enabled: false, 'api-key': '', count: 9, mode: 'x' }), errorCode('INVALID_PAYLOAD'));
     session.dispose();
     assert.equal(runtime.settings.snapshot().length, 0);
     assert.equal(descendants(document.getElementById(SETTINGS_CENTER_ID)).some((node) => node.dataset.pluginId === 'example.settings'), false);
@@ -212,7 +232,7 @@ test('reset shares the save queue and reloads authoritative values after failure
   assert.equal(runtime.settings.snapshot()[0].values.count, 0);
 
   failReset = true; persisted = { count: 7 };
-  await assert.rejects(runtime.settings.reset('example.reset-queue'), errorCode('SETTINGS_ADAPTER_ERROR'));
+  await assert.rejects(runtime.settings.reset('example.reset-queue'), errorCode('INTERNAL'));
   assert.equal(runtime.settings.snapshot()[0].values.count, 7);
 });
 
@@ -292,6 +312,7 @@ test('settings center renders screenshot-style tabs, search, controls, auto-save
     assert.equal(saved.length, savesBeforeAction);
     const actionPopup = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
     actionPopup.children[0].dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(document.activeElement, inlineActionButton);
     const disabledActionButton = descendants(center).find((node) => node.dataset.fieldId === 'danger').children
       .flatMap((node) => [node, ...descendants(node)]).find((node) => node.tagName === 'BUTTON');
@@ -359,16 +380,57 @@ test('settings schemas allow the eleven supported kinds and reject unknown kinds
   const invalid = runtime.connect(pluginDescriptor('example.invalid-kind'));
   assert.throws(() => invalid.registerSettings({
     id: 'example.invalid-kind', title: 'Invalid', fields: [{ kind: 'html', id: 'unsafe', label: 'Unsafe', html: '<b>x</b>' }],
-  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('PAYLOAD_INVALID'));
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('INVALID_PAYLOAD'));
   assert.equal(runtime.settings.snapshot().some((entry) => entry.id === 'example.invalid-kind'), false);
   const invalidPlacement = runtime.connect(pluginDescriptor('example.invalid-action-placement'));
   assert.throws(() => invalidPlacement.registerSettings({
     id: 'example.invalid-action-placement', title: 'Invalid action placement', fields: [{ kind: 'action', id: 'run', label: 'Run', actionId: 'run', placement: 'sidebar' }],
-  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('PAYLOAD_INVALID'));
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('INVALID_PAYLOAD'));
   const invalidButtonLabel = runtime.connect(pluginDescriptor('example.invalid-action-label'));
   assert.throws(() => invalidButtonLabel.registerSettings({
     id: 'example.invalid-action-label', title: 'Invalid action label', fields: [{ kind: 'action', id: 'run', label: 'Run', actionId: 'run', buttonLabel: '   ' }],
-  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('PAYLOAD_INVALID'));
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('INVALID_PAYLOAD'));
+  const invalidDefault = runtime.connect(pluginDescriptor('example.invalid-default'));
+  assert.throws(() => invalidDefault.registerSettings({
+    id: 'example.invalid-default', title: 'Invalid default', fields: [{ kind: 'select', id: 'mode', label: 'Mode', options: [{ value: 'a', label: 'A' }], defaultValue: 'missing' }],
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('INVALID_PAYLOAD'));
+  const invalidFieldKey = runtime.connect(pluginDescriptor('example.invalid-field-key'));
+  assert.throws(() => invalidFieldKey.registerSettings({
+    id: 'example.invalid-field-key', title: 'Invalid field key', fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled', legacyValue: true }],
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('INVALID_PAYLOAD'));
+  const invalidValidation = runtime.connect(pluginDescriptor('example.invalid-validation'));
+  assert.throws(() => invalidValidation.registerSettings({
+    id: 'example.invalid-validation', title: 'Invalid validation', fields: [{ kind: 'number', id: 'count', label: 'Count', validation: { min: 10, max: 1 } }],
+  }, { load: () => ({}), save: () => {}, reset: () => ({}) }), errorCode('INVALID_PAYLOAD'));
+});
+
+test('settings values reject undeclared domain fields on load, subscribe, save, and reset', async () => {
+  const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
+  const loadSession = runtime.connect(pluginDescriptor('example.unknown-load'));
+  loadSession.registerSettings({ id: 'example.unknown-load', title: 'Load', fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled' }] }, {
+    load: async () => ({ enabled: true, internalOnly: 'secret-domain-state' }),
+    save: async () => {},
+    reset: async () => ({ enabled: false }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-load').lastError, 'SETTINGS_VALUES_LOAD_FAILED');
+
+  const session = runtime.connect(pluginDescriptor('example.unknown-values'));
+  let emit;
+  let saves = 0;
+  session.registerSettings({ id: 'example.unknown-values', title: 'Values', fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled' }] }, {
+    load: async () => ({ enabled: true }),
+    save: async () => { saves += 1; },
+    reset: async () => ({ enabled: false, legacyInternal: 1 }),
+    subscribe: (listener) => { emit = listener; return () => {}; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await assert.rejects(runtime.settings.save('example.unknown-values', { enabled: false, internalOnly: true }), errorCode('INVALID_PAYLOAD'));
+  assert.equal(saves, 0);
+  emit({ enabled: true, internalOnly: 'nope' });
+  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-values').lastError, 'SETTINGS_VALUES_SUBSCRIPTION_INVALID');
+  await assert.rejects(runtime.settings.reset('example.unknown-values'), errorCode('INTERNAL'));
+  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-values').lastError, 'SETTINGS_RESET_FAILED');
 });
 
 test('required settings are validated consistently and missing saves never reach the adapter', async () => {
@@ -384,11 +446,11 @@ test('required settings are validated consistently and missing saves never reach
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
-  await assert.rejects(runtime.settings.save('example.required', { enabled: false }), errorCode('PAYLOAD_INVALID'));
+  await assert.rejects(runtime.settings.save('example.required', { enabled: false }), errorCode('INVALID_PAYLOAD'));
   assert.equal(saves, 0);
   emit({ enabled: true });
   assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
-  await assert.rejects(runtime.settings.reset('example.required'), errorCode('SETTINGS_ADAPTER_ERROR'));
+  await assert.rejects(runtime.settings.reset('example.required'), errorCode('INTERNAL'));
   assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
 });
 
@@ -402,7 +464,7 @@ test('adapter errors degrade only one plugin and reload restores through its own
   await new Promise((resolve) => setTimeout(resolve, 0));
   const snapshots = runtime.settings.snapshot();
   assert.equal(snapshots.find((entry) => entry.id === 'example.bad').health, 'degraded');
-  assert.equal(snapshots.find((entry) => entry.id === 'example.bad').lastError, 'SETTINGS_ADAPTER_ERROR');
+  assert.equal(snapshots.find((entry) => entry.id === 'example.bad').lastError, 'SETTINGS_VALUES_LOAD_FAILED');
   assert.equal(snapshots.find((entry) => entry.id === 'example.good').health, 'healthy');
   bad.dispose();
   const reloaded = runtime.connect(pluginDescriptor('example.bad'));
@@ -411,7 +473,120 @@ test('adapter errors degrade only one plugin and reload restores through its own
   assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.bad').health, 'healthy');
 });
 
-test('registered popup owns dialog lifecycle, Escape cleanup, focus return, and unregister fail-closed', () => {
+test('a later authoritative settings snapshot clears a transient startup read failure without showing a save failure', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const container = document.createElement('div'); document.body.append(container);
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
+    const session = runtime.connect(pluginDescriptor('example.settings-recovery'));
+    let emitValues;
+    session.registerSettings(schema('example.settings-recovery'), {
+      load: async () => { throw new Error('bridge warming'); },
+      save: async () => {},
+      reset: async () => ({ enabled: false, 'api-key': 'reset', count: 1, volume: 0, mode: 'a' }),
+      subscribe: (listener) => { emitValues = listener; return () => {}; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
+    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_VALUES_LOAD_FAILED');
+
+    descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.settings-recovery').dispatchEvent({ type: 'click' });
+    let footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.settings-recovery');
+    assert.equal(descendants(footer).some((node) => node.textContent === '设置读取失败，正在等待恢复'), true);
+    assert.equal(descendants(footer).some((node) => node.textContent === '保存失败，请检查设置'), false);
+
+    emitValues({ enabled: true, 'api-key': 'ready', count: 2, volume: 5, mode: 'a' });
+    assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
+    assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+    footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.settings-recovery');
+    assert.equal(descendants(footer).some((node) => node.textContent === '修改后自动保存'), true);
+    session.dispose();
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('auxiliary status failures stay advisory, keep settings writable, and recover through their own subscription', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const container = document.createElement('div'); document.body.append(container);
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
+    const session = runtime.connect(pluginDescriptor('example.status-recovery'));
+    let emitStatus;
+    let saves = 0;
+    session.registerSettings({
+      id: 'example.status-recovery', title: 'Status recovery', fields: [
+        { kind: 'toggle', id: 'enabled', label: 'Enabled' },
+        { kind: 'status', id: 'state', label: 'State', value: 'Waiting' },
+      ],
+    }, {
+      load: async () => ({ enabled: true }),
+      save: async () => { saves += 1; },
+      reset: async () => ({ enabled: false }),
+      loadStatus: async () => { throw new Error('status warming'); },
+      subscribeStatus: (listener) => { emitStatus = listener; return () => {}; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
+    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_STATUS_LOAD_FAILED');
+
+    descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.status-recovery').dispatchEvent({ type: 'click' });
+    let footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.status-recovery');
+    assert.equal(descendants(footer).some((node) => node.textContent === '部分状态暂不可用，设置仍可保存'), true);
+    assert.equal(descendants(footer).some((node) => node.textContent === '保存失败，请检查设置'), false);
+
+    await runtime.settings.save('example.status-recovery', { enabled: false });
+    assert.equal(saves, 1);
+    assert.equal(runtime.settings.snapshot()[0].health, 'degraded', 'a successful save must not hide an unrelated status issue');
+    footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.status-recovery');
+    assert.equal(descendants(footer).some((node) => node.textContent === '部分状态暂不可用，设置仍可保存'), true);
+
+    emitStatus({ state: { value: 'Ready', tone: 'success' } });
+    assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
+    assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+    session.dispose();
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('a real persistence failure survives unrelated snapshots until a later save succeeds', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const container = document.createElement('div'); document.body.append(container);
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
+    const session = runtime.connect(pluginDescriptor('example.persistence-recovery'));
+    let emitValues;
+    let rejectSave = true;
+    session.registerSettings({ id: 'example.persistence-recovery', title: 'Persistence', fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled' }] }, {
+      load: async () => ({ enabled: true }),
+      save: async () => { if (rejectSave) throw new Error('disk unavailable'); },
+      reset: async () => ({ enabled: false }),
+      subscribe: (listener) => { emitValues = listener; return () => {}; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await assert.rejects(runtime.settings.save('example.persistence-recovery', { enabled: false }), errorCode('INTERNAL'));
+    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_SAVE_FAILED');
+
+    emitValues({ enabled: true });
+    assert.equal(runtime.settings.snapshot()[0].health, 'degraded', 'a value snapshot does not prove the failed write committed');
+    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_SAVE_FAILED');
+
+    rejectSave = false;
+    await runtime.settings.save('example.persistence-recovery', { enabled: false });
+    assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
+    assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+    session.dispose();
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('registered popup owns dialog lifecycle, Escape cleanup, focus return, and unregister fail-closed', async () => {
   const restore = installFakeDomGlobals();
   try {
     const document = new FakeDocument();
@@ -427,10 +602,11 @@ test('registered popup owns dialog lifecycle, Escape cleanup, focus return, and 
     assert.equal(dialog.getAttribute('role'), 'dialog');
     assert.equal(dialog.getAttribute('aria-modal'), 'true');
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(disposed, 1);
     assert.equal(document.activeElement, opener);
     unregister();
-    assert.throws(() => session.ui.openPopup(token, {}), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => session.ui.openPopup(token, {}), errorCode('INVALID_PAYLOAD'));
   } finally { restore(); }
 });
 
@@ -444,13 +620,13 @@ test('popup tokens cannot be opened by a different plugin session', () => {
     const token = Object.freeze({ kind: 'popup', provider: 'example.popup-owner', name: 'details', version: 0 });
     let renders = 0;
     owner.registerPopup({ token, title: 'Details', render: () => { renders += 1; } });
-    assert.throws(() => caller.ui.openPopup(token, {}), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => caller.ui.openPopup(token, {}), errorCode('INVALID_PAYLOAD'));
     assert.equal(renders, 0);
     assert.equal(document.body.children.some((node) => node.dataset.ssHelperPopup !== undefined), false);
   } finally { restore(); }
 });
 
-test('workspace popup exposes a stable presentation marker and shared chrome', () => {
+test('workspace popup exposes a stable presentation marker and shared chrome', async () => {
   const restore = installFakeDomGlobals();
   try {
     const document = new FakeDocument();
@@ -478,12 +654,13 @@ test('workspace popup exposes a stable presentation marker and shared chrome', (
     assert.match(coreStyles, /clip-path: polygon\(100% 0, 100% 100%, 0 100%\); opacity: \.48;/);
     assert.match(coreStyles, /\[data-popup-resize-handle="true"\] \{ display: none; \}/);
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(document.activeElement, opener);
-    assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 0 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => session.registerPopup({ token: Object.freeze({ kind: 'popup', provider: 'example.workspace-popup', name: 'invalid', version: 0 }), title: 'Invalid', presentation: 'unsupported', render: () => {} }), errorCode('INVALID_PAYLOAD'));
   } finally { restore(); }
 });
 
-test('workspace popup restores and updates its browser-persisted size', () => {
+test('workspace popup restores and updates its browser-persisted size', async () => {
   const restore = installFakeDomGlobals();
   try {
     const document = new FakeDocument();
@@ -510,6 +687,7 @@ test('workspace popup restores and updates its browser-persisted size', () => {
     dialog.children[2].dispatchEvent({ type: 'keydown', key: 'ArrowRight', shiftKey: false, preventDefault() {} });
     assert.deepEqual(JSON.parse(values.values().next().value), { width: 910, height: 700 });
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     session.ui.openPopup(token, {});
     overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
     dialog = overlay.children[0];
@@ -565,7 +743,7 @@ test('workspace popup keeps corner drags under the pointer and recenters after v
   } finally { restore(); }
 });
 
-test('popup restores focus to a rerendered opener with the same stable id', () => {
+test('popup restores focus to a rerendered opener with the same stable id', async () => {
   const restore = installFakeDomGlobals();
   try {
     const document = new FakeDocument();
@@ -579,11 +757,12 @@ test('popup restores focus to a rerendered opener with the same stable id', () =
     opener.remove(); opener.isConnected = false; document.body.append(replacement);
     const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
     overlay.children[0].dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(document.activeElement, replacement);
   } finally { restore(); }
 });
 
-test('popup public controls share Core styles and enhance native selects idempotently', () => {
+test('popup public controls share Core styles and enhance native selects idempotently', async () => {
   const restore = installFakeDomGlobals();
   try {
     const document = new FakeDocument();
@@ -592,6 +771,8 @@ test('popup public controls share Core styles and enhance native selects idempot
     const token = Object.freeze({ kind: 'popup', provider: 'example.popup-controls', name: 'controls', version: 0 });
     let nativeSelect;
     let changes = 0;
+    let toggleValue = true;
+    let menuSelection = '';
     session.registerPopup({
       token,
       title: 'Controls',
@@ -603,6 +784,17 @@ test('popup public controls share Core styles and enhance native selects idempot
         const second = document.createElement('option'); second.value = 'b'; second.textContent = 'B';
         nativeSelect.value = 'a'; nativeSelect.append(first, second); nativeSelect.addEventListener('change', () => { changes += 1; });
         label.append(nativeSelect); container.append(label);
+        container.append(ui.createIcon({ name: 'circle-plus', label: '新增' }));
+        container.append(ui.createButton({ label: '刷新', icon: 'rotate', iconOnly: true, size: 'sm' }));
+        container.append(ui.createToggle({ label: '启用资源', checked: true, onChange: async (value) => { toggleValue = value; } }));
+        container.append(ui.createMenu({
+          label: '更多操作',
+          items: [
+            { id: 'copy', label: '复制', icon: 'copy' },
+            { id: 'delete', label: '删除', icon: 'trash', tone: 'danger', separatorBefore: true },
+          ],
+          onSelect: async (id) => { menuSelection = id; },
+        }).element);
         ui?.refreshControls(container); ui?.refreshControls(container);
       },
     });
@@ -629,7 +821,28 @@ test('popup public controls share Core styles and enhance native selects idempot
     assert.equal(closeButton.children[0].tagName, 'SS-HELPER-ICON');
     assert.equal(closeButton.children[0].getAttribute('name'), 'xmark');
     assert.equal(closeButton.children[0].getAttribute('aria-hidden'), 'true');
+    const publicIcon = controls.find((node) => node.tagName === 'SS-HELPER-ICON' && node.getAttribute('name') === 'circle-plus' && node.getAttribute('role') === 'img');
+    assert.equal(publicIcon.getAttribute('aria-label'), '新增');
+    const iconButton = controls.find((node) => node.title === '刷新');
+    assert.equal(iconButton.dataset.ssHelperIconOnly, 'true');
+    assert.equal(iconButton.children[0].getAttribute('name'), 'rotate');
+    const toggle = controls.find((node) => node.getAttribute('role') === 'switch');
+    toggle.dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(toggle.getAttribute('aria-checked'), 'false');
+    assert.equal(toggleValue, false);
+    const menuTrigger = controls.find((node) => node.getAttribute('aria-haspopup') === 'menu');
+    menuTrigger.dispatchEvent({ type: 'click' });
+    const menuList = document.body.children.find((node) => node.className === 'stx-popup-menu-list');
+    assert.ok(menuList);
+    assert.equal(menuList.children[1].dataset.tone, 'danger');
+    assert.equal(menuList.children[1].dataset.separatorBefore, 'true');
+    menuList.children[0].dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(menuSelection, 'copy');
+    assert.equal(document.body.children.some((node) => node.className === 'stx-popup-menu-list'), false);
     dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(nativeSelect.hidden, false);
     const styles = document.body.children.find((node) => node.dataset.ssHelperStyle === 'core-ui').textContent;
     assert.match(styles, /\[data-ss-helper-popup\].*--ss-theme-surface/su);
@@ -709,11 +922,210 @@ test('throwing popup render rolls back overlay, listeners, session cleanup, and 
     const session = runtime.connect(pluginDescriptor('example.throwing-popup'));
     const token = Object.freeze({ kind: 'popup', provider: 'example.throwing-popup', name: 'broken', version: 0 });
     session.registerPopup({ token, title: 'Broken', render: () => { throw new Error('private renderer failure'); } });
-    assert.throws(() => session.ui.openPopup(token, {}), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => session.ui.openPopup(token, {}), errorCode('INVALID_PAYLOAD'));
     assert.equal(document.body.children.filter((node) => node.dataset.ssHelperPopup !== undefined).length, 0);
     assert.equal(document.activeElement, opener);
     assert.doesNotThrow(() => session.dispose());
     assert.equal(document.body.children.filter((node) => node.dataset.ssHelperPopup !== undefined).length, 0);
+  } finally { restore(); }
+});
+
+test('popup virtual list loads one cursor page, bounds DOM rows, and preserves a stable mounted instance', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.popup-list'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-list', name: 'list', version: 0 });
+    const requests = [];
+    let firstElement;
+    let handle;
+    let popupUi;
+    let listDefinition;
+    let popupContainer;
+    session.registerPopup({
+      token,
+      title: 'Virtual list',
+      render: (container, _input, ui) => {
+        popupUi = ui;
+        popupContainer = container;
+        const host = document.createElement('div');
+        container.append(host);
+        listDefinition = {
+          id: 'records',
+          ariaLabel: '记录列表',
+          queryKey: 'all',
+          overscan: 6,
+          maxCachedPages: 1,
+          itemHeight: 20,
+          itemGap: 4,
+          selectable: true,
+          getKey: item => item.id,
+          loadPage: async ({ cursor, limit, signal }) => {
+            requests.push({ cursor, limit, signal });
+            return {
+              items: Array.from({ length: limit }, (_, index) => ({ id: `${cursor ?? 'first'}-${index}` })),
+              nextCursor: cursor === undefined ? 'page-2' : null,
+              total: 40,
+            };
+          },
+          renderItem: (item) => {
+            const row = document.createElement('button');
+            row.textContent = item.id;
+            return row;
+          },
+        };
+        handle = ui.mountList(host, listDefinition);
+        firstElement = handle.element;
+        const replacement = document.createElement('div');
+        container.append(replacement);
+        const second = ui.mountList(replacement, listDefinition);
+        assert.equal(second.element, firstElement);
+      },
+    });
+    session.ui.openPopup(token, {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].limit, 20);
+    assert.equal(handle.element.getAttribute('role'), 'listbox');
+    assert.equal(handle.element.getAttribute('aria-label'), '记录列表');
+    const visibleOptions = descendants(handle.element).filter(node => node.getAttribute('role') === 'option');
+    assert.ok(visibleOptions.length > 0 && visibleOptions.length <= 14);
+    const firstRow = descendants(handle.element).find(node => node.dataset.listIndex === '0');
+    assert.equal(firstRow.style.top, '2px');
+    assert.equal(firstRow.style.height, '16px');
+    handle.element.scrollTop = 200;
+    handle.element.dispatchEvent({ type: 'scroll' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests.length, 1, 'the next page waits until the loaded rows reach the viewport bottom');
+    handle.element.remove();
+    handle.element.scrollTop = 0;
+    const reattachedHost = document.createElement('div');
+    popupContainer.append(reattachedHost);
+    popupUi.mountList(reattachedHost, listDefinition);
+    assert.equal(handle.element.scrollTop, 200, 'a stable list restores its last connected scroll position after reattachment');
+    popupUi.mountList(reattachedHost, { ...listDefinition, selectedKey: 'first-0' });
+    assert.equal(handle.selectedKey(), 'first-0');
+    popupUi.mountList(reattachedHost, { ...listDefinition, selectedKey: undefined });
+    assert.equal(handle.selectedKey(), undefined, 'an updated definition can explicitly clear selection');
+    handle.element.scrollTop = 400;
+    handle.element.dispatchEvent({ type: 'scroll' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests[1].cursor, 'page-2');
+    handle.element.scrollTop = 600;
+    handle.element.dispatchEvent({ type: 'scroll' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    handle.element.scrollTop = 0;
+    handle.element.dispatchEvent({ type: 'scroll' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests[2].cursor, undefined, 'an evicted first page reloads from its retained cursor checkpoint');
+    const overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    overlay.children[0].dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    runtime.dispose();
+  } finally { restore(); }
+});
+
+test('Core-owned popup wizard renders fields, gates navigation, updates checks, and protects dirty close', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.popup-wizard'));
+    const token = Object.freeze({ kind: 'popup', provider: 'example.popup-wizard', name: 'resource', version: 0 });
+    let listener = () => {};
+    const state = {
+      activeStepId: 'purpose',
+      completedStepIds: [],
+      values: { type: 'generation', name: '' },
+      fieldErrors: {},
+      dirty: true,
+      checks: { network: { state: 'idle', description: 'Waiting' } },
+    };
+    const adapter = {
+      snapshot: () => ({ ...state }),
+      change: (fieldId, value) => { state.values = { ...state.values, [fieldId]: value }; listener(); },
+      navigate: (stepId) => { state.activeStepId = stepId; listener(); },
+      back: () => { state.activeStepId = 'purpose'; listener(); },
+      submit: () => {
+        state.completedStepIds = ['purpose'];
+        state.activeStepId = 'connection';
+        state.checks = { network: { state: 'running', description: 'Connecting' } };
+        listener();
+      },
+      subscribe: (next) => { listener = next; return () => { listener = () => {}; }; },
+    };
+    session.registerPopup({
+      token,
+      title: 'Add resource',
+      render: (_container, _input, ui) => ui.mountWizard({
+        id: 'resource',
+        submitLabel: 'Test and save',
+        busyLabel: 'Testing',
+        confirmDiscard: { title: 'Discard?', message: 'Changes will be lost.' },
+        steps: [
+          { id: 'purpose', label: 'Purpose', description: 'Choose purpose', fields: [{ kind: 'radio', id: 'type', label: 'Type', options: [{ value: 'generation', label: 'Generation' }] }] },
+          {
+            id: 'connection',
+            label: 'Connection',
+            description: 'Connect provider',
+            fields: [
+              { kind: 'text', id: 'name', label: 'Name', validation: { required: true } },
+              { kind: 'text', id: 'secret', label: 'API Key', secret: true },
+            ],
+          },
+        ],
+        aside: { title: 'Checks', checks: [{ id: 'network', label: 'Network' }] },
+      }, adapter),
+    });
+    session.ui.openPopup(token, {});
+    let overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    let wizard = descendants(overlay).find((node) => node.className === 'stx-popup-wizard');
+    assert.ok(wizard);
+    let steps = descendants(wizard).filter((node) => node.className === 'stx-popup-wizard-step');
+    assert.equal(steps[0].getAttribute('aria-current'), 'step');
+    assert.equal(steps[1].disabled, true);
+    descendants(wizard).find((node) => node.dataset.popupWizardSubmit === 'true').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    overlay = document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined);
+    wizard = descendants(overlay).find((node) => node.className === 'stx-popup-wizard');
+    steps = descendants(wizard).filter((node) => node.className === 'stx-popup-wizard-step');
+    assert.equal(steps[0].disabled, false);
+    assert.equal(steps[1].getAttribute('aria-current'), 'step');
+    let secretInput = descendants(wizard).find((node) => node.dataset.popupWizardField === 'secret');
+    let secretToggle = descendants(wizard).find((node) => node.className === 'stx-popup-wizard-secret-toggle');
+    assert.equal(secretInput.type, 'password');
+    assert.equal(secretToggle.textContent, '');
+    assert.equal(secretToggle.getAttribute('aria-pressed'), 'false');
+    assert.equal(secretToggle.children[0].getAttribute('name'), 'eye');
+    assert.equal(secretToggle.className.includes('stx-ui-btn'), false);
+    secretToggle.dispatchEvent({ type: 'click' });
+    wizard = descendants(document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined)).find((node) => node.className === 'stx-popup-wizard');
+    secretInput = descendants(wizard).find((node) => node.dataset.popupWizardField === 'secret');
+    secretToggle = descendants(wizard).find((node) => node.className === 'stx-popup-wizard-secret-toggle');
+    assert.equal(secretInput.type, 'text');
+    assert.equal(secretToggle.getAttribute('aria-pressed'), 'true');
+    assert.equal(secretToggle.children[0].getAttribute('name'), 'eye-slash');
+    const runningCheck = descendants(wizard).find((node) => node.dataset.state === 'running');
+    assert.equal(descendants(runningCheck).some((node) => node.textContent === 'Network'), true);
+    const dialog = overlay.children[0];
+    dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    assert.equal(document.body.children.some((node) => node.dataset.ssHelperPopup !== undefined), true);
+    let confirmation = document.body.children.find((node) => node.className === 'stx-popup-confirm-overlay');
+    assert.ok(confirmation);
+    confirmation.children[0].children[2].children[0].dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    dialog.dispatchEvent({ type: 'keydown', key: 'Escape', preventDefault() {} });
+    confirmation = document.body.children.find((node) => node.className === 'stx-popup-confirm-overlay');
+    assert.ok(confirmation);
+    confirmation.children[0].children[2].children[1].dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(document.body.children.some((node) => node.dataset.ssHelperPopup !== undefined), false);
+    const styles = document.getElementById('ss-helper-core-ui-styles').textContent;
+    assert.match(styles, /\.stx-popup-wizard-content/);
+    assert.match(styles, /\.stx-popup-wizard-step\[data-state="current"\]/);
   } finally { restore(); }
 });
 
@@ -723,10 +1135,10 @@ test('ToastHost gates notifications, stacks and deduplicates safe DTOs, and clea
     const document = new FakeDocument();
     const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
     const denied = runtime.connect(pluginDescriptor('example.toast-denied'));
-    assert.throws(() => denied.ui.showToast({ level: 'info', message: 'Denied' }), errorCode('CAPABILITY_NOT_GRANTED'));
+    assert.throws(() => denied.ui.showToast({ level: 'info', message: 'Denied' }), errorCode('FORBIDDEN'));
 
     const session = runtime.connect(pluginDescriptor('example.toast', { capabilities: ['core.ui.notification.v0'] }));
-    assert.throws(() => session.ui.showToast({ level: 'info', message: '', durationMs: 10 }), errorCode('PAYLOAD_INVALID'));
+    assert.throws(() => session.ui.showToast({ level: 'info', message: '', durationMs: 10 }), errorCode('INVALID_PAYLOAD'));
     for (let index = 0; index < 6; index += 1) session.ui.showToast({ level: index === 0 ? 'error' : 'warning', title: `Notice ${index}`, message: `Message ${index}`, code: `NOTICE_${index}`, durationMs: 0 });
     const root = document.getElementById('ss-helper-toast-root');
     assert.ok(root);

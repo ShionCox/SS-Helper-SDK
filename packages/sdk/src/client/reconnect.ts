@@ -34,7 +34,7 @@ export interface SessionBootstrap<Capabilities extends HostCapability> {
 function delay(ms: number, signal: AbortSignal, target?: ConnectSSHelperOptions['target']): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
-      reject(new SSHelperError('CALL_ABORTED', 'Reconnect was aborted'));
+      reject(new SSHelperError('ABORTED', 'Reconnect was aborted'));
       return;
     }
     const eventTarget = target ?? (globalThis as unknown as ConnectSSHelperOptions['target']);
@@ -55,7 +55,7 @@ function delay(ms: number, signal: AbortSignal, target?: ConnectSSHelperOptions[
       if (done) return;
       done = true;
       cleanup();
-      reject(new SSHelperError('CALL_ABORTED', 'Reconnect was aborted'));
+      reject(new SSHelperError('ABORTED', 'Reconnect was aborted'));
     };
     const timer = setTimeout(finish, ms);
     signal.addEventListener('abort', onAbort, { once: true });
@@ -108,14 +108,14 @@ export async function bootstrapSSHelper<Capabilities extends HostCapability = Ho
           break;
         } catch (error) {
           if (controller.signal.aborted) return;
-          if (error instanceof SSHelperError && error.code === 'API_INCOMPATIBLE') {
+          if (error instanceof SSHelperError && error.code === 'INVALID_PAYLOAD') {
             rejectClosed(error);
             return;
           }
         }
       }
       if (replacement === undefined) {
-        rejectClosed(new SSHelperError('CORE_RECONNECT_EXHAUSTED', 'Core reconnect policy was exhausted'));
+        rejectClosed(new SSHelperError('CORE_UNAVAILABLE', 'Core reconnect policy was exhausted'));
         return;
       }
       current = replacement;

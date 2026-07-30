@@ -1,8 +1,7 @@
-import type { EventPort } from './events.js';
+import type { BusPort } from './bus.js';
 import type { HostCapability, HostPort } from './host.js';
-import type { ServicePort } from './services.js';
 import type { SettingsAdapter, SettingsSchema } from './settings.js';
-import type { ChatIndicatorRegistration, ExtensionMenuItemRegistration, PopupRegistration, UiPort } from './ui.js';
+import type { ChatIndicatorRegistration, ChatMessageActionRegistration, ExtensionMenuItemRegistration, PopupRegistration, UiPort } from './ui.js';
 import type { SecretPort } from './secrets.js';
 import type { WorkspacePort } from './workspace.js';
 
@@ -31,17 +30,15 @@ export interface PluginSession<Capabilities extends HostCapability = HostCapabil
   readonly descriptor: PluginDescriptor<Capabilities>;
   readonly generation: number;
   readonly host: HostPort<Capabilities>;
-  readonly services: ServicePort;
-  readonly events: EventPort;
+  readonly bus: BusPort;
   readonly ui: UiPort;
   readonly workspace: WorkspacePort;
   readonly secrets: SecretPort;
   readonly closed: Promise<SessionCloseInfo>;
   registerSettings(schema: SettingsSchema, adapter: SettingsAdapter): () => void;
   registerPopup(registration: PopupRegistration): () => void;
-  /** Optional for compatibility with Core releases predating chat indicators. */
-  registerChatIndicator?(registration: ChatIndicatorRegistration): () => void;
-  /** Optional for compatibility with Core releases predating the SS-Helper extension-menu group. */
-  registerExtensionMenuItem?(registration: ExtensionMenuItemRegistration): () => void;
+  registerChatIndicator(registration: ChatIndicatorRegistration): () => void;
+  registerChatMessageAction(registration: ChatMessageActionRegistration): () => void;
+  registerExtensionMenuItem(registration: ExtensionMenuItemRegistration): () => void;
   dispose(): void;
 }

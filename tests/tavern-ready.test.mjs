@@ -38,7 +38,7 @@ test('waitForTavernReady times out safely and a later host can retry', async () 
   const target = {};
   await assert.rejects(
     waitForTavernReady({ target, timeoutMs: 1 }),
-    (error) => error?.code === 'HOST_NOT_READY',
+    (error) => error?.code === 'CORE_UNAVAILABLE',
   );
   const emitter = new ReplayEmitter();
   target.SillyTavern = { getContext: () => ({ eventSource: emitter, eventTypes: { APP_READY: 'app_ready' } }) };

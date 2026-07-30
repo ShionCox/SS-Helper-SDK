@@ -35,7 +35,7 @@ function validateRegistration(registration: ExtensionMenuItemRegistration): Read
     || order > MAX_ORDER
     || typeof registration.onActivate !== 'function'
   ) {
-    throw new SSHelperError('PAYLOAD_INVALID', 'The extension menu registration is invalid', {
+    throw new SSHelperError('INVALID_PAYLOAD', 'The extension menu registration is invalid', {
       reason: 'extension_menu_registration',
     });
   }
@@ -79,7 +79,7 @@ export class ExtensionMenuHost {
     const normalized = validateRegistration(registration);
     const key = entryKey(scope, normalized.id);
     if (this.#entries.has(key)) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'The extension menu item is already registered', {
+      throw new SSHelperError('INVALID_PAYLOAD', 'The extension menu item is already registered', {
         reason: 'duplicate_extension_menu_item',
       });
     }

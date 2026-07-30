@@ -31,7 +31,12 @@ check(
 );
 check('SDK does not load Memory implementation', !/SS-Helper-Memory|server[\\/]memory|import\([^)]*memory/iu.test(sdkServer), 'server-plugin/index.js');
 check('SDK schema is workspace-generic', /CREATE TABLE IF NOT EXISTS workspace_records/u.test(sdkServer) && !/(?:facts|evidence|recall_logs|fact_vectors)/u.test(sdkServer), 'server-plugin/index.js');
-check('WorkspacePort exposes generic owner operations', ['health()', 'integrity()', 'list(', 'clearOwned(', 'exportAll()', 'importAll('].every((token) => workspaceContract.includes(token)), 'packages/sdk/src/contracts/workspace.ts');
+check(
+  'WorkspacePort exposes only the bound v0 business surface and capability-gated admin surface',
+  ['open(', 'commit(', 'vectors:', 'admin:', 'health()', 'integrity()', 'reset(', 'backup('].every((token) => workspaceContract.includes(token))
+    && !['owner:', 'defineCollection', 'grant(', 'revoke(', 'exportAll(', 'importAll('].some((token) => workspaceContract.includes(token)),
+  'packages/sdk/src/contracts/workspace.ts',
+);
 check('Memory repository depends on WorkspacePort', /WorkspacePort/u.test(memoryRepository) && !/MemorySqliteClient|\/api\/plugins\/ss-helper-sdk\//u.test(memoryRepository), 'SS-Helper-Memory/src/infrastructure/memory-repository.ts');
 check('Memory runtime injects session.workspace', /new MemoryRepository\(session\.workspace\)/u.test(memoryRuntime), 'SS-Helper-Memory/src/host/memory-runtime.ts');
 const memoryServer = path.join(memoryRoot, 'server');

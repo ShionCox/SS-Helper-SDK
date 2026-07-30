@@ -26,10 +26,10 @@ export class PopupHost {
       || (registration.closeLabel !== undefined && registration.closeLabel.trim() === '')
       || (presentation !== 'default' && presentation !== 'workspace')
     ) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'The popup registration is invalid', { reason: 'popup_registration' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'The popup registration is invalid', { reason: 'popup_registration' });
     }
     const id = key(registration.token);
-    if (this.#entries.has(id)) throw new SSHelperError('PAYLOAD_INVALID', 'The popup is already registered', { reason: 'duplicate_popup' });
+    if (this.#entries.has(id)) throw new SSHelperError('INVALID_PAYLOAD', 'The popup is already registered', { reason: 'duplicate_popup' });
     this.#entries.set(id, { scope, registration });
     return scope.addCleanup(() => { this.#open.get(id)?.(); this.#entries.delete(id); });
   }
@@ -37,14 +37,14 @@ export class PopupHost {
   open<Input extends PlainData>(scope: SessionScope, token: PopupToken<Input>, input: Input, restoreFocus?: HTMLElement): void {
     scope.assertActive();
     if (token.kind !== 'popup' || token.provider !== scope.id || !Number.isSafeInteger(token.version) || token.version < 0) {
-      throw new SSHelperError('PAYLOAD_INVALID', 'The popup token is invalid for this plugin', { reason: 'popup_ownership' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'The popup token is invalid for this plugin', { reason: 'popup_ownership' });
     }
     assertPayload(input, undefined, 'popup_input');
     const id = key(token);
     const entry = this.#entries.get(id);
-    if (entry === undefined) throw new SSHelperError('PAYLOAD_INVALID', 'The popup is not registered', { reason: 'unknown_popup' });
+    if (entry === undefined) throw new SSHelperError('INVALID_PAYLOAD', 'The popup is not registered', { reason: 'unknown_popup' });
     const document = this.document;
-    if (document === undefined) throw new SSHelperError('BRIDGE_CORRUPTED', 'The popup host has no document');
+    if (document === undefined) throw new SSHelperError('INTERNAL', 'The popup host has no document');
     this.#open.get(id)?.();
     const activeElement = document.activeElement as HTMLElement | null;
     const previous = restoreFocus ?? (activeElement !== null && typeof activeElement.focus === 'function' ? activeElement : undefined);
@@ -87,7 +87,8 @@ export class PopupHost {
     dialog.append(...resizeHandles);
     overlay.append(dialog); document.body.append(overlay);
     let close: () => void = () => undefined;
-    const popupUi = new PopupUiController(content, () => close());
+    let requestClose: () => Promise<void> = async () => undefined;
+    const popupUi = new PopupUiController(content, () => { void requestClose(); });
     let active = true;
     let renderCleanup: void | (() => void);
     let removeScopeCleanup = (): void => undefined;
@@ -100,6 +101,7 @@ export class PopupHost {
     let resizePointerHandle: HTMLButtonElement | undefined;
     let resizeCenterX: number | undefined;
     let resizeCenterY: number | undefined;
+    const onCloseClick = (): void => { void requestClose(); };
     const popupSizeStorageKey = `${POPUP_SIZE_STORAGE_PREFIX}${id}`;
     const isCompactWorkspace = (): boolean => {
       const view = document.defaultView;
@@ -143,7 +145,7 @@ export class PopupHost {
       if (!active) return;
       active = false;
       dialog.removeEventListener('keydown', onKeyDown);
-      closeButton.removeEventListener('click', close);
+      closeButton.removeEventListener('click', onCloseClick);
       removeResizeListeners();
       removeViewportResizeListener();
       resizeHandles.forEach((handle) => {
@@ -163,8 +165,15 @@ export class PopupHost {
         }
       }
     };
+    let closePending = false;
+    requestClose = async (): Promise<void> => {
+      if (!active || closePending) return;
+      closePending = true;
+      try { if (await popupUi.canClose()) close(); }
+      finally { closePending = false; }
+    };
     onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+      if (event.key === 'Escape') { event.preventDefault(); void requestClose(); return; }
       if (event.key !== 'Tab') return;
       const focusable = [...dialog.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter((node) => !node.hasAttribute('disabled'));
       if (focusable.length === 0) { event.preventDefault(); dialog.focus(); return; }
@@ -292,7 +301,7 @@ export class PopupHost {
     try {
       renderCleanup = entry.registration.render(content, input, popupUi);
       popupUi.refreshControls();
-      closeButton.addEventListener('click', close, { once: true });
+      closeButton.addEventListener('click', onCloseClick);
       dialog.addEventListener('keydown', onKeyDown);
       this.#open.set(id, close);
       removeScopeCleanup = scope.addCleanup(close);
@@ -300,7 +309,7 @@ export class PopupHost {
     } catch (error) {
       try { close(); } catch { /* rollback must not hide the approved renderer error */ }
       if (error instanceof SSHelperError) throw error;
-      throw new SSHelperError('PAYLOAD_INVALID', 'The popup renderer failed', { reason: 'popup_renderer' });
+      throw new SSHelperError('INVALID_PAYLOAD', 'The popup renderer failed', { reason: 'popup_renderer' });
     }
   }
 

@@ -22,11 +22,11 @@ export const pluginDescriptor = (id, overrides = {}) => ({
 });
 
 export const service = (provider, name = 'echo', version = 0, overrides = {}) => Object.freeze({
-  kind: 'service', provider, name, version, schemaId: `${provider}.${name}.v${version}`, ...overrides,
+  kind: 'request', id: `${provider}.${name}`, version, ...overrides,
 });
 
 export const eventContract = (provider, name = 'changed', version = 0, overrides = {}) => Object.freeze({
-  kind: 'event', provider, name, version, schemaId: `${provider}.${name}.v${version}`, ...overrides,
+  kind: 'event', id: `${provider}.${name}`, version, ...overrides,
 });
 
 export const errorCode = (code) => (error) => error?.code === code;

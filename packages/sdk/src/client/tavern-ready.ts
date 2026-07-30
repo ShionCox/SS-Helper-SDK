@@ -77,7 +77,7 @@ export async function waitForTavernReady(options: WaitForTavernReadyOptions = {}
       cleanup();
       action();
     };
-    const onAbort = (): void => finish(() => reject(new SSHelperError('CALL_ABORTED', 'Waiting for SillyTavern readiness was aborted')));
+    const onAbort = (): void => finish(() => reject(new SSHelperError('ABORTED', 'Waiting for SillyTavern readiness was aborted')));
     const complete = (name: string): void => {
       const context = contextOf(target);
       if (context === undefined || typeof target.SillyTavern?.getContext !== 'function') return;
@@ -110,7 +110,7 @@ export async function waitForTavernReady(options: WaitForTavernReadyOptions = {}
     if (settled) return;
     poller = setInterval(inspect, 25);
     timer = setTimeout(() => finish(() => reject(new SSHelperError(
-      'HOST_NOT_READY',
+      'CORE_UNAVAILABLE',
       'SillyTavern did not emit APP_READY before the deadline',
       { timeoutMs },
     ))), timeoutMs);
