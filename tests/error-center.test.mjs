@@ -7,7 +7,7 @@ import {
   describeSSHelperFailure,
   readSSHelperFailure,
   transportCodeFor,
-} from '../packages/sdk/dist/index.js';
+} from '@ss-helper/sdk';
 
 test('the SDK diagnostic catalog is the single complete Chinese definition source', () => {
   assert.equal(SS_HELPER_REASON_CODES.length, new Set(SS_HELPER_REASON_CODES).size);

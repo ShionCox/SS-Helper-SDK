@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SS_HELPER_DIAGNOSTICS } from '../packages/sdk/dist/errors.js';
+import { SS_HELPER_DIAGNOSTICS } from '@ss-helper/sdk/errors';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'server-plugin', 'diagnostics.generated.js');

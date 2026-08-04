@@ -511,6 +511,25 @@ function safeFailureDetails(error, requestId) {
   return details;
 }
 
+function httpResponseResult(response) {
+  let responseBody = null;
+  if (response.bytes.length > 0) {
+    const textBody = response.bytes.toString('utf8');
+    if (response.incomplete) responseBody = textBody;
+    else {
+      try { responseBody = JSON.parse(textBody); } catch { responseBody = textBody; }
+    }
+  }
+  return {
+    status: response.status,
+    ok: response.status >= 200 && response.status < 300,
+    body: responseBody,
+    contentType: response.contentType ?? 'application/octet-stream',
+    receivedBytes: response.bytes.length,
+    ...(response.incomplete ? { incomplete: true } : {}),
+  };
+}
+
 function routeError(res, error, requestId) {
   const code = publicErrorCode(error);
   // The private Bridge is an RPC endpoint. A missing workspace is a normal,
@@ -826,13 +845,22 @@ async function executeHttpRequest(input) {
   }
   const body = input.body === undefined ? undefined : input.body;
   if (body !== undefined && (typeof body !== 'string' || Buffer.byteLength(body, 'utf8') > MAX_HTTP_BODY_BYTES)) throw failure('HTTP_BODY_INVALID');
-  const timeoutMs = Math.max(1_000, Math.min(120_000, Math.trunc(Number(input.timeoutMs) || 30_000)));
+  const timeoutMs = Math.max(1_000, Math.min(600_000, Math.trunc(Number(input.timeoutMs) || 30_000)));
+  const idleTimeoutMs = Math.max(1_000, Math.min(120_000, Math.trunc(Number(input.idleTimeoutMs) || 30_000)));
   let timedOut = false;
   const controller = new AbortController();
-  const timer = setTimeout(() => {
+  const totalTimer = setTimeout(() => {
     timedOut = true;
     controller.abort();
   }, timeoutMs);
+  let idleTimer;
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, idleTimeoutMs);
+  };
   let response;
   try {
     response = await new Promise((resolve, reject) => {
@@ -849,6 +877,9 @@ async function executeHttpRequest(input) {
         signal: controller.signal,
       }, (incoming) => {
         const status = Number(incoming.statusCode ?? 0);
+        const contentType = Array.isArray(incoming.headers['content-type'])
+          ? incoming.headers['content-type'][0]
+          : incoming.headers['content-type'];
         if (status >= 300 && status < 400) {
           incoming.resume();
           finish(reject, failure('HTTP_REDIRECT_REJECTED', undefined, { httpStatus: status }));
@@ -864,6 +895,7 @@ async function executeHttpRequest(input) {
         let byteLength = 0;
         incoming.on('data', (chunk) => {
           if (settled) return;
+          resetIdleTimer();
           const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           byteLength += bytes.length;
           if (byteLength > MAX_HTTP_RESPONSE_BYTES) {
@@ -873,14 +905,18 @@ async function executeHttpRequest(input) {
           }
           chunks.push(bytes);
         });
-        incoming.on('aborted', () => finish(reject, failure('HTTP_RESPONSE_PROTOCOL_INVALID')));
+        incoming.on('aborted', () => {
+          if (status < 200 || status >= 300) {
+            finish(reject, failure('HTTP_RESPONSE_PROTOCOL_INVALID', undefined, { httpStatus: status }));
+            return;
+          }
+          finish(resolve, { status, bytes: Buffer.concat(chunks, byteLength), contentType, incomplete: true });
+        });
         incoming.on('error', error => finish(reject, error));
         incoming.on('end', () => finish(resolve, {
           status,
           bytes: Buffer.concat(chunks, byteLength),
-          contentType: Array.isArray(incoming.headers['content-type'])
-            ? incoming.headers['content-type'][0]
-            : incoming.headers['content-type'],
+          contentType,
         }));
       });
       request.on('error', error => finish(reject, error));
@@ -892,19 +928,10 @@ async function executeHttpRequest(input) {
     if (timedOut) throw failure('HTTP_REQUEST_TIMEOUT');
     throw transportFailure(error);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(totalTimer);
+    clearTimeout(idleTimer);
   }
-  let responseBody = null;
-  if (response.bytes.length > 0) {
-    const textBody = response.bytes.toString('utf8');
-    try { responseBody = JSON.parse(textBody); } catch { responseBody = textBody; }
-  }
-  return {
-    status: response.status,
-    ok: response.status >= 200 && response.status < 300,
-    body: responseBody,
-    contentType: response.contentType ?? 'application/octet-stream',
-  };
+  return httpResponseResult(response);
 }
 
 function assertBridgeEnvelope(value) {
@@ -1249,6 +1276,6 @@ export function exit() {
 
 export const __test = Object.freeze({
   DB_PATH, SECRET_KEY_PATH, WORKSPACE_ROOT, RECOVERY_BACKUP_ROOT, createSchema, ROOT, resolveDatabasePath,
-  safeOutboundUrl, createPinnedLookup,
+  safeOutboundUrl, createPinnedLookup, httpResponseResult,
   hash: (value) => crypto.createHash('sha256').update(String(value)).digest('hex'),
 });

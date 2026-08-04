@@ -5,7 +5,7 @@ import {
   readSSHelperPerformanceTimeline,
   startSSHelperPerformanceSpan,
   traceSSHelperPerformance,
-} from '../packages/sdk/dist/index.js';
+} from '@ss-helper/sdk';
 
 test('performance timeline is opt-in, bounded to safe stage metadata, and spans finish once', () => {
   clearSSHelperPerformanceTimeline();

@@ -6,7 +6,8 @@ import vm from 'node:vm';
 import {
   API_VERSION, CORE_DISCOVERY_SYMBOL, CORE_EXTENSION_DIRECTORY, CORE_PLUGIN_ID,
   LLM_COMPLETION_V0, LLM_STRUCTURED_TASK_V0, LLM_EMBEDDING_V0, LLM_RERANK_V0,
-  LLM_CONSUMER_DECLARE_V0,
+  LLM_CONSUMER_DECLARE_V0, LLM_TOOL_TURN_V0, LLM_TOOL_SESSION_CANCEL_V0,
+  LLM_TASK_ROUTING_GET_V0, LLM_TASK_ROUTING_SET_V0, LLM_TOOL_CAPABILITY_VERIFY_V0,
   LLM_PLUGIN_ID, LLM_ROUTE_CHANGED_V0, MEMORY_PLUGIN_ID, MEMORY_RECALL_V0,
   MEMORY_UPDATED_V0, MEMORY_GRAPH_V0, PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, SDK_PACKAGE_VERSION, SS_HELPER_ERROR_CODES,
   isPluginBinaryRequestV0, isPluginBinaryResponseV0,
@@ -102,18 +103,24 @@ test('binary plugin request v0 validators keep bytes narrow, canonical, and Plai
 });
 
 test('LLM service validators reject malformed requests and provider responses exactly', () => {
+  const trace = {
+    workflowId: 'workflow:1', workflowLabel: '初始化记忆', workflowKind: 'agent',
+    jobId: 'job:1', batchIndex: 0, batchCount: 2,
+    stageKey: 'memory_extract_entities', stageDescription: '人物与地点实体解析',
+  };
   const cases = [
-    [LLM_COMPLETION_V0, { messages: [{ role: 'user', content: 'hello' }], route: 'primary', maxTokens: 64, temperature: 0.5 }, { requestId: 'r', text: 'ok', route: 'primary', model: 'model', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } }, [
+    [LLM_COMPLETION_V0, { messages: [{ role: 'user', content: 'hello' }], route: 'primary', maxTokens: 64, temperature: 0.5, trace }, { requestId: 'r', text: 'ok', route: 'primary', model: 'model', usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } }, [
       { messages: [{ role: 'user', content: 'hello' }], route: 1 }, { messages: [{ role: 'user', content: 'hello' }], maxTokens: 0 },
       { messages: [{ role: 'user', content: 'hello' }], maxTokens: Number.POSITIVE_INFINITY }, { messages: [{ role: 'user', content: 'hello', raw: true }] },
     ], [{ text: 'ok', route: '', model: 'model' }, { text: 'ok', route: 'primary', model: 'model', usage: { totalTokens: -1 } }, { text: 'ok', route: 'primary', model: 'model', raw: true }]],
-    [LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object', properties: { value: { type: 'string' } } }, route: 'primary', timeoutMs: 1000 }, { requestId: 'r', output: { value: 'ok' }, route: { route: 'primary', provider: 'p', model: 'm' }, diagnostics: completeDiagnostics }, [
+    [LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' }, outputSchema: { type: 'object', properties: { value: { type: 'string' } } }, route: 'primary', timeoutMs: 1000, trace }, { requestId: 'r', output: { value: 'ok' }, route: { route: 'primary', provider: 'p', model: 'm' }, diagnostics: completeDiagnostics }, [
       { task: 'extract', input: {}, outputSchema: [] }, { task: 'extract', input: {}, timeoutMs: 0 }, { task: 'extract', input: () => 'raw' },
     ], [{ output: () => 'raw', route: { route: 'primary' } }, { output: {}, route: { route: 'primary', fallback: 'yes' } }]],
-    [LLM_EMBEDDING_V0, { input: ['a', 'b'], model: 'embed', route: 'primary', dimensions: 2, timeoutMs: 1000 }, { requestId: 'r', embeddings: [[0.1, 0.2], [0.3, 0.4]], route: { route: 'primary' } }, [
-      { input: 'a', dimensions: 0 }, { input: 'a', dimensions: 1.5 }, { input: [], timeoutMs: 100 }, { input: 'a', timeoutMs: Number.NaN },
+    [LLM_EMBEDDING_V0, { task: 'memory_embed', input: ['a', 'b'], model: 'embed', route: 'primary', dimensions: 2, timeoutMs: 1000, trace }, { requestId: 'r', embeddings: [[0.1, 0.2], [0.3, 0.4]], route: { route: 'primary' } }, [
+      { task: '', input: 'a' }, { task: 1, input: 'a' }, { input: 'a', dimensions: 0 }, { input: 'a', dimensions: 1.5 }, { input: [], timeoutMs: 100 }, { input: 'a', timeoutMs: Number.NaN },
     ], [{ embeddings: [], route: { route: 'primary' } }, { embeddings: [[Number.POSITIVE_INFINITY]], route: { route: 'primary' } }]],
-    [LLM_RERANK_V0, { query: 'q', documents: [{ id: 'a', text: 'A', metadata: { source: 'x' } }], topN: 1, model: 'rank', route: 'primary', timeoutMs: 1000 }, { requestId: 'r', results: [{ id: 'a', score: 0.9, index: 0 }], route: { route: 'primary' } }, [
+    [LLM_RERANK_V0, { task: 'memory_rerank', query: 'q', documents: [{ id: 'a', text: 'A', metadata: { source: 'x' } }], topN: 1, model: 'rank', route: 'primary', timeoutMs: 1000, trace }, { requestId: 'r', results: [{ id: 'a', score: 0.9, index: 0 }], route: { route: 'primary' } }, [
+      { task: '', query: 'q', documents: [{ id: 'a', text: 'A' }] }, { task: false, query: 'q', documents: [{ id: 'a', text: 'A' }] },
       { query: 'q', documents: [{ id: 'a', text: 'A' }], topN: 0 }, { query: 'q', documents: [{ id: 'a', text: 'A' }], topN: 2 },
       { query: 'q', documents: [{ id: 'a', text: 'A', metadata: [] }] }, { query: 'q', documents: [{ id: 'a', text: 'A' }], timeoutMs: -1 },
     ], [{ results: [{ id: 'a', score: 1, index: -1 }], route: { route: 'primary' } }, { results: [{ id: 'a', score: Number.NaN, index: 0 }], route: { route: 'primary' } }]],
@@ -126,6 +133,94 @@ test('LLM service validators reject malformed requests and provider responses ex
   }
   assert.equal(LLM_ROUTE_CHANGED_V0.validatePayload({ route: '', reason: 'configured' }), false);
   assert.equal(LLM_ROUTE_CHANGED_V0.validatePayload({ route: 'primary', reason: 'configured', raw: true }), false);
+  assert.equal(LLM_STRUCTURED_TASK_V0.validateRequest({ task: 'x', input: {}, outputSchema: {}, trace: { ...trace, batchCount: 0 } }), false);
+});
+
+test('LLM tool, routing and capability contracts keep provider state private and scopes exact', () => {
+  const diagnostics = {
+    toolSessionRound: 1,
+    totalCalls: 1,
+    toolSchemaProfile: 'ss_helper_tool_v0',
+    providerAdapterVersion: 1,
+    capabilitySnapshotId: 'capability:1',
+  };
+  const start = {
+    task: 'memory_extract_inventory',
+    pipelineRunId: 'pipeline:1',
+    chatKey: 'chat:1',
+    input: { evidence: [{ ref: 'message:1', text: '检查急救包' }] },
+    outputSchema: { type: 'object', additionalProperties: false },
+    tools: [{
+      name: 'inventory.resolve_context',
+      description: 'Resolve an existing inventory reference.',
+      parameters: { type: 'object', properties: { mentions: { type: 'array', items: { type: 'string' } } }, required: ['mentions'], additionalProperties: false },
+      strict: true,
+    }],
+    maxTokens: 2048,
+    trace: {
+      workflowId: 'pipeline:1', workflowLabel: 'Agent 记忆提取', workflowKind: 'agent',
+      jobId: 'job:1', batchIndex: 0, batchCount: 2,
+      stageKey: 'memory_extract_inventory', stageDescription: '物品与库存变化提取',
+    },
+  };
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest(start), true);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...start, reasoning_content: 'private' }), false);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...start, tools: [] }), false);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...start, toolSessionId: 'session:1' }), false);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...start, maxTokens: 0 }), false);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...start, maxTokens: 65_537 }), false);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...start, trace: { ...start.trace, workflowId: 'pipeline:other' } }), false);
+  const continuation = {
+    task: start.task,
+    pipelineRunId: start.pipelineRunId,
+    chatKey: start.chatKey,
+    toolSessionId: 'session:1',
+    toolResults: [{ callId: 'call:1', name: 'inventory.resolve_context', ok: true, content: { contextOnly: true } }],
+    trace: start.trace,
+  };
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest(continuation), true);
+  assert.equal(LLM_TOOL_TURN_V0.validateRequest({ ...continuation, input: {} }), false);
+  assert.equal(LLM_TOOL_TURN_V0.validateResponse({
+    requestId: 'request:1', state: 'tool_calls', toolSessionId: 'session:1',
+    calls: [{ callId: 'call:1', name: 'inventory.resolve_context', arguments: { mentions: ['急救包'] } }],
+    route: { route: 'inventory', provider: 'openai', model: 'gpt-tool' }, diagnostics,
+  }), true);
+  assert.equal(LLM_TOOL_TURN_V0.validateResponse({
+    requestId: 'request:2', state: 'final', output: { itemCandidates: [] },
+    route: { route: 'inventory', provider: 'openai', model: 'gpt-tool' }, diagnostics,
+  }), true);
+  assert.equal(LLM_TOOL_TURN_V0.validateResponse({
+    requestId: 'request:1', state: 'tool_calls', toolSessionId: 'session:1',
+    calls: [
+      { callId: 'duplicate', name: 'a', arguments: {} },
+      { callId: 'duplicate', name: 'b', arguments: {} },
+    ], route: { route: 'inventory' }, diagnostics,
+  }), false);
+  assert.equal(LLM_TOOL_SESSION_CANCEL_V0.validateRequest({ toolSessionId: 'session:1', reason: 'chat_changed' }), true);
+
+  const capability = {
+    status: 'verified', resourceId: 'resource:1', model: 'model:1', dialect: 'openai_responses',
+    parallelToolCalls: true, streamingToolCalls: true, strictToolSchema: 'native',
+    reasoningReplay: 'opaque', verifiedAt: 1, expiresAt: 2, probeVersion: 1,
+    capabilityDigest: 'sha256:abc',
+  };
+  const snapshot = {
+    revision: 2,
+    assignments: [{ taskKey: 'memory_extract_inventory', resourceId: 'resource:1', model: 'model:1' }],
+    resources: [{
+      resourceId: 'resource:1', label: 'OpenAI', type: 'generation', apiType: 'openai',
+      defaultModel: 'model:1', enabled: true, available: true, capabilities: ['generation', 'tools'],
+      toolCapabilities: capability,
+      privacyPolicy: { conversationStateMode: 'local_replay', storeProviderState: false, allowRemoteRetention: false },
+    }],
+  };
+  assert.equal(LLM_TASK_ROUTING_GET_V0.validateRequest({ taskKeys: ['memory_extract_inventory'] }), true);
+  assert.equal(LLM_TASK_ROUTING_GET_V0.validateResponse(snapshot), true);
+  assert.equal(LLM_TASK_ROUTING_SET_V0.validateRequest({ expectedRevision: 2, assignments: snapshot.assignments }), true);
+  assert.equal(LLM_TASK_ROUTING_SET_V0.validateRequest({ expectedRevision: 2, assignments: [{ taskKey: 'x', model: 'orphan' }] }), false);
+  assert.equal(LLM_TOOL_CAPABILITY_VERIFY_V0.validateRequest({ resourceId: 'resource:1', model: 'model:1', force: true }), true);
+  assert.equal(LLM_TOOL_CAPABILITY_VERIFY_V0.validateResponse({ capability }), true);
+  assert.equal(LLM_TASK_ROUTING_GET_V0.validateResponse({ ...snapshot, resources: [{ ...snapshot.resources[0], baseUrl: 'secret' }] }), false);
 });
 
 test('structured task validation accepts shared JSON-schema nodes but still rejects cycles', () => {

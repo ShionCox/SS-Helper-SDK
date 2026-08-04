@@ -50,6 +50,16 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
   try {
     const { routes, router } = createRouter();
     module = await import(`../server-plugin/index.js?bridge=${Date.now()}`);
+    const completeResponse = module.__test.httpResponseResult({
+      status: 200, bytes: Buffer.from('{"ok":true}', 'utf8'), contentType: 'application/json',
+    });
+    assert.deepEqual(completeResponse, { status: 200, ok: true, body: { ok: true }, contentType: 'application/json', receivedBytes: 11 });
+    const incompleteResponse = module.__test.httpResponseResult({
+      status: 200, bytes: Buffer.from('data: {"partial":true', 'utf8'), contentType: 'text/event-stream', incomplete: true,
+    });
+    assert.deepEqual(incompleteResponse, {
+      status: 200, ok: true, body: 'data: {"partial":true', contentType: 'text/event-stream', receivedBytes: 21, incomplete: true,
+    });
     assert.equal(module.__test.resolveDatabasePath({ stRoot: null, dataRoot: path.join(root, 'isolated-data') }), path.join(root, 'isolated-data', '_ss-helper-v0', 'ss-helper.sqlite3'));
     let dnsLookups = 0;
     const pinned = await module.__test.safeOutboundUrl('https://api.example.test/v1', async () => {

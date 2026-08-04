@@ -34,7 +34,7 @@ function valueFor(snapshot: PopupWizardSnapshot, field: PopupFormField): PlainDa
   return 'defaultValue' in field ? field.defaultValue : undefined;
 }
 
-function optionsFor(snapshot: PopupWizardSnapshot, field: Extract<PopupFormField, { kind: 'select' | 'radio' | 'multiSelect' }>): readonly SettingsOption[] {
+function optionsFor(snapshot: PopupWizardSnapshot, field: Extract<PopupFormField, { kind: 'select' | 'radio' | 'multiSelect' | 'segmented' }>): readonly SettingsOption[] {
   return snapshot.fieldOptions?.[field.id] ?? field.options;
 }
 
@@ -175,8 +175,9 @@ class PopupWizardController implements MountedPopupWizard {
     form.className = 'stx-popup-wizard-form';
     form.setAttribute('role', 'group');
     form.setAttribute('aria-label', step.label);
-    for (const field of step.fields) this.#renderField(form, field);
-    if (step.fields.length === 0) {
+    const visibleFields = step.fields.filter((field) => snapshot.hiddenFieldIds?.includes(field.id) !== true);
+    for (const field of visibleFields) this.#renderField(form, field);
+    if (visibleFields.length === 0) {
       const empty = this.document.createElement('div');
       empty.className = 'stx-popup-wizard-review';
       empty.append(createIconElement(this.document, snapshot.status?.tone === 'success' ? 'circle-check' : 'flask', { decorative: true }));
@@ -291,6 +292,22 @@ class PopupWizardController implements MountedPopupWizard {
       } else {
         control.append(select);
       }
+    } else if (field.kind === 'segmented') {
+      const choices = optionsFor(snapshot, field);
+      const currentValue = typeof value === 'string' ? value : '';
+      const hasSelection = choices.some((option) => option.value === currentValue);
+      control.dataset.ssHelperControl = 'segmented';
+      control.setAttribute('role', 'group');
+      control.setAttribute('aria-label', field.aria?.label ?? field.label);
+      choices.forEach((option, index) => {
+        const selected = option.value === currentValue;
+        const optionButton = button(this.document, option.label);
+        optionButton.disabled = disabled;
+        optionButton.setAttribute('aria-pressed', String(selected));
+        if (selected || (!hasSelection && index === 0)) optionButton.dataset.popupWizardField = idPart(field.id);
+        optionButton.addEventListener('click', () => this.adapter.change(field.id, option.value));
+        control.append(optionButton);
+      });
     } else if (field.kind === 'radio') {
       control.className += ' stx-popup-wizard-options';
       control.setAttribute('role', 'radiogroup');

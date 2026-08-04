@@ -28,9 +28,13 @@ export interface PopupCustomSelectField extends SelectField {
   readonly allowCustom?: boolean;
   readonly customPlaceholder?: string;
 }
+export type PopupSegmentedField = Omit<Extract<SettingsField, { kind: 'radio' }>, 'kind'> & {
+  readonly kind: 'segmented';
+};
 export type PopupFormField =
   | Exclude<SettingsField, { kind: 'section' | 'action' | 'select' }>
-  | PopupCustomSelectField;
+  | PopupCustomSelectField
+  | PopupSegmentedField;
 export type PopupWizardCheckState = 'idle' | 'running' | 'success' | 'error';
 
 export interface PopupWizardStep {
@@ -78,6 +82,8 @@ export interface PopupWizardSnapshot {
   readonly fieldErrors?: Readonly<Record<string, string>>;
   readonly fieldOptions?: Readonly<Record<string, readonly SettingsOption[]>>;
   readonly disabledFieldIds?: readonly string[];
+  /** Fields omitted from the rendered form and accessibility tree for this snapshot. */
+  readonly hiddenFieldIds?: readonly string[];
   readonly dirty?: boolean;
   readonly busy?: boolean;
   readonly submitDisabled?: boolean;

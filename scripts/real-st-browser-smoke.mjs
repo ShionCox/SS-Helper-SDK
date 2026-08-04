@@ -838,14 +838,38 @@ async function main() {
     writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'));
     writeFileSync(path.join(process.cwd(), 'artifacts', 'settings-center-smoke.json'), `${JSON.stringify(visualMetrics, null, 2)}\n`);
     await evaluate(cdp, 'globalThis.__SSHelperSmokeBeforeReload = true', 'mark reload state');
+    const reloadEventStart = cdp.events.length;
     await cdp.send('Page.reload', { ignoreCache: true });
-    const reload = await waitFor('clean Core/consumer reload', async () => evaluate(cdp, `(() => {
-      if (globalThis.__SSHelperSmokeBeforeReload === true) return null;
+    let reload;
+    try {
+      reload = await waitFor('clean Core/consumer reload', async () => evaluate(cdp, `(() => {
+      const onboarding = [...document.querySelectorAll('.popup')]
+        .find((popup) => /(?:welcome to|欢迎来到).*sillytavern/iu.test(popup.textContent ?? ''));
+      const onboardingConfirm = onboarding?.querySelector('.popup-button-ok');
+      if (onboardingConfirm instanceof HTMLElement) {
+        onboardingConfirm.click();
+        throw new Error('reload onboarding dismissed');
+      }
       const discovery = globalThis[Symbol.for('@ss-helper/core.discovery')];
       const consumers = globalThis.__SSHelperArtifactConsumers;
-      if (discovery?.descriptor?.state !== 'ready' || consumers?.a?.state !== 'ready' || consumers?.b?.state !== 'ready') return null;
+      const context = globalThis.SillyTavern?.getContext?.();
+      const appReadyEvent = context?.eventTypes?.APP_READY;
+      const reloadState = {
+        oldExecutionContext: globalThis.__SSHelperSmokeBeforeReload === true,
+        readyState: document.readyState,
+        appReadyRecorded: context?.eventSource?.autoFireLastArgs?.has?.(appReadyEvent) ?? false,
+        core: discovery?.descriptor?.state ?? 'missing',
+        consumerA: consumers?.a?.state ?? 'missing',
+        consumerB: consumers?.b?.state ?? 'missing',
+        consumerAError: String(consumers?.a?.error ?? '').slice(0, 240),
+        consumerBError: String(consumers?.b?.error ?? '').slice(0, 240),
+        extensionScripts: [...document.scripts].map((script) => script.src).filter((src) => src.includes('SS-Helper')),
+      };
+      if (reloadState.oldExecutionContext || reloadState.core !== 'ready' || reloadState.consumerA !== 'ready' || reloadState.consumerB !== 'ready') {
+        throw new Error('reload pending ' + JSON.stringify(reloadState));
+      }
       const plugins = discovery.port.diagnostics().plugins;
-      if (plugins !== ${expectedDiagnosticPlugins}) return null;
+      if (plugins !== ${expectedDiagnosticPlugins}) throw new Error('reload pending plugins=' + plugins);
       return {
         generation: discovery.descriptor.generation,
         plugins,
@@ -854,7 +878,17 @@ async function main() {
         settingsCenters: document.querySelectorAll('#ss-helper-settings-center').length,
         coreInstances: Object.getOwnPropertySymbols(globalThis).filter((symbol) => Symbol.keyFor(symbol) === '@ss-helper/core.discovery').length,
       };
-    })()`, 'reload state'));
+      })()`, 'reload state'), 60_000);
+    } catch (error) {
+      const runtimeEvents = cdp.events.slice(reloadEventStart)
+        .filter((event) => event.method === 'Runtime.exceptionThrown' || event.method === 'Runtime.consoleAPICalled')
+        .map((event) => event.method === 'Runtime.consoleAPICalled'
+          ? { method: event.method, type: event.params?.type, text: (event.params?.args ?? []).map((argument) => String(argument?.value ?? '')).filter(Boolean).join(' ').slice(0, 320) }
+          : { method: event.method, text: String(event.params?.exceptionDetails?.exception?.description ?? event.params?.exceptionDetails?.text ?? '').slice(0, 320) })
+        .filter((event, index, events) => index === 0 || event.method !== events[index - 1]?.method || event.type !== events[index - 1]?.type || event.text !== events[index - 1]?.text)
+        .slice(0, 40);
+      throw new Error(`${error instanceof Error ? error.message : String(error)}; reloadRuntime=${JSON.stringify(runtimeEvents)}`);
+    }
     assert.deepEqual(reload, { generation: 1, plugins: expectedDiagnosticPlugins, settingsRoots: 1, settingsLaunchers: 1, settingsCenters: 0, coreInstances: 1 });
     const npm = npmInvocation(['--version']);
     const npmVersion = run(npm.command, npm.args);

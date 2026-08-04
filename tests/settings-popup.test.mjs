@@ -1039,8 +1039,9 @@ test('Core-owned popup wizard renders fields, gates navigation, updates checks, 
     const state = {
       activeStepId: 'purpose',
       completedStepIds: [],
-      values: { type: 'generation', name: '' },
+      values: { type: 'generation', mode: 'official', name: '' },
       fieldErrors: {},
+      hiddenFieldIds: ['advanced'],
       dirty: true,
       checks: { network: { state: 'idle', description: 'Waiting' } },
     };
@@ -1072,8 +1073,10 @@ test('Core-owned popup wizard renders fields, gates navigation, updates checks, 
             label: 'Connection',
             description: 'Connect provider',
             fields: [
+              { kind: 'segmented', id: 'mode', label: 'Mode', options: [{ value: 'official', label: 'Official' }, { value: 'relay', label: 'Relay' }] },
               { kind: 'text', id: 'name', label: 'Name', validation: { required: true } },
               { kind: 'text', id: 'secret', label: 'API Key', secret: true },
+              { kind: 'text', id: 'advanced', label: 'Advanced' },
             ],
           },
         ],
@@ -1094,6 +1097,14 @@ test('Core-owned popup wizard renders fields, gates navigation, updates checks, 
     steps = descendants(wizard).filter((node) => node.className === 'stx-popup-wizard-step');
     assert.equal(steps[0].disabled, false);
     assert.equal(steps[1].getAttribute('aria-current'), 'step');
+    assert.equal(descendants(wizard).some((node) => node.dataset.fieldId === 'advanced'), false);
+    let modeButtons = descendants(wizard).find((node) => node.dataset.ssHelperControl === 'segmented').children;
+    assert.equal(modeButtons[0].getAttribute('aria-pressed'), 'true');
+    modeButtons[1].dispatchEvent({ type: 'click' });
+    wizard = descendants(document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined)).find((node) => node.className === 'stx-popup-wizard');
+    modeButtons = descendants(wizard).find((node) => node.dataset.ssHelperControl === 'segmented').children;
+    assert.equal(state.values.mode, 'relay');
+    assert.equal(modeButtons[1].getAttribute('aria-pressed'), 'true');
     let secretInput = descendants(wizard).find((node) => node.dataset.popupWizardField === 'secret');
     let secretToggle = descendants(wizard).find((node) => node.className === 'stx-popup-wizard-secret-toggle');
     assert.equal(secretInput.type, 'password');
