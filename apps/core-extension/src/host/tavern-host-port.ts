@@ -7,6 +7,8 @@ import {
   type GenerationRequest,
   type GenerationResult,
   type GenerationSnapshot,
+  type GenerationChunk,
+  type GenerationTaskStatusSnapshot,
   type HostCapability,
   type HostContextSnapshot,
   type HostIdentitySnapshot,
@@ -51,8 +53,11 @@ export interface TavernHostAdapter {
     available(): Promise<boolean>;
     models(): Promise<readonly string[]>;
     current(): Promise<GenerationSnapshot>;
+    inspect(taskId?: string): Promise<GenerationTaskStatusSnapshot>;
     generate(request: GenerationRequest): Promise<GenerationResult>;
     test(request: GenerationRequest): Promise<GenerationResult>;
+    execute(request: GenerationRequest, onChunk?: (chunk: GenerationChunk) => void | Promise<void>): Promise<GenerationResult>;
+    cancel(taskId: string): Promise<void>;
   };
   readonly prompt?: { set(contribution: PromptContribution): Promise<void>; remove(id: string): Promise<void> };
   readonly request?: { send(request: PluginApiRequest, options?: PluginRequestOptions): Promise<PluginApiResponse> };
@@ -333,7 +338,7 @@ const deniedTopLevel: Readonly<Record<string, object>> = Object.freeze({
   chat: deniedSurface('tavern.chat.read', ['readCurrent', 'readMessages', 'list', 'append', 'edit', 'delete', 'navigate']),
   events: deniedSurface('tavern.chat.events', ['subscribe']),
   worldbooks: deniedSurface('tavern.worldbooks.read', ['list', 'load', 'save', 'delete', 'setActive']),
-  generation: deniedSurface('tavern.generation.read', ['available', 'models', 'current', 'generate', 'test']),
+  generation: deniedSurface('tavern.generation.read', ['available', 'models', 'current', 'inspect', 'generate', 'test', 'execute', 'cancel']),
   prompt: deniedSurface('tavern.prompt.contribute', ['set', 'remove']),
   request: deniedSurface('tavern.plugin.request', ['send']),
   binaryRequest: deniedSurface('tavern.plugin.binary-request.v0', ['send']),
@@ -379,10 +384,13 @@ export function createTavernHostPort<Granted extends HostCapability>(scope: Sess
       generation.available = guarded(scope, () => requireAdapter(adapter.generation, 'tavern.generation.read').available());
       generation.models = guarded(scope, () => requireAdapter(adapter.generation, 'tavern.generation.read').models());
       generation.current = guarded(scope, () => requireAdapter(adapter.generation, 'tavern.generation.read').current());
+      generation.inspect = guarded(scope, (taskId?: string) => requireAdapter(adapter.generation, 'tavern.generation.read').inspect(taskId));
     }
     if (has('tavern.generation.execute')) {
       generation.generate = guarded(scope, (request: GenerationRequest) => requireAdapter(adapter.generation, 'tavern.generation.execute').generate(request));
       generation.test = guarded(scope, (request: GenerationRequest) => requireAdapter(adapter.generation, 'tavern.generation.execute').test(request));
+      generation.execute = guarded(scope, (request: GenerationRequest, onChunk?: (chunk: GenerationChunk) => void | Promise<void>) => requireAdapter(adapter.generation, 'tavern.generation.execute').execute(request, onChunk));
+      generation.cancel = guarded(scope, (taskId: string) => requireAdapter(adapter.generation, 'tavern.generation.execute').cancel(taskId));
     }
     port.generation = Object.freeze(new Proxy(generation, { get: (target, property, receiver) => Reflect.has(target, property) ? Reflect.get(target, property, receiver) : () => unavailable(has('tavern.generation.read') ? 'tavern.generation.execute' : 'tavern.generation.read') }));
   }

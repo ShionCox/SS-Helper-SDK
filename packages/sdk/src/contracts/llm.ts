@@ -5,7 +5,60 @@ import { isSSHelperReasonCode, type SSHelperFailureContext } from '../errors.js'
 
 export interface LlmMessage { readonly role: 'system' | 'user' | 'assistant'; readonly content: string; }
 export interface LlmUsage { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number; }
-export interface LlmRouteMetadata { readonly route: string; readonly provider?: string; readonly model?: string; readonly fallback?: boolean; }
+export type LlmExecution = 'completion' | 'structured' | 'tool_turn' | 'embedding' | 'rerank';
+export type LlmReasoningMode = 'provider_default' | 'enabled' | 'disabled';
+export type LlmReasoningEffort = 'provider_default' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export interface LlmReasoningPolicy {
+  readonly mode: LlmReasoningMode;
+  readonly effort: LlmReasoningEffort;
+}
+export type LlmReasoningCapabilityStatus = 'unknown' | 'verified' | 'failed';
+export type LlmReasoningReplay = 'none' | 'required' | 'opaque';
+export interface LlmReasoningExecutionCapability {
+  readonly execution: Extract<LlmExecution, 'completion' | 'structured' | 'tool_turn'>;
+  readonly status: LlmReasoningCapabilityStatus;
+  readonly modes: readonly LlmReasoningMode[];
+  readonly efforts: readonly LlmReasoningEffort[];
+  readonly transport: string;
+  readonly reasoningReplay: LlmReasoningReplay;
+  readonly failure?: SSHelperFailureContext;
+}
+export interface VerifiedReasoningCapabilities {
+  readonly status: LlmReasoningCapabilityStatus;
+  readonly resourceId: string;
+  readonly model: string;
+  readonly provider: string;
+  readonly defaultMode: LlmReasoningMode;
+  readonly modes: readonly LlmReasoningMode[];
+  readonly efforts: readonly LlmReasoningEffort[];
+  readonly transport: string;
+  readonly reasoningReplay: LlmReasoningReplay;
+  readonly executions: readonly LlmReasoningExecutionCapability[];
+  readonly connectionRevision: string;
+  readonly probeVersion: number;
+  readonly verifiedAt?: number;
+  readonly expiresAt?: number;
+  readonly capabilityDigest?: string;
+  readonly failure?: SSHelperFailureContext;
+  readonly optionalFailures?: readonly SSHelperFailureContext[];
+}
+export type LlmCapabilityPreference = 'preferred' | 'required';
+export interface LlmTaskRequirements {
+  readonly nativeStructured?: LlmCapabilityPreference;
+  readonly strictToolSchema?: LlmCapabilityPreference;
+  readonly streamingToolCalls?: LlmCapabilityPreference;
+}
+export interface LlmRouteMetadata {
+  readonly resourceId: string;
+  readonly source: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly execution: LlmExecution;
+  readonly transport: string;
+  readonly resolvedBy?: 'task_assignment' | 'execution_default';
+  readonly capabilityDigest?: string;
+  readonly reasoning?: LlmReasoningPolicy;
+}
 export interface LlmWorkflowTrace {
   readonly workflowId: string;
   readonly workflowLabel: string;
@@ -17,7 +70,7 @@ export interface LlmWorkflowTrace {
   readonly stageDescription?: string;
 }
 export type LlmStructuredTransport = 'json_schema' | 'json_object' | 'tavern_json_schema' | 'prompt_only';
-export type LlmStructuredAttemptPhase = 'initial' | 'schema_repair' | 'transient_retry' | 'route_fallback' | 'transport_fallback';
+export type LlmStructuredAttemptPhase = 'initial' | 'schema_repair' | 'transient_retry';
 export type LlmStructuredRepairReason = 'INVALID_JSON' | 'SCHEMA_VALIDATION_FAILED';
 export interface LlmStructuredValidationIssue {
   readonly path: string;
@@ -44,28 +97,21 @@ export interface LlmStructuredTaskDiagnostics {
   readonly validationOutcome: 'complete' | 'partial';
   readonly itemRejections: readonly LlmStructuredItemRejection[];
 }
-export interface LlmCompletionRequest { readonly messages: readonly LlmMessage[]; readonly route?: string; readonly maxTokens?: number; readonly temperature?: number; readonly trace?: LlmWorkflowTrace; }
-export interface LlmCompletionResponse { readonly requestId: string; readonly text: string; readonly route: string; readonly model: string; readonly provider?: string; readonly finishReason?: string; readonly usage?: LlmUsage; }
-export interface LlmStructuredTaskRequest { readonly task: string; readonly input: PlainData; readonly outputSchema: Readonly<Record<string, PlainData>>; readonly route?: string; readonly model?: string; readonly timeoutMs?: number; readonly parentRequestId?: string; readonly trace?: LlmWorkflowTrace; }
+export interface LlmCompletionRequest { readonly messages: readonly LlmMessage[]; readonly maxTokens?: number; readonly temperature?: number; readonly trace?: LlmWorkflowTrace; }
+export interface LlmCompletionResponse { readonly requestId: string; readonly text: string; readonly route: LlmRouteMetadata; readonly finishReason?: string; readonly usage?: LlmUsage; }
+export interface LlmStructuredTaskRequest { readonly task: string; readonly input: PlainData; readonly outputSchema: Readonly<Record<string, PlainData>>; readonly timeoutMs?: number; readonly parentRequestId?: string; readonly trace?: LlmWorkflowTrace; }
 export interface LlmStructuredTaskResponse { readonly requestId: string; readonly parentRequestId?: string; readonly output: PlainData; readonly route: LlmRouteMetadata; readonly diagnostics: LlmStructuredTaskDiagnostics; readonly usage?: LlmUsage; }
-export interface LlmEmbeddingRequest { readonly task?: string; readonly input: string | readonly string[]; readonly model?: string; readonly route?: string; readonly dimensions?: number; readonly timeoutMs?: number; readonly trace?: LlmWorkflowTrace; }
+export interface LlmEmbeddingRequest { readonly task?: string; readonly input: string | readonly string[]; readonly dimensions?: number; readonly timeoutMs?: number; readonly trace?: LlmWorkflowTrace; }
 export interface LlmEmbeddingResponse { readonly requestId: string; readonly embeddings: readonly (readonly number[])[]; readonly route: LlmRouteMetadata; readonly usage?: LlmUsage; }
 export interface LlmRerankDocument { readonly id: string; readonly text: string; readonly metadata?: Readonly<Record<string, PlainData>>; }
-export interface LlmRerankRequest { readonly task?: string; readonly query: string; readonly documents: readonly LlmRerankDocument[]; readonly topN?: number; readonly model?: string; readonly route?: string; readonly timeoutMs?: number; readonly trace?: LlmWorkflowTrace; }
+export interface LlmRerankRequest { readonly task?: string; readonly query: string; readonly documents: readonly LlmRerankDocument[]; readonly topN?: number; readonly timeoutMs?: number; readonly trace?: LlmWorkflowTrace; }
 export interface LlmRerankResult { readonly id: string; readonly score: number; readonly index: number; }
 export interface LlmRerankResponse { readonly requestId: string; readonly results: readonly LlmRerankResult[]; readonly route: LlmRouteMetadata; readonly usage?: LlmUsage; }
 export interface LlmRouteDiagnosticsRequest { readonly requestId?: string; }
 export interface LlmRouteDiagnostic { readonly requestId: string; readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'aborted'; readonly route?: LlmRouteMetadata; readonly durationMs?: number; readonly failure?: SSHelperFailureContext; }
 export interface LlmRouteDiagnosticsResponse { readonly entries: readonly LlmRouteDiagnostic[]; }
-export interface LlmRouteChangedPayload { readonly previousRoute?: string; readonly route: string; readonly reason: 'configured' | 'fallback' | 'availability'; }
 export type LlmCapabilityKind = 'generation' | 'embedding' | 'rerank';
-export type LlmCapabilityReason = 'llm_disabled' | 'no_resource' | 'resource_disabled' | 'credential_missing' | 'route_unavailable' | 'tavern_unavailable' | 'status_unavailable';
-export interface LlmCapabilityCheck { readonly id: string; readonly taskKey: string; readonly taskKind: LlmCapabilityKind; readonly requiredCapabilities?: readonly string[]; }
-export interface LlmCapabilityStatusRequest { readonly checks: readonly LlmCapabilityCheck[]; }
-export interface LlmCapabilityStatusEntry { readonly id: string; readonly configured: boolean; readonly available: boolean; readonly resourceId?: string; readonly model?: string; readonly source?: 'tavern' | 'custom'; readonly reason?: LlmCapabilityReason; }
-export interface LlmCapabilityStatusResponse { readonly revision: number; readonly checks: readonly LlmCapabilityStatusEntry[]; }
-export interface LlmCapabilityStatusChangedPayload { readonly revision: number; readonly kinds: readonly LlmCapabilityKind[]; }
-export interface LlmConsumerTask { readonly taskKey: string; readonly taskKind: 'generation' | 'embedding' | 'rerank'; readonly requiredCapabilities?: readonly string[]; readonly description?: string; readonly backgroundEligible?: boolean; readonly maxTokens?: number; readonly recommendedRoute?: { readonly resourceId?: string; readonly profileId?: string }; readonly structuredPolicy?: LlmStructuredRepairPolicy; }
+export interface LlmConsumerTask { readonly taskKey: string; readonly taskKind?: 'generation' | 'embedding' | 'rerank'; readonly execution?: LlmExecution; readonly requirements?: LlmTaskRequirements; readonly requiredCapabilities?: readonly string[]; readonly description?: string; readonly backgroundEligible?: boolean; readonly maxTokens?: number; readonly structuredPolicy?: LlmStructuredRepairPolicy; }
 export interface LlmConsumerRegistration { readonly displayName: string; readonly registrationVersion: number; readonly tasks: readonly LlmConsumerTask[]; }
 export interface LlmConsumerUnregisterRequest { readonly keepPersistent?: boolean; }
 export interface LlmConsumerRegistrationResponse { readonly ok: true; }
@@ -91,14 +137,26 @@ export interface VerifiedToolCapabilities {
   readonly model: string;
   readonly dialect: ProviderToolDialect;
   readonly parallelToolCalls: boolean;
-  readonly streamingToolCalls: boolean;
-  readonly strictToolSchema: 'native' | 'beta' | 'none';
+  readonly streamingToolCalls: 'incremental' | 'whole_call' | 'unsupported' | 'unknown';
+  readonly strictToolSchema: 'native' | 'beta' | 'unsupported' | 'unknown';
   readonly reasoningReplay: 'none' | 'required' | 'opaque';
   readonly verifiedAt?: number;
   readonly expiresAt?: number;
   readonly probeVersion: number;
   readonly capabilityDigest?: string;
-  readonly failureCode?: string;
+  readonly failure?: SSHelperFailureContext;
+  /** Optional sub-probes may fail without invalidating basic tool calls. */
+  readonly optionalFailures?: readonly SSHelperFailureContext[];
+}
+export interface VerifiedEmbeddingCapabilities {
+  readonly status: 'unknown' | 'verified' | 'failed';
+  readonly resourceId: string;
+  readonly model: string;
+  readonly verifiedMaxBatchInputs: 8 | 16 | 32;
+  readonly verifiedAt?: number;
+  readonly expiresAt?: number;
+  readonly capabilityDigest?: string;
+  readonly failure?: SSHelperFailureContext;
 }
 export interface LlmSafeResourceSummary {
   readonly resourceId: string;
@@ -110,6 +168,9 @@ export interface LlmSafeResourceSummary {
   readonly available: boolean;
   readonly capabilities: readonly string[];
   readonly toolCapabilities?: VerifiedToolCapabilities;
+  readonly reasoningPolicy?: LlmReasoningPolicy;
+  readonly reasoningCapabilities?: VerifiedReasoningCapabilities;
+  readonly embeddingCapabilities?: VerifiedEmbeddingCapabilities;
   readonly privacyPolicy?: ProviderPrivacyPolicy;
   readonly unavailableReason?: string;
 }
@@ -146,12 +207,17 @@ export interface LlmToolTurnRequest {
   readonly tools?: readonly LlmToolDefinition[];
   readonly toolSessionId?: string;
   readonly toolResults?: readonly NormalizedToolResult[];
-  readonly route?: string;
-  readonly model?: string;
   readonly timeoutMs?: number;
   readonly maxTokens?: number;
   readonly parentRequestId?: string;
   readonly trace?: LlmWorkflowTrace;
+  /**
+   * Tool-turn consumers normally require a valid final envelope. Fixed-stage
+   * extraction may opt into itemized validation so one malformed array item
+   * can be isolated and reported without discarding valid siblings.
+   */
+  readonly validationMode?: 'strict' | 'itemized_partial';
+  readonly validationCollections?: readonly string[];
 }
 export type LlmToolTurnResponse =
   | {
@@ -172,6 +238,8 @@ export type LlmToolTurnResponse =
       readonly route: LlmRouteMetadata;
       readonly diagnostics: LlmToolTurnDiagnostics;
       readonly usage?: LlmUsage;
+      readonly validationIssues?: readonly LlmStructuredValidationIssue[];
+      readonly itemRejections?: readonly LlmStructuredItemRejection[];
     };
 export interface LlmToolSessionCancelRequest {
   readonly toolSessionId: string;
@@ -180,24 +248,28 @@ export interface LlmToolSessionCancelRequest {
 export interface LlmTaskRoutingAssignment {
   readonly taskKey: string;
   readonly resourceId?: string;
-  readonly model?: string;
 }
-export interface LlmTaskRoutingGetRequest { readonly taskKeys?: readonly string[]; }
-export interface LlmTaskRoutingSnapshot {
+export interface LlmTaskStatusRequest { readonly taskKeys?: readonly string[]; }
+export interface LlmTaskStatusEntry {
+  readonly taskKey: string;
+  readonly execution: LlmExecution;
+  readonly available: boolean;
+  readonly resourceId?: string;
+  readonly route?: LlmRouteMetadata;
+  readonly requirements?: LlmTaskRequirements;
+  readonly failure?: SSHelperFailureContext;
+}
+export interface LlmTaskStatusSnapshot {
   readonly revision: number;
+  readonly tasks: readonly LlmTaskStatusEntry[];
+  readonly defaults: Readonly<Partial<Record<LlmExecution, string>>>;
   readonly assignments: readonly LlmTaskRoutingAssignment[];
   readonly resources: readonly LlmSafeResourceSummary[];
 }
-export interface LlmTaskRoutingSetRequest {
-  readonly expectedRevision: number;
-  readonly assignments: readonly LlmTaskRoutingAssignment[];
-}
-export interface LlmToolCapabilityVerifyRequest {
-  readonly resourceId: string;
-  readonly model?: string;
-  readonly force?: boolean;
-}
-export interface LlmToolCapabilityVerifyResponse { readonly capability: VerifiedToolCapabilities; }
+export interface LlmTaskRouteSetRequest { readonly expectedRevision: number; readonly assignments: readonly LlmTaskRoutingAssignment[]; readonly defaults?: Readonly<Partial<Record<LlmExecution, string>>>; }
+export interface LlmTaskStatusChangedPayload { readonly revision: number; readonly taskKeys: readonly string[]; readonly resourceIds: readonly string[]; }
+export interface LlmResourceCapabilityVerifyRequest { readonly resourceId: string; readonly taskKeys?: readonly string[]; readonly force?: boolean; }
+export interface LlmResourceCapabilityVerifyResponse { readonly resourceId: string; readonly taskKeys: readonly string[]; readonly capabilities: readonly VerifiedToolCapabilities[]; readonly reasoning?: VerifiedReasoningCapabilities; readonly embedding?: VerifiedEmbeddingCapabilities; }
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -233,7 +305,6 @@ const workflowTrace = (value: unknown): value is LlmWorkflowTrace => record(valu
   && optionalNonEmpty(value.stageKey)
   && optionalNonEmpty(value.stageDescription);
 const optionalWorkflowTrace = (value: unknown): boolean => value === undefined || workflowTrace(value);
-const optionalRecommendation = (value: unknown): boolean => value === undefined || (record(value) && exact(value, [], ['resourceId', 'profileId']) && optionalNonEmpty(value.resourceId) && optionalNonEmpty(value.profileId));
 const failureContext = (value: unknown): value is SSHelperFailureContext => record(value)
   && exact(value, ['reasonCode', 'stage'], ['requestId', 'attemptId', 'batchIndex', 'collection', 'path', 'keyword', 'expected', 'httpStatus', 'providerKind', 'providerErrorCode', 'providerErrorType', 'providerErrorParam', 'resourceId', 'model'])
   && isSSHelperReasonCode(value.reasonCode)
@@ -287,28 +358,77 @@ const structuredDiagnostics = (value: unknown): value is LlmStructuredTaskDiagno
   && Array.isArray(value.itemRejections)
   && value.itemRejections.every(structuredItemRejection)
   && (value.validationOutcome === 'partial' ? value.itemRejections.length > 0 : value.itemRejections.length === 0);
-const route = (value: unknown): value is LlmRouteMetadata => record(value) && exact(value, ['route'], ['provider', 'model', 'fallback']) && nonEmpty(value.route) && optionalNonEmpty(value.provider) && optionalNonEmpty(value.model) && (value.fallback === undefined || typeof value.fallback === 'boolean');
+const execution = (value: unknown): value is LlmExecution => ['completion', 'structured', 'tool_turn', 'embedding', 'rerank'].includes(String(value));
+const reasoningMode = (value: unknown): value is LlmReasoningMode => ['provider_default', 'enabled', 'disabled'].includes(String(value));
+const reasoningEffort = (value: unknown): value is LlmReasoningEffort => ['provider_default', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(String(value));
+const reasoningPolicy = (value: unknown): value is LlmReasoningPolicy => record(value)
+  && exact(value, ['mode', 'effort'])
+  && reasoningMode(value.mode)
+  && reasoningEffort(value.effort)
+  && (value.mode !== 'disabled' || value.effort === 'provider_default');
+const reasoningCapabilityStatus = (value: unknown): value is LlmReasoningCapabilityStatus => ['unknown', 'verified', 'failed'].includes(String(value));
+const reasoningReplay = (value: unknown): value is LlmReasoningReplay => ['none', 'required', 'opaque'].includes(String(value));
+const reasoningExecutionCapability = (value: unknown): value is LlmReasoningExecutionCapability => record(value)
+  && exact(value, ['execution', 'status', 'modes', 'efforts', 'transport', 'reasoningReplay'], ['failure'])
+  && (value.execution === 'completion' || value.execution === 'structured' || value.execution === 'tool_turn')
+  && reasoningCapabilityStatus(value.status)
+  && Array.isArray(value.modes) && value.modes.length > 0 && value.modes.every(reasoningMode)
+  && Array.isArray(value.efforts) && value.efforts.length > 0 && value.efforts.every(reasoningEffort)
+  && nonEmpty(value.transport)
+  && reasoningReplay(value.reasoningReplay)
+  && (value.failure === undefined || failureContext(value.failure));
+const verifiedReasoningCapabilities = (value: unknown): value is VerifiedReasoningCapabilities => record(value)
+  && exact(value, ['status', 'resourceId', 'model', 'provider', 'defaultMode', 'modes', 'efforts', 'transport', 'reasoningReplay', 'executions', 'connectionRevision', 'probeVersion'], ['verifiedAt', 'expiresAt', 'capabilityDigest', 'failure', 'optionalFailures'])
+  && reasoningCapabilityStatus(value.status)
+  && nonEmpty(value.resourceId)
+  && nonEmpty(value.model)
+  && nonEmpty(value.provider)
+  && reasoningMode(value.defaultMode)
+  && Array.isArray(value.modes) && value.modes.length > 0 && value.modes.every(reasoningMode)
+  && Array.isArray(value.efforts) && value.efforts.length > 0 && value.efforts.every(reasoningEffort)
+  && nonEmpty(value.transport)
+  && reasoningReplay(value.reasoningReplay)
+  && Array.isArray(value.executions) && value.executions.every(reasoningExecutionCapability)
+  && nonEmpty(value.connectionRevision)
+  && positiveInteger(value.probeVersion)
+  && (value.verifiedAt === undefined || nonNegativeInteger(value.verifiedAt))
+  && (value.expiresAt === undefined || nonNegativeInteger(value.expiresAt))
+  && optionalNonEmpty(value.capabilityDigest)
+  && (value.failure === undefined || failureContext(value.failure))
+  && (value.optionalFailures === undefined || (Array.isArray(value.optionalFailures) && value.optionalFailures.every(failureContext)));
+const capabilityPreference = (value: unknown): value is LlmCapabilityPreference => value === 'preferred' || value === 'required';
+const optionalCapabilityPreference = (value: unknown): boolean => value === undefined || capabilityPreference(value);
+const taskRequirements = (value: unknown): value is LlmTaskRequirements => value === undefined || (record(value)
+  && exact(value, [], ['nativeStructured', 'strictToolSchema', 'streamingToolCalls'])
+  && optionalCapabilityPreference(value.nativeStructured)
+  && optionalCapabilityPreference(value.strictToolSchema)
+  && optionalCapabilityPreference(value.streamingToolCalls));
+const route = (value: unknown): value is LlmRouteMetadata => record(value)
+  && exact(value, ['resourceId', 'source', 'provider', 'model', 'execution', 'transport'], ['resolvedBy', 'capabilityDigest', 'reasoning'])
+  && nonEmpty(value.resourceId)
+  && nonEmpty(value.source)
+  && nonEmpty(value.provider)
+  && nonEmpty(value.model)
+  && execution(value.execution)
+  && nonEmpty(value.transport)
+  && (value.resolvedBy === undefined || value.resolvedBy === 'task_assignment' || value.resolvedBy === 'execution_default')
+  && optionalNonEmpty(value.capabilityDigest)
+  && (value.reasoning === undefined || reasoningPolicy(value.reasoning))
+  ;
 const usage = (value: unknown): value is LlmUsage => value === undefined || (record(value) && exact(value, [], ['inputTokens', 'outputTokens', 'totalTokens']) && ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => value[key] === undefined || nonNegativeInteger(value[key])));
 const message = (value: unknown): value is LlmMessage => record(value) && exact(value, ['role', 'content']) && (value.role === 'system' || value.role === 'user' || value.role === 'assistant') && typeof value.content === 'string';
-export const isLlmCompletionRequest = (value: unknown): value is LlmCompletionRequest => record(value) && exact(value, ['messages'], ['route', 'maxTokens', 'temperature', 'trace']) && Array.isArray(value.messages) && value.messages.length > 0 && value.messages.every(message) && optionalNonEmpty(value.route) && (value.maxTokens === undefined || positiveInteger(value.maxTokens)) && (value.temperature === undefined || (finite(value.temperature) && value.temperature >= 0 && value.temperature <= 2)) && optionalWorkflowTrace(value.trace);
-export const isLlmCompletionResponse = (value: unknown): value is LlmCompletionResponse => record(value) && exact(value, ['requestId', 'text', 'route', 'model'], ['provider', 'finishReason', 'usage']) && nonEmpty(value.requestId) && typeof value.text === 'string' && nonEmpty(value.route) && nonEmpty(value.model) && optionalNonEmpty(value.provider) && optionalNonEmpty(value.finishReason) && usage(value.usage);
-export const isLlmStructuredTaskRequest = (value: unknown): value is LlmStructuredTaskRequest => record(value) && exact(value, ['task', 'input', 'outputSchema'], ['route', 'model', 'timeoutMs', 'parentRequestId', 'trace']) && nonEmpty(value.task) && plainData(value.input) && record(value.outputSchema) && plainData(value.outputSchema) && optionalNonEmpty(value.route) && optionalNonEmpty(value.model) && optionalTimeout(value.timeoutMs) && optionalNonEmpty(value.parentRequestId) && optionalWorkflowTrace(value.trace);
+export const isLlmCompletionRequest = (value: unknown): value is LlmCompletionRequest => record(value) && exact(value, ['messages'], ['maxTokens', 'temperature', 'trace']) && Array.isArray(value.messages) && value.messages.length > 0 && value.messages.every(message) && (value.maxTokens === undefined || positiveInteger(value.maxTokens)) && (value.temperature === undefined || (finite(value.temperature) && value.temperature >= 0 && value.temperature <= 2)) && optionalWorkflowTrace(value.trace);
+export const isLlmCompletionResponse = (value: unknown): value is LlmCompletionResponse => record(value) && exact(value, ['requestId', 'text', 'route'], ['finishReason', 'usage']) && nonEmpty(value.requestId) && typeof value.text === 'string' && route(value.route) && optionalNonEmpty(value.finishReason) && usage(value.usage);
+export const isLlmStructuredTaskRequest = (value: unknown): value is LlmStructuredTaskRequest => record(value) && exact(value, ['task', 'input', 'outputSchema'], ['timeoutMs', 'parentRequestId', 'trace']) && nonEmpty(value.task) && plainData(value.input) && record(value.outputSchema) && plainData(value.outputSchema) && optionalTimeout(value.timeoutMs) && optionalNonEmpty(value.parentRequestId) && optionalWorkflowTrace(value.trace);
 export const isLlmStructuredTaskResponse = (value: unknown): value is LlmStructuredTaskResponse => record(value) && exact(value, ['requestId', 'output', 'route', 'diagnostics'], ['parentRequestId', 'usage']) && nonEmpty(value.requestId) && optionalNonEmpty(value.parentRequestId) && plainData(value.output) && route(value.route) && structuredDiagnostics(value.diagnostics) && usage(value.usage);
-export const isLlmEmbeddingRequest = (value: unknown): value is LlmEmbeddingRequest => record(value) && exact(value, ['input'], ['task', 'model', 'route', 'dimensions', 'timeoutMs', 'trace']) && optionalNonEmpty(value.task) && (nonEmpty(value.input) || (Array.isArray(value.input) && value.input.length > 0 && value.input.every(nonEmpty))) && optionalNonEmpty(value.model) && optionalNonEmpty(value.route) && (value.dimensions === undefined || positiveInteger(value.dimensions)) && optionalTimeout(value.timeoutMs) && optionalWorkflowTrace(value.trace);
+export const isLlmEmbeddingRequest = (value: unknown): value is LlmEmbeddingRequest => record(value) && exact(value, ['input'], ['task', 'dimensions', 'timeoutMs', 'trace']) && optionalNonEmpty(value.task) && (nonEmpty(value.input) || (Array.isArray(value.input) && value.input.length > 0 && value.input.every(nonEmpty))) && (value.dimensions === undefined || positiveInteger(value.dimensions)) && optionalTimeout(value.timeoutMs) && optionalWorkflowTrace(value.trace);
 export const isLlmEmbeddingResponse = (value: unknown): value is LlmEmbeddingResponse => record(value) && exact(value, ['requestId', 'embeddings', 'route'], ['usage']) && nonEmpty(value.requestId) && Array.isArray(value.embeddings) && value.embeddings.length > 0 && value.embeddings.every((vector) => Array.isArray(vector) && vector.length > 0 && vector.every(finite)) && route(value.route) && usage(value.usage);
 const rerankDocument = (value: unknown): value is LlmRerankDocument => record(value) && exact(value, ['id', 'text'], ['metadata']) && nonEmpty(value.id) && nonEmpty(value.text) && (value.metadata === undefined || (record(value.metadata) && plainData(value.metadata)));
-export const isLlmRerankRequest = (value: unknown): value is LlmRerankRequest => record(value) && exact(value, ['query', 'documents'], ['task', 'topN', 'model', 'route', 'timeoutMs', 'trace']) && optionalNonEmpty(value.task) && nonEmpty(value.query) && Array.isArray(value.documents) && value.documents.length > 0 && value.documents.every(rerankDocument) && (value.topN === undefined || (positiveInteger(value.topN) && value.topN <= value.documents.length)) && optionalNonEmpty(value.model) && optionalNonEmpty(value.route) && optionalTimeout(value.timeoutMs) && optionalWorkflowTrace(value.trace);
+export const isLlmRerankRequest = (value: unknown): value is LlmRerankRequest => record(value) && exact(value, ['query', 'documents'], ['task', 'topN', 'timeoutMs', 'trace']) && optionalNonEmpty(value.task) && nonEmpty(value.query) && Array.isArray(value.documents) && value.documents.length > 0 && value.documents.every(rerankDocument) && (value.topN === undefined || (positiveInteger(value.topN) && value.topN <= value.documents.length)) && optionalTimeout(value.timeoutMs) && optionalWorkflowTrace(value.trace);
 export const isLlmRerankResponse = (value: unknown): value is LlmRerankResponse => record(value) && exact(value, ['requestId', 'results', 'route'], ['usage']) && nonEmpty(value.requestId) && Array.isArray(value.results) && value.results.every((item) => record(item) && exact(item, ['id', 'score', 'index']) && nonEmpty(item.id) && finite(item.score) && nonNegativeInteger(item.index)) && route(value.route) && usage(value.usage);
 export const isLlmRouteDiagnosticsRequest = (value: unknown): value is LlmRouteDiagnosticsRequest => record(value) && exact(value, [], ['requestId']) && optionalNonEmpty(value.requestId);
 export const isLlmRouteDiagnosticsResponse = (value: unknown): value is LlmRouteDiagnosticsResponse => record(value) && exact(value, ['entries']) && Array.isArray(value.entries) && value.entries.every((item) => record(item) && exact(item, ['requestId', 'state'], ['route', 'durationMs', 'failure']) && nonEmpty(item.requestId) && ['queued', 'running', 'completed', 'failed', 'aborted'].includes(String(item.state)) && (item.route === undefined || route(item.route)) && (item.durationMs === undefined || (finite(item.durationMs) && item.durationMs >= 0)) && (item.failure === undefined || failureContext(item.failure)));
-export const isLlmRouteChangedPayload = (value: unknown): value is LlmRouteChangedPayload => record(value) && exact(value, ['route', 'reason'], ['previousRoute']) && nonEmpty(value.route) && optionalNonEmpty(value.previousRoute) && ['configured', 'fallback', 'availability'].includes(String(value.reason));
 const capabilityKind = (value: unknown): value is LlmCapabilityKind => value === 'generation' || value === 'embedding' || value === 'rerank';
-const capabilityReason = (value: unknown): value is LlmCapabilityReason => ['llm_disabled', 'no_resource', 'resource_disabled', 'credential_missing', 'route_unavailable', 'tavern_unavailable', 'status_unavailable'].includes(String(value));
-const capabilityCheck = (value: unknown): value is LlmCapabilityCheck => record(value) && exact(value, ['id', 'taskKey', 'taskKind'], ['requiredCapabilities']) && nonEmpty(value.id) && nonEmpty(value.taskKey) && capabilityKind(value.taskKind) && (value.requiredCapabilities === undefined || (Array.isArray(value.requiredCapabilities) && value.requiredCapabilities.every(nonEmpty)));
-const capabilityEntry = (value: unknown): value is LlmCapabilityStatusEntry => record(value) && exact(value, ['id', 'configured', 'available'], ['resourceId', 'model', 'source', 'reason']) && nonEmpty(value.id) && typeof value.configured === 'boolean' && typeof value.available === 'boolean' && optionalNonEmpty(value.resourceId) && optionalNonEmpty(value.model) && (value.source === undefined || value.source === 'tavern' || value.source === 'custom') && (value.reason === undefined || capabilityReason(value.reason));
-export const isLlmCapabilityStatusRequest = (value: unknown): value is LlmCapabilityStatusRequest => record(value) && exact(value, ['checks']) && Array.isArray(value.checks) && value.checks.length > 0 && value.checks.every(capabilityCheck);
-export const isLlmCapabilityStatusResponse = (value: unknown): value is LlmCapabilityStatusResponse => record(value) && exact(value, ['revision', 'checks']) && Number.isSafeInteger(value.revision) && (value.revision as number) >= 0 && Array.isArray(value.checks) && value.checks.every(capabilityEntry);
-export const isLlmCapabilityStatusChangedPayload = (value: unknown): value is LlmCapabilityStatusChangedPayload => record(value) && exact(value, ['revision', 'kinds']) && Number.isSafeInteger(value.revision) && (value.revision as number) >= 0 && Array.isArray(value.kinds) && value.kinds.length > 0 && value.kinds.every(capabilityKind);
 
 const toolDialect = (value: unknown): value is ProviderToolDialect => [
   'openai_responses', 'anthropic_messages', 'gemini_interactions', 'deepseek_chat',
@@ -320,22 +440,33 @@ const privacyPolicy = (value: unknown): value is ProviderPrivacyPolicy => record
   && typeof value.storeProviderState === 'boolean'
   && typeof value.allowRemoteRetention === 'boolean';
 const verifiedToolCapabilities = (value: unknown): value is VerifiedToolCapabilities => record(value)
-  && exact(value, ['status', 'resourceId', 'model', 'dialect', 'parallelToolCalls', 'streamingToolCalls', 'strictToolSchema', 'reasoningReplay', 'probeVersion'], ['verifiedAt', 'expiresAt', 'capabilityDigest', 'failureCode'])
+  && exact(value, ['status', 'resourceId', 'model', 'dialect', 'parallelToolCalls', 'streamingToolCalls', 'strictToolSchema', 'reasoningReplay', 'probeVersion'], ['verifiedAt', 'expiresAt', 'capabilityDigest', 'failure', 'optionalFailures'])
   && ['unknown', 'declared', 'verified', 'failed'].includes(String(value.status))
   && nonEmpty(value.resourceId)
   && nonEmpty(value.model)
   && toolDialect(value.dialect)
   && typeof value.parallelToolCalls === 'boolean'
-  && typeof value.streamingToolCalls === 'boolean'
-  && ['native', 'beta', 'none'].includes(String(value.strictToolSchema))
+  && ['incremental', 'whole_call', 'unsupported', 'unknown'].includes(String(value.streamingToolCalls))
+  && ['native', 'beta', 'unsupported', 'unknown'].includes(String(value.strictToolSchema))
   && ['none', 'required', 'opaque'].includes(String(value.reasoningReplay))
   && positiveInteger(value.probeVersion)
   && (value.verifiedAt === undefined || nonNegativeInteger(value.verifiedAt))
   && (value.expiresAt === undefined || nonNegativeInteger(value.expiresAt))
   && optionalNonEmpty(value.capabilityDigest)
-  && optionalNonEmpty(value.failureCode);
+  && (value.failure === undefined || failureContext(value.failure))
+  && (value.optionalFailures === undefined || (Array.isArray(value.optionalFailures) && value.optionalFailures.every(failureContext)));
+const verifiedEmbeddingCapabilities = (value: unknown): value is VerifiedEmbeddingCapabilities => record(value)
+  && exact(value, ['status', 'resourceId', 'model', 'verifiedMaxBatchInputs'], ['verifiedAt', 'expiresAt', 'capabilityDigest', 'failure'])
+  && ['unknown', 'verified', 'failed'].includes(String(value.status))
+  && nonEmpty(value.resourceId)
+  && nonEmpty(value.model)
+  && [8, 16, 32].includes(Number(value.verifiedMaxBatchInputs))
+  && (value.verifiedAt === undefined || nonNegativeInteger(value.verifiedAt))
+  && (value.expiresAt === undefined || nonNegativeInteger(value.expiresAt))
+  && optionalNonEmpty(value.capabilityDigest)
+  && (value.failure === undefined || failureContext(value.failure));
 const safeResourceSummary = (value: unknown): value is LlmSafeResourceSummary => record(value)
-  && exact(value, ['resourceId', 'label', 'type', 'apiType', 'enabled', 'available', 'capabilities'], ['defaultModel', 'toolCapabilities', 'privacyPolicy', 'unavailableReason'])
+  && exact(value, ['resourceId', 'label', 'type', 'apiType', 'enabled', 'available', 'capabilities'], ['defaultModel', 'toolCapabilities', 'reasoningPolicy', 'reasoningCapabilities', 'embeddingCapabilities', 'privacyPolicy', 'unavailableReason'])
   && nonEmpty(value.resourceId)
   && nonEmpty(value.label)
   && capabilityKind(value.type)
@@ -346,6 +477,9 @@ const safeResourceSummary = (value: unknown): value is LlmSafeResourceSummary =>
   && value.capabilities.every(nonEmpty)
   && optionalNonEmpty(value.defaultModel)
   && (value.toolCapabilities === undefined || verifiedToolCapabilities(value.toolCapabilities))
+  && (value.reasoningPolicy === undefined || reasoningPolicy(value.reasoningPolicy))
+  && (value.reasoningCapabilities === undefined || verifiedReasoningCapabilities(value.reasoningCapabilities))
+  && (value.embeddingCapabilities === undefined || verifiedEmbeddingCapabilities(value.embeddingCapabilities))
   && (value.privacyPolicy === undefined || privacyPolicy(value.privacyPolicy))
   && optionalNonEmpty(value.unavailableReason);
 const toolDefinition = (value: unknown): value is LlmToolDefinition => record(value)
@@ -373,8 +507,10 @@ const toolTurnDiagnostics = (value: unknown): value is LlmToolTurnDiagnostics =>
   && positiveInteger(value.providerAdapterVersion)
   && nonEmpty(value.capabilitySnapshotId);
 export const isLlmToolTurnRequest = (value: unknown): value is LlmToolTurnRequest => {
-  if (!record(value) || !exact(value, ['task', 'pipelineRunId', 'chatKey'], ['input', 'outputSchema', 'tools', 'toolSessionId', 'toolResults', 'route', 'model', 'timeoutMs', 'maxTokens', 'parentRequestId', 'trace'])) return false;
-  if (!nonEmpty(value.task) || !nonEmpty(value.pipelineRunId) || !nonEmpty(value.chatKey) || !optionalNonEmpty(value.route) || !optionalNonEmpty(value.model) || !optionalTimeout(value.timeoutMs) || (value.maxTokens !== undefined && (!positiveInteger(value.maxTokens) || value.maxTokens > 65_536)) || !optionalNonEmpty(value.parentRequestId)) return false;
+  if (!record(value) || !exact(value, ['task', 'pipelineRunId', 'chatKey'], ['input', 'outputSchema', 'tools', 'toolSessionId', 'toolResults', 'timeoutMs', 'maxTokens', 'parentRequestId', 'trace', 'validationMode', 'validationCollections'])) return false;
+  if (!nonEmpty(value.task) || !nonEmpty(value.pipelineRunId) || !nonEmpty(value.chatKey) || !optionalTimeout(value.timeoutMs) || (value.maxTokens !== undefined && (!positiveInteger(value.maxTokens) || value.maxTokens > 65_536)) || !optionalNonEmpty(value.parentRequestId)) return false;
+  if ((value.validationMode !== undefined && value.validationMode !== 'strict' && value.validationMode !== 'itemized_partial')
+    || (value.validationCollections !== undefined && (!Array.isArray(value.validationCollections) || value.validationCollections.length === 0 || !value.validationCollections.every(nonEmpty)))) return false;
   if (!optionalWorkflowTrace(value.trace) || (value.trace !== undefined && (value.trace as LlmWorkflowTrace).workflowId !== value.pipelineRunId)) return false;
   const start = value.toolSessionId === undefined
     && value.toolResults === undefined
@@ -403,44 +539,69 @@ export const isLlmToolTurnResponse = (value: unknown): value is LlmToolTurnRespo
     && value.calls.every(normalizedToolCall)
     && new Set(value.calls.map((call) => call.callId)).size === value.calls.length;
   return value.state === 'final'
-    && exact(value, ['requestId', 'state', 'output', 'route', 'diagnostics'], ['parentRequestId', 'usage'])
-    && plainData(value.output);
+    && exact(value, ['requestId', 'state', 'output', 'route', 'diagnostics'], ['parentRequestId', 'usage', 'validationIssues', 'itemRejections'])
+    && plainData(value.output)
+    && (value.validationIssues === undefined || (Array.isArray(value.validationIssues) && value.validationIssues.length > 0 && value.validationIssues.every(structuredIssue)))
+    && (value.itemRejections === undefined || (Array.isArray(value.itemRejections) && value.itemRejections.length > 0 && value.itemRejections.every(structuredItemRejection)));
 };
 export const isLlmToolSessionCancelRequest = (value: unknown): value is LlmToolSessionCancelRequest => record(value)
   && exact(value, ['toolSessionId'], ['reason'])
   && nonEmpty(value.toolSessionId)
   && (value.reason === undefined || ['cancelled', 'chat_changed', 'pipeline_disposed'].includes(String(value.reason)));
 const taskRoutingAssignment = (value: unknown): value is LlmTaskRoutingAssignment => record(value)
-  && exact(value, ['taskKey'], ['resourceId', 'model'])
+  && exact(value, ['taskKey'], ['resourceId'])
   && nonEmpty(value.taskKey)
   && optionalNonEmpty(value.resourceId)
-  && optionalNonEmpty(value.model)
-  && !(value.model !== undefined && value.resourceId === undefined);
-export const isLlmTaskRoutingGetRequest = (value: unknown): value is LlmTaskRoutingGetRequest => record(value)
+  ;
+const taskStatusRequest = (value: unknown): value is LlmTaskStatusRequest => record(value)
   && exact(value, [], ['taskKeys'])
   && (value.taskKeys === undefined || (Array.isArray(value.taskKeys) && value.taskKeys.length > 0 && value.taskKeys.every(nonEmpty)));
-export const isLlmTaskRoutingSnapshot = (value: unknown): value is LlmTaskRoutingSnapshot => record(value)
-  && exact(value, ['revision', 'assignments', 'resources'])
+const taskStatusEntry = (value: unknown): value is LlmTaskStatusEntry => record(value)
+  && exact(value, ['taskKey', 'execution', 'available'], ['resourceId', 'route', 'requirements', 'failure'])
+  && nonEmpty(value.taskKey)
+  && execution(value.execution)
+  && typeof value.available === 'boolean'
+  && optionalNonEmpty(value.resourceId)
+  && (value.route === undefined || route(value.route))
+  && taskRequirements(value.requirements)
+  && (value.failure === undefined || failureContext(value.failure));
+const taskStatusSnapshot = (value: unknown): value is LlmTaskStatusSnapshot => record(value)
+  && exact(value, ['revision', 'tasks', 'defaults', 'assignments', 'resources'])
   && nonNegativeInteger(value.revision)
+  && Array.isArray(value.tasks)
+  && value.tasks.every(taskStatusEntry)
+  && record(value.defaults)
+  && Object.entries(value.defaults).every(([key, item]) => execution(key) && (item === undefined || nonEmpty(item)))
   && Array.isArray(value.assignments)
   && value.assignments.every(taskRoutingAssignment)
-  && new Set(value.assignments.map((assignment) => assignment.taskKey)).size === value.assignments.length
   && Array.isArray(value.resources)
   && value.resources.every(safeResourceSummary);
-export const isLlmTaskRoutingSetRequest = (value: unknown): value is LlmTaskRoutingSetRequest => record(value)
-  && exact(value, ['expectedRevision', 'assignments'])
+const taskRouteSetRequest = (value: unknown): value is LlmTaskRouteSetRequest => record(value)
+  && exact(value, ['expectedRevision', 'assignments'], ['defaults'])
   && nonNegativeInteger(value.expectedRevision)
   && Array.isArray(value.assignments)
   && value.assignments.every(taskRoutingAssignment)
-  && new Set(value.assignments.map((assignment) => assignment.taskKey)).size === value.assignments.length;
-export const isLlmToolCapabilityVerifyRequest = (value: unknown): value is LlmToolCapabilityVerifyRequest => record(value)
-  && exact(value, ['resourceId'], ['model', 'force'])
+  && new Set(value.assignments.map((assignment) => assignment.taskKey)).size === value.assignments.length
+  && (value.defaults === undefined || (record(value.defaults) && Object.entries(value.defaults).every(([key, item]) => execution(key) && (item === undefined || nonEmpty(item)))));
+const taskStatusChangedPayload = (value: unknown): value is LlmTaskStatusChangedPayload => record(value)
+  && exact(value, ['revision', 'taskKeys', 'resourceIds'])
+  && nonNegativeInteger(value.revision)
+  && Array.isArray(value.taskKeys) && value.taskKeys.every(nonEmpty)
+  && Array.isArray(value.resourceIds) && value.resourceIds.every(nonEmpty);
+const resourceCapabilityVerifyRequest = (value: unknown): value is LlmResourceCapabilityVerifyRequest => record(value)
+  && exact(value, ['resourceId'], ['taskKeys', 'force'])
   && nonEmpty(value.resourceId)
-  && optionalNonEmpty(value.model)
+  && (value.taskKeys === undefined || (Array.isArray(value.taskKeys) && value.taskKeys.every(nonEmpty)))
   && (value.force === undefined || typeof value.force === 'boolean');
-export const isLlmToolCapabilityVerifyResponse = (value: unknown): value is LlmToolCapabilityVerifyResponse => record(value)
-  && exact(value, ['capability'])
-  && verifiedToolCapabilities(value.capability);
+const resourceCapabilityVerifyResponse = (value: unknown): value is LlmResourceCapabilityVerifyResponse => record(value)
+  && exact(value, ['resourceId', 'taskKeys', 'capabilities'], ['reasoning', 'embedding'])
+  && nonEmpty(value.resourceId)
+  && Array.isArray(value.taskKeys)
+  && value.taskKeys.every(nonEmpty)
+  && Array.isArray(value.capabilities)
+  && value.capabilities.every(verifiedToolCapabilities)
+  && (value.reasoning === undefined || verifiedReasoningCapabilities(value.reasoning))
+  && (value.embedding === undefined || verifiedEmbeddingCapabilities(value.embedding));
 const isAck = (value: unknown): value is { readonly ok: true } => record(value) && exact(value, ['ok']) && value.ok === true;
 
 const request = <N extends string, Q, S>(name: N, validateRequest: (value: unknown) => value is Q, validateResponse: (value: unknown) => value is S): RequestContract<`${typeof LLM_PLUGIN_ID}.${N}`, 0, Q, S> => Object.freeze({ kind: 'request', id: `${LLM_PLUGIN_ID}.${name}`, version: 0, validateRequest, validateResponse });
@@ -448,15 +609,25 @@ export const LLM_COMPLETION_V0 = request('completion', isLlmCompletionRequest, i
 export const LLM_STRUCTURED_TASK_V0 = request('structured-task', isLlmStructuredTaskRequest, isLlmStructuredTaskResponse);
 export const LLM_EMBEDDING_V0 = request('embedding', isLlmEmbeddingRequest, isLlmEmbeddingResponse);
 export const LLM_RERANK_V0 = request('rerank', isLlmRerankRequest, isLlmRerankResponse);
-export const LLM_CAPABILITY_STATUS_V0 = request('capability-status', isLlmCapabilityStatusRequest, isLlmCapabilityStatusResponse);
 export const LLM_TOOL_TURN_V0 = request('tool-turn', isLlmToolTurnRequest, isLlmToolTurnResponse);
 export const LLM_TOOL_SESSION_CANCEL_V0 = request('tool-session-cancel', isLlmToolSessionCancelRequest, isAck);
-export const LLM_TASK_ROUTING_GET_V0 = request('task-routing-get', isLlmTaskRoutingGetRequest, isLlmTaskRoutingSnapshot);
-export const LLM_TASK_ROUTING_SET_V0 = request('task-routing-set', isLlmTaskRoutingSetRequest, isLlmTaskRoutingSnapshot);
-export const LLM_TOOL_CAPABILITY_VERIFY_V0 = request('tool-capability-verify', isLlmToolCapabilityVerifyRequest, isLlmToolCapabilityVerifyResponse);
-export const isLlmConsumerRegistration = (value: unknown): value is LlmConsumerRegistration => record(value) && exact(value, ['displayName', 'registrationVersion', 'tasks']) && nonEmpty(value.displayName) && positiveInteger(value.registrationVersion) && Array.isArray(value.tasks) && value.tasks.every((task) => record(task) && exact(task, ['taskKey', 'taskKind'], ['requiredCapabilities', 'description', 'backgroundEligible', 'maxTokens', 'recommendedRoute', 'structuredPolicy']) && nonEmpty(task.taskKey) && ['generation', 'embedding', 'rerank'].includes(String(task.taskKind)) && (task.requiredCapabilities === undefined || (Array.isArray(task.requiredCapabilities) && task.requiredCapabilities.every(nonEmpty))) && (task.description === undefined || typeof task.description === 'string') && (task.backgroundEligible === undefined || typeof task.backgroundEligible === 'boolean') && (task.maxTokens === undefined || positiveInteger(task.maxTokens)) && optionalRecommendation(task.recommendedRoute) && (task.structuredPolicy === undefined || (record(task.structuredPolicy) && exact(task.structuredPolicy, ['maxProviderAttempts', 'repairOn'], ['itemFailure', 'envelopeFailure', 'itemCollections']) && structuredPolicy(task.structuredPolicy))));
+export const LLM_TASK_STATUS_V0 = request('task-status', taskStatusRequest, taskStatusSnapshot);
+export const LLM_TASK_ROUTE_SET_V0 = request('task-route-set', taskRouteSetRequest, taskStatusSnapshot);
+export const LLM_RESOURCE_CAPABILITY_VERIFY_V0 = request('resource-capability-verify', resourceCapabilityVerifyRequest, resourceCapabilityVerifyResponse);
+const consumerTask = (task: unknown): boolean => record(task)
+  && exact(task, ['taskKey'], ['taskKind', 'execution', 'requirements', 'requiredCapabilities', 'description', 'backgroundEligible', 'maxTokens', 'structuredPolicy'])
+  && nonEmpty(task.taskKey)
+  && (task.taskKind === undefined || ['generation', 'embedding', 'rerank'].includes(String(task.taskKind)))
+  && (task.execution === undefined || execution(task.execution))
+  && (task.execution !== undefined || task.taskKind !== undefined)
+  && taskRequirements(task.requirements)
+  && (task.requiredCapabilities === undefined || (Array.isArray(task.requiredCapabilities) && task.requiredCapabilities.every(nonEmpty)))
+  && (task.description === undefined || typeof task.description === 'string')
+  && (task.backgroundEligible === undefined || typeof task.backgroundEligible === 'boolean')
+  && (task.maxTokens === undefined || positiveInteger(task.maxTokens))
+  && (task.structuredPolicy === undefined || (record(task.structuredPolicy) && exact(task.structuredPolicy, ['maxProviderAttempts', 'repairOn'], ['itemFailure', 'envelopeFailure', 'itemCollections']) && structuredPolicy(task.structuredPolicy)));
+export const isLlmConsumerRegistration = (value: unknown): value is LlmConsumerRegistration => record(value) && exact(value, ['displayName', 'registrationVersion', 'tasks']) && nonEmpty(value.displayName) && positiveInteger(value.registrationVersion) && Array.isArray(value.tasks) && value.tasks.every(consumerTask);
 const isConsumerUnregisterRequest = (value: unknown): value is LlmConsumerUnregisterRequest => record(value) && exact(value, [], ['keepPersistent']) && (value.keepPersistent === undefined || typeof value.keepPersistent === 'boolean');
 export const LLM_CONSUMER_DECLARE_V0 = request('consumer-declare', isLlmConsumerRegistration, isAck);
 export const LLM_CONSUMER_RELEASE_V0 = request('consumer-release', isConsumerUnregisterRequest, isAck);
-export const LLM_ROUTE_CHANGED_V0: BusEventContract<`${typeof LLM_PLUGIN_ID}.route-changed`, 0, LlmRouteChangedPayload> = Object.freeze({ kind: 'event', id: 'ss-helper.llm.route-changed', version: 0, validatePayload: isLlmRouteChangedPayload });
-export const LLM_CAPABILITY_STATUS_CHANGED_V0: BusEventContract<`${typeof LLM_PLUGIN_ID}.capability-status-changed`, 0, LlmCapabilityStatusChangedPayload> = Object.freeze({ kind: 'event', id: 'ss-helper.llm.capability-status-changed', version: 0, validatePayload: isLlmCapabilityStatusChangedPayload });
+export const LLM_TASK_STATUS_CHANGED_V0: BusEventContract<`${typeof LLM_PLUGIN_ID}.task-status-changed`, 0, LlmTaskStatusChangedPayload> = Object.freeze({ kind: 'event', id: 'ss-helper.llm.task-status-changed', version: 0, validatePayload: taskStatusChangedPayload });

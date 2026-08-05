@@ -6,7 +6,7 @@ import {
   LLM_STRUCTURED_TASK_V0,
   LLM_EMBEDDING_V0,
   LLM_RERANK_V0,
-  LLM_ROUTE_CHANGED_V0,
+  LLM_TASK_STATUS_CHANGED_V0,
   MEMORY_RECALL_V0,
   MEMORY_UPDATED_V0,
   type CoreDescriptor,
@@ -76,7 +76,7 @@ bus.request(LLM_STRUCTURED_TASK_V0, { task: 'extract', input: { text: 'hello' },
 bus.request(LLM_EMBEDDING_V0, { input: ['hello'] });
 bus.request(LLM_RERANK_V0, { query: 'hello', documents: [{ id: '1', text: 'world' }] });
 bus.request(MEMORY_RECALL_V0, recall);
-bus.publish(LLM_ROUTE_CHANGED_V0, { route: 'primary', reason: 'configured' });
+bus.publish(LLM_TASK_STATUS_CHANGED_V0, { revision: 1, taskKeys: ['extract'], resourceIds: ['primary'] });
 bus.publish(MEMORY_UPDATED_V0, { chatKey: 'chat:1', operation: 'updated', recordIds: ['r1'] });
 host.chat.readCurrent();
 combinedHost.chat.readCurrent();
@@ -103,7 +103,7 @@ session.registerExtensionMenuItem({
 session.ui.openPopup(popup, { tab: 'main' });
 
 const serviceToken: RequestContract<'ss-helper.llm.completion', 0, LlmCompletionRequest, LlmCompletionResponse> = LLM_COMPLETION_V0;
-const eventToken: BusEventContract<'ss-helper.llm.route-changed', 0, { readonly route: string; readonly reason: 'configured' | 'fallback' | 'availability' }> = LLM_ROUTE_CHANGED_V0;
+const eventToken: BusEventContract<'ss-helper.llm.task-status-changed', 0, { readonly revision: number; readonly taskKeys: readonly string[]; readonly resourceIds: readonly string[] }> = LLM_TASK_STATUS_CHANGED_V0;
 const memoryResponse: MemoryRecallResponse = {
   mode: 'multi_actor',
   world: { ownerId: 'owner:world', owner: '世界', memories: [] },

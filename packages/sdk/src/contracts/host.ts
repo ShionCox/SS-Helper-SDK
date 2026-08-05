@@ -1,4 +1,6 @@
 import type { PlainData } from './plain-data.js';
+import type { LlmReasoningPolicy } from './llm.js';
+import type { SSHelperFailureContext } from '../errors.js';
 
 export type HostCapability =
   | 'core.ui.notification.v0'
@@ -70,8 +72,13 @@ export interface WorldbookSnapshot { readonly id: string; readonly name: string;
 export interface GenerationUsageSnapshot { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number; }
 export interface GenerationSnapshot { readonly active: boolean; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
 export interface GenerationJsonSchema { readonly name: string; readonly value: Readonly<Record<string, PlainData>>; readonly description?: string | undefined; readonly strict?: boolean; readonly returnInvalid?: boolean; }
-export interface GenerationRequest { readonly prompt: string; readonly model?: string | undefined; readonly quiet?: boolean; readonly contextMode?: 'chat' | 'isolated' | undefined; readonly jsonSchema?: GenerationJsonSchema | undefined; }
-export interface GenerationResult { readonly text: string; readonly provider?: string | undefined; readonly model?: string | undefined; readonly usage?: GenerationUsageSnapshot; }
+export interface GenerationMessage { readonly role: 'system' | 'user' | 'assistant' | 'tool'; readonly content: string; readonly toolCallId?: string; }
+export interface GenerationTool { readonly name: string; readonly description: string; readonly parameters: PlainData; readonly strict?: boolean; }
+export type GenerationTaskStatus = 'queued' | 'running' | 'streaming' | 'completed' | 'failed' | 'cancelled';
+export interface GenerationTaskStatusSnapshot { readonly taskId: string; readonly status: GenerationTaskStatus; readonly provider?: string; readonly model?: string; readonly mainApi?: string; readonly toolCallingSupported?: boolean; readonly available?: boolean; readonly connectionRevision?: string; readonly failure?: SSHelperFailureContext; }
+export interface GenerationRequest { readonly prompt?: string; readonly messages?: readonly GenerationMessage[]; readonly model?: string | undefined; readonly quiet?: boolean; readonly contextMode?: 'chat' | 'isolated' | undefined; readonly jsonSchema?: GenerationJsonSchema | undefined; readonly tools?: readonly GenerationTool[]; readonly toolChoice?: PlainData; readonly reasoning?: LlmReasoningPolicy; readonly stream?: boolean; readonly maxTokens?: number; readonly temperature?: number; readonly taskId?: string; /** Runtime-only cancellation; never serialized into the host payload. */ readonly signal?: AbortSignal; }
+export interface GenerationChunk { readonly taskId: string; readonly text?: string; readonly data?: PlainData; readonly done?: boolean; readonly provider?: string; readonly model?: string; }
+export interface GenerationResult { readonly text: string; readonly data?: PlainData; readonly provider?: string | undefined; readonly model?: string | undefined; readonly finishReason?: string; readonly usage?: GenerationUsageSnapshot; }
 export type HostEventName = 'chat-changed' | 'message-received' | 'message-sent' | 'message-edited' | 'message-deleted' | 'message-swiped' | 'message-swipe-deleted' | 'generation-started' | 'generation-ended' | 'generation-config-changed' | 'prompt-ready' | 'prompt-finalized' | 'worldbook-updated' | 'identity-changed';
 export interface PromptMessageSnapshot { readonly role?: string | undefined; readonly name?: string | undefined; readonly content?: PlainData; }
 export interface PromptSnapshot { readonly messages: readonly PromptMessageSnapshot[]; readonly dryRun: boolean; }
@@ -212,8 +219,8 @@ type HostWorldbooksPort<G extends HostCapability> = GrantedSurface<G, 'tavern.wo
   GrantedSlice<G, 'tavern.worldbooks.read', { list(): Promise<readonly WorldbookSnapshot[]>; load(id: string): Promise<WorldbookSnapshot | null>; active(): Promise<readonly WorldbookSnapshot[]> }>
   & GrantedSlice<G, 'tavern.worldbooks.write', { save(worldbook: WorldbookSnapshot): Promise<void>; delete(id: string): Promise<void>; setActive(id: string, active: boolean): Promise<void> }>>;
 type HostGenerationPort<G extends HostCapability> = GrantedSurface<G, 'tavern.generation.read' | 'tavern.generation.execute', 'generation',
-  GrantedSlice<G, 'tavern.generation.read', { available(): Promise<boolean>; models(): Promise<readonly string[]>; current(): Promise<GenerationSnapshot> }>
-  & GrantedSlice<G, 'tavern.generation.execute', { generate(request: GenerationRequest): Promise<GenerationResult>; test(request: GenerationRequest): Promise<GenerationResult> }>>;
+  GrantedSlice<G, 'tavern.generation.read', { available(): Promise<boolean>; models(): Promise<readonly string[]>; current(): Promise<GenerationSnapshot>; inspect(taskId?: string): Promise<GenerationTaskStatusSnapshot> }>
+  & GrantedSlice<G, 'tavern.generation.execute', { generate(request: GenerationRequest): Promise<GenerationResult>; test(request: GenerationRequest): Promise<GenerationResult>; execute(request: GenerationRequest, onChunk?: (chunk: GenerationChunk) => void | Promise<void>): Promise<GenerationResult>; cancel(taskId: string): Promise<void> }>>;
 
 export type HostPort<G extends HostCapability = HostCapability> = HostPortBase<G>
   & GrantedSurface<G, 'tavern.context.read', 'context', { read(): Promise<HostContextSnapshot> }>

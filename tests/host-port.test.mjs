@@ -312,6 +312,63 @@ test('production bridge keeps connected provider-only sources usable through gen
 
 });
 
+test('generation task execution keeps one id, rejects duplicate explicit ids, and emits one terminal chunk', async () => {
+  const context = {
+    mainApi: 'openai', onlineStatus: 'Valid',
+    chatCompletionSettings: { chat_completion_source: 'custom', custom_model: 'task-model' },
+    generateQuietPrompt: async () => 'quiet',
+    getRequestHeaders: () => ({}),
+    ChatCompletionService: { presetToGeneratePayload: async (_preset, _override, payload) => payload },
+  };
+  let release;
+  let fetchStarted = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const target = {
+    SillyTavern: { getContext: () => context },
+    fetch: async (_url, init) => {
+      fetchStarted = true;
+      await gate;
+      if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  };
+  const bridge = createSillyTavernHostBridge(target);
+  const first = bridge.hostAdapter.generation.execute({ taskId: 'explicit-task', messages: [{ role: 'user', content: 'one' }] }, () => undefined);
+  while (!fetchStarted) await new Promise((resolve) => setTimeout(resolve, 0));
+  await assert.rejects(
+    bridge.hostAdapter.generation.execute({ taskId: 'explicit-task', messages: [{ role: 'user', content: 'duplicate' }] }),
+    (error) => error?.details?.reasonCode === 'LLM_GENERATION_TASK_CONFLICT',
+  );
+  release();
+  await first;
+  assert.equal((await bridge.hostAdapter.generation.inspect('explicit-task')).status, 'completed');
+  await bridge.hostAdapter.generation.cancel('explicit-task');
+});
+
+test('generation stream chunks preserve the generated id and finish exactly once while inspect revision changes with the connection', async () => {
+  const context = {
+    mainApi: 'openai', onlineStatus: 'Valid',
+    chatCompletionSettings: { chat_completion_source: 'custom', custom_model: 'stream-model' },
+    generateQuietPrompt: async () => 'quiet',
+    getRequestHeaders: () => ({}),
+    ChatCompletionService: { presetToGeneratePayload: async (_preset, _override, payload) => payload },
+  };
+  const target = {
+    SillyTavern: { getContext: () => context },
+    fetch: async () => new Response('data: {"choices":[{"delta":{"content":"a"}}]}\n\ndata: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  };
+  const bridge = createSillyTavernHostBridge(target);
+  const chunks = [];
+  const result = await bridge.hostAdapter.generation.execute({ messages: [{ role: 'user', content: 'stream' }], stream: true }, (chunk) => { chunks.push(chunk); });
+  assert.equal(result.text, 'a');
+  assert.equal(new Set(chunks.map((chunk) => chunk.taskId)).size, 1);
+  assert.equal(chunks.filter((chunk) => chunk.done === true).length, 1);
+  const before = (await bridge.hostAdapter.generation.inspect()).connectionRevision;
+  context.chatCompletionSettings.custom_model = 'changed-model';
+  const after = (await bridge.hostAdapter.generation.inspect()).connectionRevision;
+  assert.notEqual(before, after);
+});
+
 test('production bridge classifies Tavern response_format rejection without exposing the Provider body', async () => {
   const privateMessage = 'This response_format type is unavailable now';
   const current = {

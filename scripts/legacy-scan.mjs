@@ -25,6 +25,12 @@ const patterns = [
   ['retired SS-Helper transport', /(?:\/api\/plugins\/ss-helper-sdk\/v[12](?:\/|$)|\/internal\/bridge\/v[12](?:\/|$)|\/v1\/memory|\/v2\/(?:workspaces|health)|X-SS-Helper-Plugin)/i],
   ['workspace/link/absolute import leakage', /(?:link:(?:\.|\/)|file:\/\/|(?:from|import\()\s*['"][A-Za-z]:\\)/i],
   ['secret probing', /(?:localStorage\.getItem\(['"](?:api[_-]?key|token|secret)|Authorization\s*[:=]\s*['"]Bearer)/i],
+  ['legacy apiType:auto', /\bapiType\s*:\s*['"]auto['"]/i],
+  ['legacy top-level task.model', /\btask\s*:\s*\{[^{}]{0,240}\bmodel\s*:/is],
+  ['legacy route string field', /(?:^|[,{\s])['"]?route['"]?\s*:\s*['"][^'"]+['"]/im],
+  ['legacy error string field', /\bok\s*:\s*false[\s\S]{0,260}(?:(?:['"]?error['"]?\s*:\s*['"][^'"]+['"][\s\S]{0,120}['"]?reasonCode['"]?\s*:)|(?:['"]?reasonCode['"]?\s*:\s*[^,}]+,[\s\S]{0,120}['"]?error['"]?\s*:\s*['"][^'"]+['"]))/im],
+  ['legacy wrapper code', /\b(?:MEMORY_CAPTURE_LLM_UNAVAILABLE|MEMORY_LLM_TASK_FAILED|MEMORY_CAPTURE_FAILED|HTTP_REQUEST_FAILED)\b/],
+  ['retired Memory shadow pipeline', /(?:\b(?:agentWriteMode|AgentWriteMode|shadowOnly|agent_shadow|shadowBaseline|shadowRunId|recordShadowExtractionAudit|MEMORY_SHADOW_WRITE_BLOCKED)\b|影子模式|影子审计|影子对照|Shadow（不写入）)/u],
 ];
 // These files intentionally contain legacy markers as scanner/audit assertions or
 // package metadata. Keep this list exact so every other tracked file is scanned.

@@ -12,6 +12,8 @@ import {
 import { installCoreRuntime } from '../apps/core-extension/dist/index.js';
 import { coreIdentity, errorCode, pluginDescriptor, TestRealm } from './helpers/runtime-fixture.mjs';
 
+const route = (execution, resourceId, provider, model) => ({ resourceId, source: 'custom', provider, model, execution, transport: execution === 'embedding' ? 'embedding' : execution === 'rerank' ? 'rerank' : 'json_schema' });
+
 const setup = () => {
   const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
   return {
@@ -40,7 +42,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       output: request.task === 'foreign-output'
         ? foreignStructuredOutput
         : { task: request.task, input: request.input, caller: context.callerPluginId },
-      route: { route: 'fixture', provider: 'deterministic', model: 'structured-v1' },
+      route: route('structured', 'fixture', 'deterministic', 'structured-v1'),
       diagnostics: {
         transport: 'json_schema',
         attemptCount: 1,
@@ -54,7 +56,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       return {
         requestId: context.requestId,
         embeddings: inputs.map((value) => [value.length, value.split(/\s+/u).length]),
-        route: { route: 'fixture', provider: 'deterministic', model: 'embedding-v1' },
+        route: route('embedding', 'fixture', 'deterministic', 'embedding-v1'),
       };
     }),
     llm.bus.handle(LLM_RERANK_V0, (request, context) => ({
@@ -63,7 +65,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
         .map((document, index) => ({ id: document.id, score: document.text.includes(request.query) ? 1 : 0, index }))
         .sort((left, right) => right.score - left.score)
         .slice(0, request.topN ?? request.documents.length),
-      route: { route: 'fixture', provider: 'deterministic', model: 'rerank-v1' },
+      route: route('rerank', 'fixture', 'deterministic', 'rerank-v1'),
     })),
     memory.bus.handle(MEMORY_RECALL_V0, (request) => ({
       mode: request.mode,
@@ -84,7 +86,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       {
         requestId: '<requestId>',
         output: { task: 'extract', input: { text: 'hello' }, caller: 'fixture.cross-plugin-consumer' },
-        route: { route: 'fixture', provider: 'deterministic', model: 'structured-v1' },
+        route: route('structured', 'fixture', 'deterministic', 'structured-v1'),
         diagnostics: {
           transport: 'json_schema',
           attemptCount: 1,
@@ -120,7 +122,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       {
         requestId: '<requestId>',
         embeddings: [[11, 2], [1, 1]],
-        route: { route: 'fixture', provider: 'deterministic', model: 'embedding-v1' },
+        route: route('embedding', 'fixture', 'deterministic', 'embedding-v1'),
       },
     );
     const rerank = await consumer.bus.request(LLM_RERANK_V0, {
@@ -133,7 +135,7 @@ test('exact LLM and Memory contracts run end-to-end through Core with determinis
       {
         requestId: '<requestId>',
         results: [{ id: 'b', score: 1, index: 1 }],
-        route: { route: 'fixture', provider: 'deterministic', model: 'rerank-v1' },
+        route: route('rerank', 'fixture', 'deterministic', 'rerank-v1'),
       },
     );
     assert.deepEqual(
@@ -188,7 +190,7 @@ test('exact contracts quarantine timeout/abort late results and permit clean pro
   );
   assert.equal(embeddingSignal.aborted, true);
   assert.equal(runtime.port.diagnostics().pending, 0);
-  finishEmbedding({ requestId: 'late', embeddings: [[999]], route: { route: 'stale' } });
+  finishEmbedding({ requestId: 'late', embeddings: [[999]], route: route('embedding', 'stale', 'deterministic', 'stale') });
   await new Promise((resolve) => setTimeout(resolve, 1));
   assert.equal(runtime.port.diagnostics().pending, 0);
 
@@ -196,13 +198,13 @@ test('exact contracts quarantine timeout/abort late results and permit clean pro
   const removeReplacement = llm.bus.handle(LLM_EMBEDDING_V0, (_request, context) => ({
     requestId: context.requestId,
     embeddings: [[1, 2]],
-    route: { route: 'replacement', provider: 'deterministic', model: 'embedding-v2' },
+    route: route('embedding', 'replacement', 'deterministic', 'embedding-v2'),
   }));
   const freshEmbedding = await consumer.bus.request(LLM_EMBEDDING_V0, { input: 'fresh' });
   assert.deepEqual({ ...freshEmbedding, requestId: '<requestId>' }, {
     requestId: '<requestId>',
     embeddings: [[1, 2]],
-    route: { route: 'replacement', provider: 'deterministic', model: 'embedding-v2' },
+    route: route('embedding', 'replacement', 'deterministic', 'embedding-v2'),
   });
 
   let recallSignal;

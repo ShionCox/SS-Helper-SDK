@@ -1,6 +1,6 @@
 import { PLUGIN_BINARY_CONTENT_TYPE, PLUGIN_BINARY_MAX_BYTES, createSSHelperError, readSSHelperFailure } from '@ss-helper/sdk';
 import type {
-  ChatMessageInput, ChatMessageSnapshot, ChatMessageType, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot,
+  ChatMessageInput, ChatMessageSnapshot, ChatMessageType, ChatSnapshot, ChatNavigationTarget, GenerationRequest, GenerationResult, GenerationSnapshot, GenerationChunk, GenerationTaskStatusSnapshot,
   HostCapability, HostCharacterSnapshot, HostContextSnapshot, HostEvent, HostEventName, HostMessageAuthorSnapshot,
   HostIdentitySnapshot, HostPersonaSnapshot, MessageVariablesSnapshot, PlainData, PluginApiRequest, PluginApiResponse, PluginRequestOptions,
   PluginBinaryBodyV0, PluginBinaryRequestV0, PluginBinaryResponseV0, PluginJsonAcknowledgementV0,
@@ -104,7 +104,7 @@ const messageVariables = (value: unknown): MessageVariablesSnapshot | undefined 
 };
 const integer = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 const finite = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
-const generationSelection = (context: UnknownRecord): { readonly provider?: string; readonly model?: string; readonly connected: boolean } => {
+const generationSelection = (context: UnknownRecord): { readonly provider?: string; readonly model?: string; readonly mainApi?: string; readonly toolCallingSupported?: boolean; readonly connected: boolean } => {
   const mainApi = text(context.mainApi) ?? text(context.main_api);
   const onlineStatus = text(context.onlineStatus) ?? text(context.online_status);
   const connected = onlineStatus !== undefined && onlineStatus !== 'no_connection';
@@ -113,12 +113,15 @@ const generationSelection = (context: UnknownRecord): { readonly provider?: stri
     const provider = text(chatCompletionSettings.chat_completion_source) ?? mainApi;
     const modelKey = provider === 'makersuite' ? 'google_model' : `${provider}_model`;
     const model = text(chatCompletionSettings[modelKey]);
-    return { connected, ...(provider === undefined ? {} : { provider }), ...(model === undefined ? {} : { model }) };
+    const toolCheck = typeof context.isToolCallingSupported === 'function' ? context.isToolCallingSupported : undefined;
+    let toolCallingSupported: boolean | undefined;
+    try { toolCallingSupported = toolCheck === undefined ? undefined : Boolean(toolCheck.call(context, chatCompletionSettings, model)); } catch { toolCallingSupported = undefined; }
+    return { connected, ...(mainApi === undefined ? {} : { mainApi }), ...(provider === undefined ? {} : { provider }), ...(model === undefined ? {} : { model }), ...(toolCallingSupported === undefined ? {} : { toolCallingSupported }) };
   }
   const model = mainApi === 'kobold' || mainApi === 'textgenerationwebui' || (mainApi === 'openai' && chatCompletionSettings === undefined)
     ? onlineStatus
     : undefined;
-  return { connected, ...(mainApi === undefined ? {} : { provider: mainApi }), ...(model === undefined || !connected ? {} : { model }) };
+  return { connected, ...(mainApi === undefined ? {} : { mainApi, provider: mainApi }), ...(model === undefined || !connected ? {} : { model }) };
 };
 const generationSnapshot = (context: UnknownRecord, active = context.is_send_press === true): GenerationSnapshot => {
   const selected = generationSelection(context);
@@ -555,30 +558,188 @@ export function createSillyTavernHostBridge(target: typeof globalThis = globalTh
   const generateQuietPrompt = fn(initial.generateQuietPrompt);
   if (generateQuietPrompt !== undefined) {
     const generateRaw = fn(initial.generateRaw);
-    const execute = async (request: GenerationRequest): Promise<GenerationResult> => {
+    const chatCompletionService = initial.ChatCompletionService as { readonly presetToGeneratePayload?: unknown } | undefined;
+    const presetToGeneratePayload = chatCompletionService !== undefined && typeof chatCompletionService.presetToGeneratePayload === 'function'
+      ? chatCompletionService.presetToGeneratePayload as (preset: unknown, overridePreset: unknown, overridePayload: UnknownRecord) => Promise<UnknownRecord>
+      : undefined;
+    const requestHeaders = fn(initial.getRequestHeaders) ?? fn(root.getRequestHeaders);
+    const nextTaskId = (() => {
+      let sequence = 0;
+      return (): string => {
+        try {
+          if (typeof globalThis.crypto?.randomUUID === 'function') return `task-${globalThis.crypto.randomUUID()}`;
+        } catch { /* Fall through to the monotonic local fallback. */ }
+        sequence += 1;
+        return `task-${Date.now()}-${sequence}`;
+      };
+    })();
+    const connectionRevision = (selected: ReturnType<typeof generationSelection>): string => JSON.stringify({
+      connected: selected.connected,
+      provider: selected.provider,
+      model: selected.model,
+      mainApi: selected.mainApi,
+      toolCallingSupported: selected.toolCallingSupported,
+    });
+    const streamChatCompletion = async (request: GenerationRequest, taskId: string, onChunk?: (chunk: GenerationChunk) => void | Promise<void>): Promise<GenerationResult> => {
+      if (presetToGeneratePayload === undefined || requestHeaders === undefined || typeof target.fetch !== 'function') throw new Error('SillyTavern chat completion transport is unavailable');
+      request.signal?.throwIfAborted();
+      const context = getContext();
+      const messages = request.messages ?? [{ role: 'user' as const, content: request.prompt ?? '' }];
+      const reasoningOverride = request.reasoning === undefined ? {} : {
+        ...(request.reasoning.mode === 'provider_default' ? {} : { include_reasoning: request.reasoning.mode === 'enabled' }),
+        ...(request.reasoning.effort === 'provider_default' ? {} : { reasoning_effort: request.reasoning.effort === 'minimal' ? 'min' : request.reasoning.effort === 'xhigh' ? 'max' : request.reasoning.effort }),
+      };
+      const payload = await presetToGeneratePayload({}, {}, {
+        messages,
+        model: request.model,
+        stream: request.stream === true,
+        max_tokens: request.maxTokens,
+        temperature: request.temperature,
+        tools: request.tools,
+        tool_choice: request.toolChoice,
+        json_schema: request.jsonSchema,
+        ...reasoningOverride,
+      });
+      const response = await target.fetch('/api/backends/chat-completions/generate', {
+        method: 'POST',
+        headers: requestHeaders() as HeadersInit,
+        body: JSON.stringify(payload),
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      if (!response.ok) throw new Error(`SillyTavern generation failed (${response.status})`);
+      if (request.stream !== true) {
+        const data = plain(await response.json()) ?? null;
+        const choices = record(data)?.choices;
+        const first = Array.isArray(choices) ? record(choices[0]) : undefined;
+        const message = record(first?.message);
+        const text = typeof message?.content === 'string' ? message.content : typeof first?.text === 'string' ? first.text : '';
+        return { text, data, ...generationSelection(context) };
+      }
+      if (response.body === null) throw new Error('SillyTavern stream body unavailable');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let text = '';
+      const consume = async (line: string): Promise<void> => {
+        const value = line.match(/^data:\s*(.*)$/mu)?.[1];
+        if (value === undefined || value === '[DONE]') return;
+        let data: PlainData | undefined;
+        try { data = plain(JSON.parse(value)); } catch {
+          throw createSSHelperError('INVALID_JSON', { stage: 'host.generation.stream', providerKind: 'tavern' });
+        }
+        if (data === undefined) return;
+        const choices = record(data)?.choices;
+        const first = Array.isArray(choices) ? record(choices[0]) : undefined;
+        const delta = record(first?.delta);
+        if (typeof delta?.content === 'string') text += delta.content;
+        await onChunk?.({ taskId, text, data, done: false, ...generationSelection(context) });
+      };
+      while (true) {
+        request.signal?.throwIfAborted();
+        const next = await reader.read();
+        buffer += decoder.decode(next.value ?? new Uint8Array(), { stream: !next.done });
+        const lines = buffer.split(/\r?\n\r?\n/u);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) await consume(line);
+        if (next.done) break;
+      }
+      if (buffer.trim()) await consume(buffer);
+      return { text, ...generationSelection(context) };
+    };
+    const execute = async (request: GenerationRequest, onChunk?: (chunk: GenerationChunk) => void | Promise<void>): Promise<GenerationResult> => {
       const context = getContext();
       let result: unknown;
       try {
+        request.signal?.throwIfAborted();
+        const selection = generationSelection(context);
+        const hasReasoningOverride = request.reasoning !== undefined
+          && (request.reasoning.mode !== 'provider_default' || request.reasoning.effort !== 'provider_default');
+        if ((selection.mainApi === 'openai' || hasReasoningOverride) && (request.messages !== undefined || request.tools !== undefined || request.stream === true || hasReasoningOverride)) {
+          return await streamChatCompletion(request, request.taskId ?? nextTaskId(), onChunk);
+        }
         result = request.contextMode === 'isolated'
           ? await (() => {
             if (generateRaw === undefined) throw new Error('SillyTavern isolated generation is unavailable');
             return generateRaw.call(context, {
-              prompt: request.prompt,
+              prompt: request.prompt ?? request.messages?.map((message) => message.content).join('\n') ?? '',
               ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
             });
           })()
           : await generateQuietPrompt.call(context, {
-            quietPrompt: request.prompt,
+            quietPrompt: request.prompt ?? request.messages?.map((message) => message.content).join('\n') ?? '',
             ...(request.jsonSchema === undefined ? {} : { jsonSchema: request.jsonSchema }),
           });
+        request.signal?.throwIfAborted();
       } catch (error) {
+        if (request.signal?.aborted) throw createSSHelperError('REQUEST_ABORTED', { stage: 'host.generation.execute', providerKind: 'tavern' });
         throw mapGenerationFailure(error);
       }
       const selected = generationSelection(getContext());
       return { text: String(result ?? ''), ...(selected.provider === undefined ? {} : { provider: selected.provider }), ...(selected.model === undefined ? {} : { model: selected.model }) };
     };
     capabilities.push('tavern.generation.read', 'tavern.generation.execute');
-    adapter.generation = { available: async () => generationSelection(getContext()).connected, models: async () => { const model = generationSelection(getContext()).model; return model === undefined ? [] : [model]; }, current: async (): Promise<GenerationSnapshot> => generationSnapshot(getContext()), generate: execute, test: execute };
+    const taskStates = new Map<string, GenerationTaskStatusSnapshot>();
+    const activeControllers = new Map<string, AbortController>();
+    const executeTask = async (request: GenerationRequest, onChunk?: (chunk: GenerationChunk) => void | Promise<void>): Promise<GenerationResult> => {
+      const taskId = request.taskId ?? nextTaskId();
+      if (taskStates.has(taskId) || activeControllers.has(taskId)) {
+        throw createSSHelperError('LLM_GENERATION_TASK_CONFLICT', { stage: 'host.generation.task-id', providerKind: 'tavern' });
+      }
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort();
+      request.signal?.addEventListener('abort', forwardAbort, { once: true });
+      activeControllers.set(taskId, controller);
+      taskStates.set(taskId, { taskId, status: 'running' });
+      let deliveredDone = false;
+      try {
+        const result = await execute({ ...request, taskId, signal: controller.signal }, async (chunk) => {
+          deliveredDone ||= chunk.done === true;
+          if (!chunk.done) taskStates.set(taskId, { taskId, status: 'streaming', ...(chunk.provider === undefined ? {} : { provider: chunk.provider }), ...(chunk.model === undefined ? {} : { model: chunk.model }) });
+          await onChunk?.(chunk);
+        });
+        controller.signal.throwIfAborted();
+        if (onChunk && !deliveredDone) await onChunk({ taskId, text: result.text, done: true, ...(result.provider === undefined ? {} : { provider: result.provider }), ...(result.model === undefined ? {} : { model: result.model }) });
+        taskStates.set(taskId, { taskId, status: 'completed', ...(result.provider === undefined ? {} : { provider: result.provider }), ...(result.model === undefined ? {} : { model: result.model }) });
+        return result;
+      } catch (error) {
+        const cancelled = controller.signal.aborted || request.signal?.aborted;
+        const failureError = cancelled ? createSSHelperError('REQUEST_ABORTED', { stage: 'host.generation.execute', providerKind: 'tavern' }) : error;
+        const failure = readSSHelperFailure(failureError);
+        taskStates.set(taskId, { taskId, status: cancelled ? 'cancelled' : 'failed', ...(failure === undefined ? {} : { failure }) });
+        throw failureError;
+      } finally {
+        if (activeControllers.get(taskId) === controller) activeControllers.delete(taskId);
+        request.signal?.removeEventListener('abort', forwardAbort);
+      }
+    };
+    adapter.generation = {
+      available: async () => generationSelection(getContext()).connected,
+      models: async () => { const model = generationSelection(getContext()).model; return model === undefined ? [] : [model]; },
+      current: async (): Promise<GenerationSnapshot> => generationSnapshot(getContext()),
+      inspect: async (taskId?: string): Promise<GenerationTaskStatusSnapshot> => {
+        const selected = generationSelection(getContext());
+        const previous = taskStates.get(taskId ?? '');
+        return {
+          ...(previous ?? { taskId: taskId ?? 'current', status: 'queued' as const }),
+          ...(selected.provider === undefined ? {} : { provider: selected.provider }),
+          ...(selected.model === undefined ? {} : { model: selected.model }),
+          ...(selected.mainApi === undefined ? {} : { mainApi: selected.mainApi }),
+          ...(selected.toolCallingSupported === undefined ? {} : { toolCallingSupported: selected.toolCallingSupported }),
+          available: selected.connected,
+          connectionRevision: connectionRevision(selected),
+        };
+      },
+      generate: execute,
+      test: execute,
+      execute: executeTask,
+      cancel: async (taskId: string) => {
+        const controller = activeControllers.get(taskId);
+        if (controller === undefined) return;
+        controller.abort();
+        const failure = readSSHelperFailure(createSSHelperError('REQUEST_ABORTED', { stage: 'host.generation.execute', providerKind: 'tavern' }));
+        taskStates.set(taskId, { taskId, status: 'cancelled', ...(failure === undefined ? {} : { failure }) });
+      },
+    };
   }
 
   const loadWorldInfo = fn(initial.loadWorldInfo);

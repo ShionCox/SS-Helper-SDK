@@ -1,7 +1,7 @@
 import {
   LLM_COMPLETION_V0,
   LLM_EMBEDDING_V0,
-  LLM_ROUTE_CHANGED_V0,
+  LLM_TASK_STATUS_CHANGED_V0,
   MEMORY_RECALL_V0,
   type CoreDescriptor,
   type BusPort,
@@ -52,7 +52,7 @@ bus.handle(LLM_COMPLETION_V0, async () => ({ content: 'wrong' }));
 // @ts-expect-error public event API requires a typed structural token
 bus.publish('ss-helper.llm:route-changed', { route: 'x' });
 // @ts-expect-error invalid event payload reason
-bus.publish(LLM_ROUTE_CHANGED_V0, { route: 'x', reason: 'manual' });
+bus.publish(LLM_TASK_STATUS_CHANGED_V0, { revision: 'bad', taskKeys: ['x'], resourceIds: ['r'] });
 
 chatOnlyHost.chat.readCurrent();
 // @ts-expect-error generation is absent without a generation capability
