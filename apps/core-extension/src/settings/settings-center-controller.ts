@@ -103,8 +103,8 @@ export class SettingsCenterController {
     if (dialog === undefined) return;
     if (event.key === 'Escape') { event.preventDefault(); this.close(); return; }
     if (event.key !== 'Tab') return;
-    const focusable = [...dialog.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
-      .filter((node) => !node.hasAttribute('disabled') && !node.hidden);
+    const focusable = [...dialog.querySelectorAll<HTMLElement>('button, summary, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter((node) => !node.hasAttribute('disabled') && !node.closest('[hidden]') && ![...dialog.querySelectorAll('details')].some((group) => !group.open && group.contains(node) && node !== group.querySelector('summary')));
     if (focusable.length === 0) { event.preventDefault(); dialog.focus(); return; }
     const first = focusable[0]!;
     const last = focusable[focusable.length - 1]!;

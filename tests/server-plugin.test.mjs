@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 
 const BRIDGE_ROUTE = '/internal/bridge/v0/call';
 
@@ -27,7 +28,10 @@ async function invoke(routes, method, route, request) {
   };
   const handler = routes.get(`${method} ${route}`);
   assert.ok(handler, `missing ${method} ${route}`);
-  await handler(request, response);
+  await handler({
+    user: { profile: { handle: 'default-user' }, directories: { root: path.join(process.env.SS_HELPER_ST_ROOT, 'data', 'default-user') } },
+    ...request,
+  }, response);
   return { status, payload, headers };
 }
 
@@ -319,5 +323,128 @@ test('SDK bridge stores secrets encrypted and limits them to the LLM policy entr
     module?.exit();
     restoreEnv('SS_HELPER_ST_ROOT', previous);
     try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore Windows SQLite handles */ }
+  }
+});
+
+test('SDK bridge rejects malformed commits, rolls back dedup failures and paginates nullable indexes', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-atomic-'));
+  const previous = process.env.SS_HELPER_ST_ROOT;
+  process.env.SS_HELPER_ST_ROOT = root;
+  let module;
+  let db;
+  try {
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?atomic=${Date.now()}`);
+    await module.init(router);
+    await bridge(routes, 'ss-helper.memory', 'workspace.open', { id: 'w', schema: { collections: [{ name: 'facts', indexes: ['rank'] }] } });
+    await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
+      id: 'w', idempotencyKey: 'seed',
+      operations: [['a', null], ['b', null], ['x', 1], ['y', 2]].map(([id, rank]) => ({ action: 'put', collection: 'facts', id, value: { rank } })),
+    });
+    for (const action of ['oops', undefined]) {
+      const invalid = await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
+        id: 'w', idempotencyKey: `invalid:${String(action)}`, operations: [{ action, collection: 'facts', id: 'x' }],
+      });
+      assert.equal(invalid.payload.error, 'INVALID_PAYLOAD');
+    }
+    const noKey = await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
+      id: 'w', operations: [{ action: 'delete', collection: 'facts', id: 'x' }],
+    });
+    assert.equal(noKey.payload.error, 'INVALID_PAYLOAD');
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.get', { workspaceId: 'w', collection: 'facts', recordId: 'x' })).payload.data.revision, 1);
+
+    for (const [direction, expected] of [['asc', ['a', 'b', 'x', 'y']], ['desc', ['y', 'x', 'b', 'a']]]) {
+      const ids = [];
+      let cursor;
+      do {
+        const page = await bridge(routes, 'ss-helper.memory', 'workspace.query', {
+          workspaceId: 'w', collection: 'facts', orderBy: { field: 'rank', direction }, limit: 1, ...(cursor ? { cursor } : {}),
+        });
+        ids.push(...page.payload.data.records.map(row => row.recordId));
+        cursor = page.payload.data.nextCursor;
+        assert.ok(ids.length <= 4, 'pagination must make progress');
+      } while (cursor);
+      assert.deepEqual(ids, expected);
+    }
+
+    db = new DatabaseSync(module.__test.DB_PATH);
+    db.exec("CREATE TRIGGER fail_dedup BEFORE INSERT ON workspace_request_dedup_v0 BEGIN SELECT RAISE(ABORT, 'test failure'); END");
+    const request = { id: 'w', idempotencyKey: 'atomic', operations: [{ action: 'put', collection: 'facts', id: 'new', value: { rank: 3 }, expectedRevision: 0 }] };
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.commit', request)).payload.ok, false);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.get', { workspaceId: 'w', collection: 'facts', recordId: 'new' })).payload.data, null);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.reset', { idempotencyKey: 'reset-atomic' })).payload.ok, false);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.get', { workspaceId: 'w', collection: 'facts', recordId: 'x' })).payload.data.revision, 1);
+    db.exec('DROP TRIGGER fail_dedup');
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.commit', request)).payload.data.replayed, false);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.commit', request)).payload.data.replayed, true);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.reset', { idempotencyKey: 'reset-atomic' })).payload.data, 1);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.reset', { idempotencyKey: 'reset-atomic' })).payload.data, 1);
+  } finally {
+    db?.close();
+    module?.exit();
+    restoreEnv('SS_HELPER_ST_ROOT', previous);
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('SDK bridge isolates authenticated user records with absolute and host-relative directories while retaining default data', async () => {
+  const root = mkdtempSync(path.join(process.cwd(), '.tmp-ss-helper-sdk-users-'));
+  const previous = process.env.SS_HELPER_ST_ROOT;
+  process.env.SS_HELPER_ST_ROOT = root;
+  let module;
+  try {
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?users=${Date.now()}`);
+    await module.init(router);
+    const callAs = (handle, pluginId, operation, input = {}, relative = false) => invoke(routes, 'POST', BRIDGE_ROUTE, {
+      user: { profile: { handle }, directories: { root: relative ? path.relative(process.cwd(), path.join(root, 'data', handle)) : path.join(root, 'data', handle) } },
+      body: { version: 0, pluginId, operation, requestId: `test:${operation}`, input },
+    });
+    for (const handle of ['default-user', 'alice', 'bob']) {
+      await callAs(handle, 'ss-helper.llm', 'workspace.open', { id: 'llm:global' });
+      assert.equal((await callAs(handle, 'ss-helper.llm', 'secrets.get', { workspaceId: 'llm:global', secretId: 'key' })).payload.data, null);
+      await callAs(handle, 'ss-helper.llm', 'secrets.set', { workspaceId: 'llm:global', secretId: 'key', value: `test-key-${handle}` });
+      await callAs(handle, 'ss-helper.memory', 'workspace.open', { id: 'chat' });
+      await callAs(handle, 'ss-helper.memory', 'workspace.commit', {
+        id: 'chat', idempotencyKey: 'same-key', operations: [{ action: 'put', collection: 'default', id: 'record', value: { handle } }],
+      });
+    }
+    for (const handle of ['default-user', 'alice', 'bob']) {
+      assert.equal((await callAs(handle, 'ss-helper.llm', 'secrets.get', { workspaceId: 'llm:global', secretId: 'key' })).payload.data.value, `test-key-${handle}`);
+      assert.equal((await callAs(handle, 'ss-helper.memory', 'workspace.get', { workspaceId: 'chat', recordId: 'record' })).payload.data.value.handle, handle);
+      assert.equal((await callAs(handle, 'ss-helper.memory', 'workspace.get', { workspaceId: 'chat', recordId: 'record' }, true)).payload.data.value.handle, handle);
+    }
+    const defaultKey = readFileSync(module.__test.SECRET_KEY_PATH);
+    assert.notDeepEqual(readFileSync(path.join(root, 'data', 'alice', '_ss-helper-v0', 'ss-helper-secrets.key')), defaultKey);
+    assert.equal((await callAs('alice', 'ss-helper.memory', 'workspace.reset')).payload.data, 1);
+    assert.equal((await callAs('bob', 'ss-helper.memory', 'workspace.get', { workspaceId: 'chat', recordId: 'record' })).payload.data.value.handle, 'bob');
+
+    const corruptRoot = path.join(root, 'data', 'carol', '_ss-helper-v0');
+    mkdirSync(corruptRoot, { recursive: true });
+    writeFileSync(path.join(corruptRoot, 'ss-helper.sqlite3'), 'not sqlite');
+    assert.equal((await callAs('carol', 'ss-helper.memory', 'workspace.health')).payload.data.recoverable, true);
+    const repaired = await callAs('carol', 'ss-helper.memory', 'workspace.repair');
+    assert.equal(repaired.payload.data.requiresReload, true);
+    assert.equal(existsSync(path.join(root, 'data', 'carol', 'backups', repaired.payload.data.backupId, 'ss-helper.sqlite3')), true);
+    assert.deepEqual(readFileSync(module.__test.SECRET_KEY_PATH), defaultKey);
+    assert.equal((await callAs('default-user', 'ss-helper.memory', 'workspace.get', { workspaceId: 'chat', recordId: 'record' })).payload.data.value.handle, 'default-user');
+    const unauthenticated = await invoke(routes, 'POST', BRIDGE_ROUTE, {
+      user: undefined, body: { version: 0, pluginId: 'ss-helper.llm', operation: 'secrets.get', requestId: 'test:unauthenticated', input: { workspaceId: 'llm:global', secretId: 'key' } },
+    });
+    assert.equal(unauthenticated.payload.error, 'WORKSPACE_ACCESS_DENIED');
+    for (const [handle, userRoot] of [['alice', path.join(root, 'data', 'bob')], ['..', root]]) {
+      const invalidUser = await invoke(routes, 'POST', BRIDGE_ROUTE, {
+        user: { profile: { handle }, directories: { root: userRoot } },
+        body: { version: 0, pluginId: 'ss-helper.llm', operation: 'secrets.get', requestId: 'test:invalid-user', input: { workspaceId: 'llm:global', secretId: 'key' } },
+      });
+      assert.equal(invalidUser.payload.error, 'WORKSPACE_ACCESS_DENIED');
+    }
+    module.exit();
+    await module.init(router);
+    assert.equal((await callAs('bob', 'ss-helper.llm', 'secrets.get', { workspaceId: 'llm:global', secretId: 'key' })).payload.data.value, 'test-key-bob');
+  } finally {
+    module?.exit();
+    restoreEnv('SS_HELPER_ST_ROOT', previous);
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

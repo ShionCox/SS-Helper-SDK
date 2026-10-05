@@ -61,6 +61,10 @@ read through `get/query`, and perform all writes through atomic `commit`.
 Use `secrets.set/get/delete/list` for credentials. The server plugin
 creates `data/_ss-helper-v0/ss-helper.sqlite3` and its AES-256-GCM key on first
 startup. Backups never contain Secret values.
+The Bridge requires SillyTavern's authenticated user context. The default
+account retains the existing data location; other accounts use their own
+`data/<handle>/_ss-helper-v0` database and key, with recovery backups under
+`data/<handle>/backups`. Workspace resets and recovery stay within that account.
 
 SillyTavern extensions share one origin and therefore use a cooperative trust
 model. The internal bridge removes public generic workspace CRUD endpoints,

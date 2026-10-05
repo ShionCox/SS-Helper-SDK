@@ -23,7 +23,7 @@ interface SettingsFieldBase<Kind extends string> {
   readonly aria?: AriaMetadata;
 }
 
-export interface SectionField extends SettingsFieldBase<'section'> { readonly children: readonly SettingsField[]; }
+export interface SectionField extends SettingsFieldBase<'section'> { readonly children: readonly SettingsField[]; readonly collapsible?: boolean; }
 export interface ToggleField extends SettingsFieldBase<'toggle'> { readonly defaultValue?: boolean; }
 export interface CheckboxField extends SettingsFieldBase<'checkbox'> { readonly defaultValue?: boolean; readonly validation?: ValidationRule; }
 export interface TextField extends SettingsFieldBase<'text'> { readonly defaultValue?: string; readonly placeholder?: string; readonly validation?: ValidationRule; readonly secret?: boolean; }
@@ -47,6 +47,7 @@ export interface SettingsStatusSnapshot {
 export interface SettingsFieldStateSnapshot {
   readonly disabled: boolean;
   readonly disabledReason?: string;
+  readonly hidden?: boolean;
 }
 export type SettingsFieldStateMap = Readonly<Record<string, SettingsFieldStateSnapshot>>;
 export interface StatusAction {

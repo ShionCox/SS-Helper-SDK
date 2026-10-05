@@ -111,7 +111,7 @@ const SETTINGS_TONES = new Set<SettingsTone>(['neutral', 'success', 'warning', '
 const SETTINGS_SCHEMA_KEYS = new Set(['id', 'title', 'fields']);
 const SETTINGS_FIELD_BASE_KEYS = ['kind', 'id', 'label', 'description', 'disabledReason', 'aria'] as const;
 const SETTINGS_FIELD_KEYS: Readonly<Record<SettingsField['kind'], ReadonlySet<string>>> = Object.freeze({
-  section: new Set([...SETTINGS_FIELD_BASE_KEYS, 'children']),
+  section: new Set([...SETTINGS_FIELD_BASE_KEYS, 'children', 'collapsible']),
   toggle: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue']),
   checkbox: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue', 'validation']),
   text: new Set([...SETTINGS_FIELD_BASE_KEYS, 'defaultValue', 'placeholder', 'validation', 'secret']),
@@ -205,13 +205,14 @@ function validateFieldStateMap(schema: SettingsSchema, state: SettingsFieldState
   const next: Record<string, SettingsFieldStateSnapshot> = {};
   for (const [id, snapshot] of Object.entries(state)) {
     if (!allowed.has(id) || typeof snapshot !== 'object' || snapshot === null
-      || Object.keys(snapshot).some((key) => !['disabled', 'disabledReason'].includes(key))
+      || Object.keys(snapshot).some((key) => !['disabled', 'disabledReason', 'hidden'].includes(key))
+      || (snapshot.hidden !== undefined && typeof snapshot.hidden !== 'boolean')
       || typeof snapshot.disabled !== 'boolean'
       || (snapshot.disabledReason !== undefined && (typeof snapshot.disabledReason !== 'string' || snapshot.disabledReason.trim() === ''))
       || (snapshot.disabled && snapshot.disabledReason === undefined)) {
       throw new SSHelperError('INVALID_PAYLOAD', 'Settings field state is invalid', { phase, field: id });
     }
-    next[id] = Object.freeze({ disabled: snapshot.disabled, ...(snapshot.disabledReason === undefined ? {} : { disabledReason: snapshot.disabledReason.trim() }) });
+    next[id] = Object.freeze({ disabled: snapshot.disabled, ...(snapshot.hidden === undefined ? {} : { hidden: snapshot.hidden }), ...(snapshot.disabledReason === undefined ? {} : { disabledReason: snapshot.disabledReason.trim() }) });
   }
   return Object.freeze(next);
 }
@@ -244,6 +245,9 @@ function validateValidationRule(field: SettingsField): void {
 }
 
 function validateFieldMetadata(field: SettingsField): void {
+  if (field.kind === 'section' && field.collapsible !== undefined && typeof field.collapsible !== 'boolean') {
+    throw new SSHelperError('INVALID_PAYLOAD', 'Invalid collapsible section', { field: field.id });
+  }
   const allowed = SETTINGS_FIELD_KEYS[field.kind];
   if (Object.keys(field).some((key) => !allowed.has(key))) {
     throw new SSHelperError('INVALID_PAYLOAD', 'The settings field contains unsupported properties', { reason: 'settings_field_keys', field: field.id });
@@ -413,6 +417,7 @@ function setButtonLabel(document: Document, button: HTMLButtonElement, iconName:
 export class SettingsHost {
   readonly #contributions = new Map<string, Contribution>();
   readonly #activeTabs = new Map<string, string>();
+  readonly #expandedGroups = new Map<string, boolean>();
   readonly #searchQueries = new Map<string, string>();
   readonly #searchEmpty = new WeakMap<HTMLElement, HTMLElement>();
   readonly #debouncedSaves = new Map<string, DebouncedSave>();
@@ -649,10 +654,11 @@ export class SettingsHost {
     contribution.saveState = 'saving';
     this.#syncContributionUi(contribution);
     const operation = contribution.saveQueue.catch(() => undefined).then(async () => {
+      const committedValues = contribution.committedValues;
       try {
         await contribution.adapter.save(validatedValues);
+        if (contribution.active && contribution.committedValues === committedValues) contribution.committedValues = validatedValues;
         if (revision === contribution.saveRevision) {
-          contribution.committedValues = validatedValues;
           contribution.values = validatedValues;
           contribution.saveState = 'saved';
           this.#clearIssues(contribution, ['persistence', 'values-load']);
@@ -678,11 +684,12 @@ export class SettingsHost {
     contribution.saveState = 'saving';
     this.#syncContributionUi(contribution);
     const operation = contribution.saveQueue.catch(() => undefined).then(async () => {
+      const committedValues = contribution.committedValues;
       try {
         const values = validateValues(contribution.schema, await contribution.adapter.reset(), 'settings_reset');
+        if (contribution.active && contribution.committedValues === committedValues) contribution.committedValues = values;
         if (!contribution.active || revision !== contribution.saveRevision) return contribution.values;
         contribution.values = values;
-        contribution.committedValues = values;
         contribution.saveState = 'saved';
         this.#clearIssues(contribution, ['persistence', 'values-load']);
         this.#fieldErrors.delete(pluginId);
@@ -782,7 +789,7 @@ export class SettingsHost {
   #openSettingsCenter(): void {
     const center = this.#center;
     if (center === undefined) return;
-    center.show((dialog) => this.#renderCenterContent(dialog), () => this.#flushDebouncedSaves());
+    center.show((dialog) => this.#renderCenterContent(dialog), () => { this.#flushDebouncedSaves(); this.#expandedGroups.clear(); });
   }
 
   #renderCenter(): void {
@@ -991,13 +998,22 @@ export class SettingsHost {
       if (traceMemory) traceSettingsRender(`memory-field-begin:${field.id}:${field.kind}`);
       if (field.kind === 'action' && field.placement !== 'inline') continue;
       if (field.kind === 'section') {
-        const group = document.createElement('fieldset'); group.className = 'stx-ui-fieldset';
-        const legend = document.createElement('legend'); legend.textContent = field.label; group.append(legend);
+        const group = document.createElement(field.collapsible ? 'details' : 'fieldset'); group.className = 'stx-ui-fieldset';
+        const legend = document.createElement(field.collapsible ? 'summary' : 'legend'); legend.id = domId(contribution.identity.id, field.id); legend.textContent = field.label; group.append(legend);
+        if (field.collapsible) {
+          const details = group as HTMLDetailsElement;
+          const key = `${contribution.identity.id}:${field.id}`;
+          group.dataset.groupKey = key;
+          details.open = this.#expandedGroups.get(key) ?? false;
+          legend.addEventListener('click', () => this.#expandedGroups.set(key, !details.open));
+          group.addEventListener('toggle', () => { if (group.isConnected && !(this.#searchQueries.get(contribution.identity.id) ?? '').trim()) this.#expandedGroups.set(key, details.open); });
+        }
         this.#renderFields(document, group, searchRoot, contribution, field.children); parent.append(group);
         if (traceMemory) traceSettingsRender(`memory-field-complete:${field.id}:${field.kind}`);
         continue;
       }
       const row = document.createElement('div'); row.className = `stx-ui-field-row stx-ui-field-${field.kind}`; row.dataset.fieldId = field.id; row.dataset.fieldKind = field.kind; row.dataset.searchText = searchText(field);
+      row.hidden = contribution.fieldState[field.id]?.hidden === true;
       const labelCell = document.createElement('div'); labelCell.className = 'stx-ui-field-label';
       const label = document.createElement(field.kind === 'action' ? 'div' : 'label'); label.className = 'stx-ui-item-title'; label.textContent = field.label; labelCell.append(label);
       const valueCell = document.createElement('div'); valueCell.className = 'stx-ui-field-value';
@@ -1266,6 +1282,10 @@ export class SettingsHost {
       const description = row.querySelector<HTMLElement>('.stx-ui-item-desc');
       if (description !== null) description.textContent = reason ?? field.description ?? '';
     }
+    const container = main.querySelector<HTMLElement>('.stx-ui-fields');
+    if (container !== null) this.#applySearch(container, this.#searchQueries.get(contribution.identity.id) ?? '', contribution.identity.id);
+    const active = main.ownerDocument.activeElement as HTMLElement | null;
+    if (active?.closest('[hidden]')) main.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
     this.#syncContributionUi(contribution);
   }
 
@@ -1350,7 +1370,7 @@ export class SettingsHost {
     const matchingTabs = new Set<string>();
     for (const node of Array.from(root.querySelectorAll<HTMLElement>('[data-field-id]'))) {
       if (!node.dataset.fieldId || !node.dataset.searchText) continue;
-      const matches = normalized === '' || node.dataset.searchText.includes(normalized); node.hidden = !matches;
+      const matches = this.#contributions.get(pluginId)?.fieldState[node.dataset.fieldId]?.hidden !== true && (normalized === '' || node.dataset.searchText.includes(normalized)); node.hidden = !matches;
       if (matches) {
         visible += 1;
         let ancestor = node.parentElement;
@@ -1359,6 +1379,9 @@ export class SettingsHost {
           ancestor = ancestor.parentElement;
         }
       }
+    }
+    for (const group of root.querySelectorAll<HTMLDetailsElement>('[data-group-key]')) {
+      group.open = normalized !== '' ? [...group.querySelectorAll<HTMLElement>('[data-field-id]')].some((row) => !row.hidden) : this.#expandedGroups.get(group.dataset.groupKey!) ?? false;
     }
     const activeTab = this.#activeTabs.get(pluginId);
     if (normalized !== '' && matchingTabs.size > 0 && (activeTab === undefined || !matchingTabs.has(activeTab))) {

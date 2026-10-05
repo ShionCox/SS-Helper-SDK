@@ -186,7 +186,8 @@ export const SETTINGS_CSS = `
 #ss-helper-settings-center .stx-center-page-heading p { margin: 0; color: var(--ss-theme-muted); font-size: .82rem; }
 #ss-helper-settings-center .stx-center-page-badges { display: flex; align-items: center; gap: 7px; }
 #ss-helper-settings-center .stx-center-scroll { min-height: 0; overflow: auto; scrollbar-color: rgba(210, 168, 74, .42) transparent; }
-#ss-helper-settings-center .stx-center-plugin-content { display: grid; grid-template-rows: auto minmax(min-content, 1fr); align-content: start; }
+#ss-helper-settings-center .stx-center-plugin-content { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(min-content, 1fr); align-content: start; }
+#ss-helper-settings-center .stx-ui-fields { min-width: 0; }
 #ss-helper-settings-center .stx-center-searchbar {
   position: relative; display: flex; align-items: center; margin: 14px 20px 10px;
 }
@@ -295,6 +296,9 @@ export const SETTINGS_CSS = `
 #ss-helper-settings-center .stx-ui-panel[hidden] { display: none; }
 #ss-helper-settings-center .stx-ui-fieldset { min-width: 0; margin: 14px 20px; padding: 0; border: 1px solid var(--ss-theme-border); border-radius: 6px; }
 #ss-helper-settings-center .stx-ui-fieldset legend { margin-left: 12px; padding: 0 6px; color: var(--ss-theme-muted); font-size: .76rem; }
+#ss-helper-settings-center .stx-ui-fieldset > summary { padding: 12px 16px; cursor: pointer; color: var(--ss-theme-muted); font-size: .85rem; }
+#ss-helper-settings-center .stx-ui-fieldset > summary:hover { color: var(--ss-theme-text); }
+#ss-helper-settings-center .stx-ui-fieldset > summary:focus-visible { outline: 2px solid var(--ss-theme-accent); outline-offset: 2px; }
 #ss-helper-settings-center .stx-ui-field-row {
   min-height: 72px; display: grid; grid-template-columns: minmax(180px, 36%) minmax(0, 1fr); align-items: center; gap: 24px;
   padding: 10px 20px; border-bottom: 1px solid var(--ss-theme-border);
@@ -774,6 +778,7 @@ export const SETTINGS_CSS = `
   #ss-helper-settings-center .stx-center-page-heading { min-height: 72px; padding: 12px 14px; }
   #ss-helper-settings-center .stx-center-searchbar { margin-inline: 12px; }
   #ss-helper-settings-center .stx-ui-tabs { overflow-x: auto; flex-wrap: nowrap; padding-inline: 12px; }
+  #ss-helper-settings-center .stx-ui-tab { flex: 0 0 auto; white-space: nowrap; }
   #ss-helper-settings-center .stx-ui-field-row { grid-template-columns: 1fr; gap: 7px; padding: 12px 14px; }
   #ss-helper-settings-center .stx-ui-control-action .stx-ui-btn { width: 100%; }
   #ss-helper-settings-center .stx-ui-control-status { align-items: flex-start; flex-direction: column; }

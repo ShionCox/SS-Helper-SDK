@@ -213,6 +213,41 @@ test('automatic saves are serialized per plugin and the newest successful value 
   assert.equal(runtime.settings.snapshot()[0].values.count, 2);
 });
 
+test('a failed queued save rolls back to the preceding successful save or reset', async () => {
+  for (const operation of ['save', 'reset']) {
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
+    const pluginId = `example.rollback-${operation}`;
+    const session = runtime.connect(pluginDescriptor(pluginId));
+    let releaseFirst;
+    let markStarted;
+    let persisted = { count: 0 };
+    const started = new Promise((resolve) => { markStarted = resolve; });
+    session.registerSettings({ id: pluginId, title: 'Queue', fields: [{ kind: 'number', id: 'count', label: 'Count' }] }, {
+      load: async () => ({ ...persisted }),
+      save: async (values) => {
+        if (values.count === 2) throw new Error('save failed');
+        await new Promise((release) => { releaseFirst = release; markStarted(); });
+        persisted = { ...values };
+      },
+      reset: async () => {
+        await new Promise((release) => { releaseFirst = release; markStarted(); });
+        persisted = { count: 1 };
+        return { ...persisted };
+      },
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const first = operation === 'save' ? runtime.settings.save(pluginId, { count: 1 }) : runtime.settings.reset(pluginId);
+      await started;
+      const second = assert.rejects(runtime.settings.save(pluginId, { count: 2 }), errorCode('INTERNAL'));
+      releaseFirst();
+      await Promise.all([first, second]);
+      assert.deepEqual(persisted, { count: 1 });
+      assert.deepEqual(runtime.settings.snapshot()[0].values, persisted);
+    } finally { runtime.dispose(); }
+  }
+});
+
 test('reset shares the save queue and reloads authoritative values after failure', async () => {
   const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
   const session = runtime.connect(pluginDescriptor('example.reset-queue'));
@@ -1213,6 +1248,48 @@ test('dynamic field state disables the current control with an inline reason and
   } finally { restore(); }
 });
 
+test('hidden fields survive saves and searches while collapsed groups remember expansion', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const container = document.createElement('div'); document.body.append(container);
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { settingsContainer: container, document });
+    const session = runtime.connect(pluginDescriptor('example.progressive'));
+    let emitState;
+    const saved = [];
+    session.registerSettings({ id: 'example.progressive', title: 'Progressive', fields: [
+      { kind: 'toggle', id: 'enabled', label: 'Enabled' },
+      { kind: 'section', id: 'advanced', label: 'Advanced', collapsible: true, children: [{ kind: 'number', id: 'limit', label: 'Limit' }] },
+    ] }, {
+      load: () => ({ enabled: true, limit: 42 }), save: (values) => { saved.push(values); }, reset: () => ({ enabled: true, limit: 42 }),
+      loadFieldState: () => ({ limit: { disabled: false, hidden: true } }),
+      subscribeFieldState: (listener) => { emitState = listener; return () => {}; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
+    descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.progressive').dispatchEvent({ type: 'click' });
+    const center = document.getElementById(SETTINGS_CENTER_ID);
+    const row = () => descendants(center).find((node) => node.dataset.fieldId === 'limit');
+    const group = () => descendants(center).find((node) => node.dataset.groupKey);
+    assert.equal(row().hidden, true);
+    assert.equal(group().open, false);
+    group().open = true; group().dispatchEvent({ type: 'toggle' });
+    await runtime.settings.save('example.progressive', { enabled: false, limit: 42 });
+    assert.equal(saved.at(-1).limit, 42);
+    assert.equal(group().open, true);
+    const search = descendants(center).find((node) => node.type === 'search');
+    search.value = 'Limit'; search.dispatchEvent({ type: 'input' });
+    assert.equal(row().hidden, true, 'search must not reveal a mode-inactive field');
+    emitState({ limit: { disabled: false, hidden: false } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(row().hidden, false);
+    assert.equal(group().open, true);
+    search.value = ''; search.dispatchEvent({ type: 'input' });
+    assert.equal(group().open, true);
+    runtime.dispose();
+  } finally { restore(); }
+});
+
 test('an external settings snapshot during a delayed save remains authoritative', async () => {
   const restore = installFakeDomGlobals();
   try {
@@ -1221,9 +1298,10 @@ test('an external settings snapshot during a delayed save remains authoritative'
     const session = runtime.connect(pluginDescriptor('example.settings-race'));
     let releaseSave;
     let valuesListener;
+    let failSave = false;
     session.registerSettings({ id: 'example.settings-race', title: 'Race', fields: [{ kind: 'text', id: 'chat', label: 'Chat' }] }, {
       load: () => ({ chat: 'chat-a' }),
-      save: () => new Promise((resolve) => { releaseSave = resolve; }),
+      save: () => { if (failSave) throw new Error('save failed'); return new Promise((resolve) => { releaseSave = resolve; }); },
       reset: () => ({ chat: 'chat-a' }),
       subscribe: (listener) => { valuesListener = listener; return () => {}; },
     });
@@ -1233,6 +1311,9 @@ test('an external settings snapshot during a delayed save remains authoritative'
     valuesListener({ chat: 'chat-b' });
     releaseSave();
     await saving;
+    assert.deepEqual(runtime.settings.snapshot().find((item) => item.id === 'example.settings-race').values, { chat: 'chat-b' });
+    failSave = true;
+    await assert.rejects(runtime.settings.save('example.settings-race', { chat: 'chat-b-unsaved' }), errorCode('INTERNAL'));
     assert.deepEqual(runtime.settings.snapshot().find((item) => item.id === 'example.settings-race').values, { chat: 'chat-b' });
     runtime.dispose();
   } finally { restore(); }
