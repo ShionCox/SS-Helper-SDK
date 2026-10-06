@@ -8,6 +8,7 @@ import {
 } from '../apps/core-extension/dist/index.js';
 import { coreIdentity, errorCode, pluginDescriptor, TestRealm } from './helpers/runtime-fixture.mjs';
 import { FakeDocument, installFakeDomGlobals } from './helpers/fake-dom.mjs';
+import { createSSHelperError } from '@ss-helper/sdk';
 
 function descendants(node) {
   return node.children.flatMap((child) => [child, ...descendants(child)]);
@@ -42,7 +43,7 @@ test('a stale initial load failure cannot overwrite a newer authoritative subscr
   rejectLoad(new Error('late startup failure'));
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
-  assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+  assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, undefined);
   session.dispose();
   runtime.dispose();
 });
@@ -248,6 +249,30 @@ test('a failed queued save rolls back to the preceding successful save or reset'
   }
 });
 
+test('permanent settings failures preserve their root context, stop retrying, and recover on explicit reload', async () => {
+  const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
+  const id = 'example.settings-recovery';
+  const session = runtime.connect(pluginDescriptor(id));
+  let loads = 0;
+  let broken = true;
+  const failure = createSSHelperError('INVALID_PAYLOAD', { stage: 'fixture.settings.read', requestId: 'settings-root' });
+  session.registerSettings({ id, title: id, fields: [{ kind: 'toggle', id: 'enabled', label: 'Enabled' }] }, {
+    load: async () => { loads++; if (broken) throw failure; return { enabled: true }; },
+    save: async () => { throw failure; },
+    reset: async () => ({ enabled: false }),
+  });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(loads, 1);
+  assert.deepEqual(runtime.settings.snapshot()[0].failure, { reasonCode: 'INVALID_PAYLOAD', stage: 'fixture.settings.read', requestId: 'settings-root' });
+  broken = false;
+  await runtime.settings.reload(id);
+  assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
+  await assert.rejects(runtime.settings.save(id, { enabled: false }), error => error.details.reasonCode === 'INVALID_PAYLOAD' && error.details.requestId === 'settings-root');
+  assert.equal(runtime.settings.snapshot()[0].values.enabled, true);
+  session.dispose();
+  runtime.dispose();
+});
+
 test('reset shares the save queue and reloads authoritative values after failure', async () => {
   const runtime = installCoreRuntime(coreIdentity(), new TestRealm());
   const session = runtime.connect(pluginDescriptor('example.reset-queue'));
@@ -448,7 +473,7 @@ test('settings values reject undeclared domain fields on load, subscribe, save, 
     reset: async () => ({ enabled: false }),
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-load').lastError, 'SETTINGS_VALUES_LOAD_FAILED');
+  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-load').failure?.reasonCode, 'INVALID_PAYLOAD');
 
   const session = runtime.connect(pluginDescriptor('example.unknown-values'));
   let emit;
@@ -463,9 +488,9 @@ test('settings values reject undeclared domain fields on load, subscribe, save, 
   await assert.rejects(runtime.settings.save('example.unknown-values', { enabled: false, internalOnly: true }), errorCode('INVALID_PAYLOAD'));
   assert.equal(saves, 0);
   emit({ enabled: true, internalOnly: 'nope' });
-  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-values').lastError, 'SETTINGS_VALUES_SUBSCRIPTION_INVALID');
-  await assert.rejects(runtime.settings.reset('example.unknown-values'), errorCode('INTERNAL'));
-  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-values').lastError, 'SETTINGS_RESET_FAILED');
+  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-values').failure?.reasonCode, 'INVALID_PAYLOAD');
+  await assert.rejects(runtime.settings.reset('example.unknown-values'), errorCode('INVALID_PAYLOAD'));
+  assert.equal(runtime.settings.snapshot().find((entry) => entry.id === 'example.unknown-values').failure?.reasonCode, 'INVALID_PAYLOAD');
 });
 
 test('required settings are validated consistently and missing saves never reach the adapter', async () => {
@@ -485,7 +510,7 @@ test('required settings are validated consistently and missing saves never reach
   assert.equal(saves, 0);
   emit({ enabled: true });
   assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
-  await assert.rejects(runtime.settings.reset('example.required'), errorCode('INTERNAL'));
+  await assert.rejects(runtime.settings.reset('example.required'), errorCode('INVALID_PAYLOAD'));
   assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
 });
 
@@ -499,7 +524,7 @@ test('adapter errors degrade only one plugin and reload restores through its own
   await new Promise((resolve) => setTimeout(resolve, 0));
   const snapshots = runtime.settings.snapshot();
   assert.equal(snapshots.find((entry) => entry.id === 'example.bad').health, 'degraded');
-  assert.equal(snapshots.find((entry) => entry.id === 'example.bad').lastError, 'SETTINGS_VALUES_LOAD_FAILED');
+  assert.equal(snapshots.find((entry) => entry.id === 'example.bad').failure?.reasonCode, 'SETTINGS_READ_FAILED');
   assert.equal(snapshots.find((entry) => entry.id === 'example.good').health, 'healthy');
   bad.dispose();
   const reloaded = runtime.connect(pluginDescriptor('example.bad'));
@@ -524,18 +549,18 @@ test('a later authoritative settings snapshot clears a transient startup read fa
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
-    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_VALUES_LOAD_FAILED');
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, 'SETTINGS_READ_FAILED');
 
     descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.settings-recovery').dispatchEvent({ type: 'click' });
     let footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.settings-recovery');
-    assert.equal(descendants(footer).some((node) => node.textContent === '设置读取失败，正在等待恢复'), true);
+    assert.equal(descendants(footer).some((node) => node.textContent.includes('SETTINGS_READ_FAILED')), true);
     assert.equal(descendants(footer).some((node) => node.textContent === '保存失败，请检查设置'), false);
 
     emitValues({ enabled: true, 'api-key': 'ready', count: 2, volume: 5, mode: 'a' });
     assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
-    assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, undefined);
     footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.settings-recovery');
     assert.equal(descendants(footer).some((node) => node.textContent === '修改后自动保存'), true);
     session.dispose();
@@ -566,24 +591,24 @@ test('auxiliary status failures stay advisory, keep settings writable, and recov
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(runtime.settings.snapshot()[0].health, 'degraded');
-    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_STATUS_LOAD_FAILED');
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, 'SETTINGS_READ_FAILED');
 
     descendants(container).find((node) => node.id === 'ss-helper-open-settings-center').dispatchEvent({ type: 'click' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.pluginId === 'example.status-recovery').dispatchEvent({ type: 'click' });
     let footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.status-recovery');
-    assert.equal(descendants(footer).some((node) => node.textContent === '部分状态暂不可用，设置仍可保存'), true);
+    assert.equal(descendants(footer).some((node) => node.textContent.includes('SETTINGS_READ_FAILED')), true);
     assert.equal(descendants(footer).some((node) => node.textContent === '保存失败，请检查设置'), false);
 
     await runtime.settings.save('example.status-recovery', { enabled: false });
     assert.equal(saves, 1);
     assert.equal(runtime.settings.snapshot()[0].health, 'degraded', 'a successful save must not hide an unrelated status issue');
     footer = descendants(document.getElementById(SETTINGS_CENTER_ID)).find((node) => node.dataset.saveStatus === 'example.status-recovery');
-    assert.equal(descendants(footer).some((node) => node.textContent === '部分状态暂不可用，设置仍可保存'), true);
+    assert.equal(descendants(footer).some((node) => node.textContent.includes('SETTINGS_READ_FAILED')), true);
 
     emitStatus({ state: { value: 'Ready', tone: 'success' } });
     assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
-    assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, undefined);
     session.dispose();
     runtime.dispose();
   } finally { restore(); }
@@ -606,16 +631,16 @@ test('a real persistence failure survives unrelated snapshots until a later save
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     await assert.rejects(runtime.settings.save('example.persistence-recovery', { enabled: false }), errorCode('INTERNAL'));
-    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_SAVE_FAILED');
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, 'SETTINGS_SAVE_FAILED');
 
     emitValues({ enabled: true });
     assert.equal(runtime.settings.snapshot()[0].health, 'degraded', 'a value snapshot does not prove the failed write committed');
-    assert.equal(runtime.settings.snapshot()[0].lastError, 'SETTINGS_SAVE_FAILED');
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, 'SETTINGS_SAVE_FAILED');
 
     rejectSave = false;
     await runtime.settings.save('example.persistence-recovery', { enabled: false });
     assert.equal(runtime.settings.snapshot()[0].health, 'healthy');
-    assert.equal(runtime.settings.snapshot()[0].lastError, undefined);
+    assert.equal(runtime.settings.snapshot()[0].failure?.reasonCode, undefined);
     session.dispose();
     runtime.dispose();
   } finally { restore(); }

@@ -1,5 +1,9 @@
 import {
   SSHelperError,
+  createSSHelperError,
+  readSSHelperFailure,
+  describeSSHelperFailure,
+  type SSHelperFailureContext,
   type CoreDescriptor,
   type PlainData,
   type PopupToken,
@@ -14,6 +18,7 @@ import {
   type SettingsValues,
 } from '@ss-helper/sdk';
 import type { SessionScope } from '../plugins/session-scope.js';
+import type { ToastHost } from '../toast/toast-host.js';
 import { ensureCoreUiStyles } from '../styles/settings-styles.js';
 import { assertPayload } from '../communication/contracts.js';
 import {
@@ -43,7 +48,7 @@ function valueFields(schema: SettingsSchema): readonly Exclude<SettingsField, { 
 export interface SettingsContributionSnapshot extends SettingsPluginIdentity {
   readonly schema: SettingsSchema;
   readonly health: 'healthy' | 'degraded';
-  readonly lastError?: string;
+  readonly failure?: SSHelperFailureContext;
   readonly values: SettingsValues;
 }
 
@@ -69,6 +74,7 @@ const SETTINGS_ISSUE_PRIORITY: readonly SettingsIssueChannel[] = Object.freeze([
 ]);
 
 interface Contribution {
+  readonly scope: SessionScope;
   readonly identity: SettingsPluginIdentity;
   readonly schema: SettingsSchema;
   readonly adapter: SettingsAdapter;
@@ -78,8 +84,8 @@ interface Contribution {
   saveState: SaveState;
   saveRevision: number;
   saveQueue: Promise<void>;
-  lastError?: string;
-  readonly issues: Partial<Record<SettingsIssueChannel, string>>;
+  failure?: SSHelperFailureContext;
+  readonly issues: Partial<Record<SettingsIssueChannel, SSHelperFailureContext>>;
   readonly retryTimers: Set<ReturnType<typeof setTimeout>>;
   unsubscribe?: () => void;
   unsubscribeStatus?: () => void;
@@ -427,7 +433,7 @@ export class SettingsHost {
   #activePluginId = OVERVIEW_ID;
   #renderFrame: number | undefined;
 
-  constructor(readonly core: CoreDescriptor) {}
+  constructor(readonly core: CoreDescriptor, readonly toasts?: ToastHost) {}
 
   mount(container: HTMLElement): HTMLElement {
     const document = container.ownerDocument;
@@ -458,7 +464,7 @@ export class SettingsHost {
     if (this.#contributions.has(identity.id)) throw new SSHelperError('INVALID_PAYLOAD', 'The plugin already registered settings', { reason: 'duplicate_settings' });
     const empty = Object.freeze({});
     const contribution: Contribution = {
-      identity, schema, adapter, openPopup, values: empty, committedValues: empty,
+      scope, identity, schema, adapter, openPopup, values: empty, committedValues: empty,
       health: 'healthy', saveState: 'idle', saveRevision: 0, saveQueue: Promise.resolve(), status: empty, fieldState: empty,
       issues: {}, retryTimers: new Set(),
       active: true, valuesRevision: 0, statusRevision: 0, fieldStateRevision: 0,
@@ -492,8 +498,8 @@ export class SettingsHost {
     });
   }
 
-  #scheduleRetry(contribution: Contribution, attempt: number, retry: (attempt: number) => void): void {
-    if (!contribution.active || attempt >= SETTINGS_STARTUP_RETRY_DELAYS_MS.length) return;
+  #scheduleRetry(contribution: Contribution, attempt: number, retry: (attempt: number) => void, failure: SSHelperFailureContext): void {
+    if (!contribution.active || !describeSSHelperFailure(failure).retryable || attempt >= SETTINGS_STARTUP_RETRY_DELAYS_MS.length) return;
     const timer = setTimeout(() => {
       contribution.retryTimers.delete(timer);
       if (contribution.active) retry(attempt + 1);
@@ -506,12 +512,15 @@ export class SettingsHost {
   #refreshHealth(contribution: Contribution): void {
     const firstIssue = SETTINGS_ISSUE_PRIORITY.find((channel) => contribution.issues[channel] !== undefined);
     contribution.health = firstIssue === undefined ? 'healthy' : 'degraded';
-    if (firstIssue === undefined) delete contribution.lastError;
-    else contribution.lastError = contribution.issues[firstIssue]!;
+    if (firstIssue === undefined) delete contribution.failure;
+    else contribution.failure = contribution.issues[firstIssue]!;
   }
 
-  #markIssue(contribution: Contribution, channel: SettingsIssueChannel, code: string, rerender = true): void {
-    contribution.issues[channel] = code;
+  #markIssue(contribution: Contribution, channel: SettingsIssueChannel, error: unknown, rerender = true): void {
+    contribution.issues[channel] = readSSHelperFailure(error, {
+      reasonCode: error instanceof SSHelperError && error.code === 'INVALID_PAYLOAD' ? 'INVALID_PAYLOAD' : channel === 'persistence' ? 'SETTINGS_SAVE_FAILED' : 'SETTINGS_READ_FAILED',
+      stage: `core.settings.${channel}`,
+    })!;
     if (channel === 'persistence') contribution.saveState = 'error';
     this.#refreshHealth(contribution);
     if (rerender) this.#renderAll();
@@ -536,15 +545,15 @@ export class SettingsHost {
           this.#clearIssues(contribution, ['values-load', 'values-subscribe']);
           this.#syncValuesUi(contribution);
           this.#syncContributionUi(contribution);
-        } catch {
-          this.#markIssue(contribution, 'values-subscribe', 'SETTINGS_VALUES_SUBSCRIPTION_INVALID');
+        } catch (error) {
+          this.#markIssue(contribution, 'values-subscribe', error);
         }
       });
       this.#clearIssues(contribution, ['values-subscribe']);
       this.#syncContributionUi(contribution);
-    } catch {
-      this.#markIssue(contribution, 'values-subscribe', 'SETTINGS_VALUES_SUBSCRIPTION_UNAVAILABLE');
-      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachValuesSubscription(contribution, nextAttempt));
+    } catch (error) {
+      this.#markIssue(contribution, 'values-subscribe', error);
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachValuesSubscription(contribution, nextAttempt), contribution.issues['values-subscribe']!);
     }
   }
 
@@ -558,15 +567,15 @@ export class SettingsHost {
           this.#clearIssues(contribution, ['status-load', 'status-subscribe']);
           this.#syncStatusUi(contribution);
           this.#syncContributionUi(contribution);
-        } catch {
-          this.#markIssue(contribution, 'status-subscribe', 'SETTINGS_STATUS_SUBSCRIPTION_INVALID');
+        } catch (error) {
+          this.#markIssue(contribution, 'status-subscribe', error);
         }
       });
       this.#clearIssues(contribution, ['status-subscribe']);
       this.#syncContributionUi(contribution);
-    } catch {
-      this.#markIssue(contribution, 'status-subscribe', 'SETTINGS_STATUS_SUBSCRIPTION_UNAVAILABLE');
-      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachStatusSubscription(contribution, nextAttempt));
+    } catch (error) {
+      this.#markIssue(contribution, 'status-subscribe', error);
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachStatusSubscription(contribution, nextAttempt), contribution.issues['status-subscribe']!);
     }
   }
 
@@ -580,15 +589,15 @@ export class SettingsHost {
           this.#clearIssues(contribution, ['field-state-load', 'field-state-subscribe']);
           this.#syncFieldStateUi(contribution);
           this.#syncContributionUi(contribution);
-        } catch {
-          this.#markIssue(contribution, 'field-state-subscribe', 'SETTINGS_FIELD_STATE_SUBSCRIPTION_INVALID');
+        } catch (error) {
+          this.#markIssue(contribution, 'field-state-subscribe', error);
         }
       });
       this.#clearIssues(contribution, ['field-state-subscribe']);
       this.#syncContributionUi(contribution);
-    } catch {
-      this.#markIssue(contribution, 'field-state-subscribe', 'SETTINGS_FIELD_STATE_SUBSCRIPTION_UNAVAILABLE');
-      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachFieldStateSubscription(contribution, nextAttempt));
+    } catch (error) {
+      this.#markIssue(contribution, 'field-state-subscribe', error);
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => this.#attachFieldStateSubscription(contribution, nextAttempt), contribution.issues['field-state-subscribe']!);
     }
   }
 
@@ -603,10 +612,10 @@ export class SettingsHost {
       if (contribution.issues.persistence === undefined) contribution.saveState = 'idle';
       this.#syncValuesUi(contribution);
       this.#syncContributionUi(contribution);
-    } catch {
+    } catch (error) {
       if (!contribution.active || revision !== contribution.valuesRevision) return;
-      this.#markIssue(contribution, 'values-load', 'SETTINGS_VALUES_LOAD_FAILED');
-      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#load(contribution, nextAttempt); });
+      this.#markIssue(contribution, 'values-load', error);
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#load(contribution, nextAttempt); }, contribution.issues['values-load']!);
     }
   }
 
@@ -620,10 +629,10 @@ export class SettingsHost {
       this.#clearIssues(contribution, ['status-load']);
       this.#syncStatusUi(contribution);
       this.#syncContributionUi(contribution);
-    } catch {
+    } catch (error) {
       if (!contribution.active || revision !== contribution.statusRevision) return;
-      this.#markIssue(contribution, 'status-load', 'SETTINGS_STATUS_LOAD_FAILED');
-      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#loadStatus(contribution, nextAttempt); });
+      this.#markIssue(contribution, 'status-load', error);
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#loadStatus(contribution, nextAttempt); }, contribution.issues['status-load']!);
     }
   }
 
@@ -637,11 +646,22 @@ export class SettingsHost {
       this.#clearIssues(contribution, ['field-state-load']);
       this.#syncFieldStateUi(contribution);
       this.#syncContributionUi(contribution);
-    } catch {
+    } catch (error) {
       if (!contribution.active || revision !== contribution.fieldStateRevision) return;
-      this.#markIssue(contribution, 'field-state-load', 'SETTINGS_FIELD_STATE_LOAD_FAILED');
-      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#loadFieldState(contribution, nextAttempt); });
+      this.#markIssue(contribution, 'field-state-load', error);
+      this.#scheduleRetry(contribution, attempt, (nextAttempt) => { void this.#loadFieldState(contribution, nextAttempt); }, contribution.issues['field-state-load']!);
     }
+  }
+
+  async reload(pluginId: string): Promise<void> {
+    const contribution = this.#contributions.get(pluginId);
+    if (contribution === undefined || !contribution.active) return;
+    for (const timer of contribution.retryTimers) clearTimeout(timer);
+    contribution.retryTimers.clear();
+    this.#attachValuesSubscription(contribution);
+    this.#attachStatusSubscription(contribution);
+    this.#attachFieldStateSubscription(contribution);
+    await Promise.all([this.#load(contribution), this.#loadStatus(contribution), this.#loadFieldState(contribution)]);
   }
 
   async save(pluginId: string, values: SettingsValues): Promise<void> {
@@ -664,12 +684,13 @@ export class SettingsHost {
           this.#clearIssues(contribution, ['persistence', 'values-load']);
           this.#syncContributionUi(contribution);
         }
-      } catch {
+      } catch (error) {
         if (revision === contribution.saveRevision) {
           contribution.values = contribution.committedValues;
-          this.#markIssue(contribution, 'persistence', 'SETTINGS_SAVE_FAILED', false);
+          this.#markIssue(contribution, 'persistence', error, false);
         }
-        throw new SSHelperError('INTERNAL', '插件设置保存失败', { pluginId });
+        const failure = readSSHelperFailure(error, { reasonCode: error instanceof SSHelperError && error.code === 'INVALID_PAYLOAD' ? 'INVALID_PAYLOAD' : 'SETTINGS_SAVE_FAILED', stage: 'core.settings.save' })!;
+        throw createSSHelperError(failure.reasonCode, failure);
       }
     });
     contribution.saveQueue = operation.catch(() => undefined);
@@ -695,7 +716,7 @@ export class SettingsHost {
         this.#fieldErrors.delete(pluginId);
         this.#renderAll();
         return values;
-      } catch {
+      } catch (error) {
         if (contribution.active && revision === contribution.saveRevision) {
           try {
             const authoritative = validateValues(contribution.schema, await contribution.adapter.load(), 'settings_reset_recovery');
@@ -704,9 +725,10 @@ export class SettingsHost {
               contribution.committedValues = authoritative;
             }
           } catch { /* retain the last committed values when authoritative reload also fails */ }
-          if (contribution.active && revision === contribution.saveRevision) this.#markIssue(contribution, 'persistence', 'SETTINGS_RESET_FAILED');
+          if (contribution.active && revision === contribution.saveRevision) this.#markIssue(contribution, 'persistence', error);
         }
-        throw new SSHelperError('INTERNAL', '插件设置恢复失败', { pluginId });
+        const failure = readSSHelperFailure(error, { reasonCode: error instanceof SSHelperError && error.code === 'INVALID_PAYLOAD' ? 'INVALID_PAYLOAD' : 'SETTINGS_SAVE_FAILED', stage: 'core.settings.reset' })!;
+        throw createSSHelperError(failure.reasonCode, failure);
       }
     });
     contribution.saveQueue = operation.then(() => undefined, () => undefined);
@@ -718,7 +740,7 @@ export class SettingsHost {
       ...entry.identity,
       schema: entry.schema,
       health: entry.health,
-      ...(entry.lastError === undefined ? {} : { lastError: entry.lastError }),
+      ...(entry.failure === undefined ? {} : { failure: entry.failure }),
       values: Object.freeze(Object.fromEntries(Object.entries(entry.values).map(([key, value]) => {
         const field = fields(entry.schema).find((candidate) => candidate.id === key);
         return [key, field?.kind === 'text' && field.secret === true ? '[REDACTED]' : value];
@@ -943,6 +965,15 @@ export class SettingsHost {
     status.append(icon(document, footerState === 'error' || footerState === 'warning' ? 'circle-exclamation' : footerState === 'saving' ? 'rotate' : 'circle-check'));
     const statusText = document.createElement('span'); statusText.textContent = this.#saveStateText(contribution); status.append(statusText);
     const actions = document.createElement('div'); actions.className = 'stx-center-footer-actions';
+    const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'stx-ui-btn stx-ui-btn-neutral'; retry.dataset.settingsRetry = 'true'; retry.id = domId(identity.id, 'retry'); retry.hidden = contribution.health === 'healthy'; setButtonLabel(document, retry, 'arrow-rotate-left', '重新读取');
+    retry.addEventListener('click', () => {
+      void this.reload(identity.id).then(() => {
+        if (!contribution.active || contribution.failure === undefined) return;
+        const failure = describeSSHelperFailure(contribution.failure);
+        this.toasts?.show(contribution.scope, { level: 'error', code: failure.reasonCode, title: failure.title, message: this.#saveStateText(contribution) });
+      });
+    });
+    actions.append(retry);
     for (const field of actionFields(schema).filter((candidate) => candidate.placement !== 'inline')) {
       const action = document.createElement('button'); action.type = 'button'; action.className = `stx-ui-btn stx-ui-btn-${field.tone ?? 'neutral'}`; action.disabled = this.#disabledReason(contribution, field) !== undefined; action.textContent = field.buttonLabel ?? field.label;
       action.id = domId(identity.id, field.id);
@@ -1400,11 +1431,9 @@ export class SettingsHost {
 
   #saveStateText(contribution: Contribution): string {
     if (contribution.saveState === 'saving') return '正在自动保存…';
-    if (contribution.saveState === 'error' || contribution.issues.persistence !== undefined) return '保存失败，请检查设置';
-    if (contribution.issues['values-load'] !== undefined || contribution.issues['values-subscribe'] !== undefined) return '设置读取失败，正在等待恢复';
-    if (contribution.issues['status-load'] !== undefined || contribution.issues['status-subscribe'] !== undefined
-      || contribution.issues['field-state-load'] !== undefined || contribution.issues['field-state-subscribe'] !== undefined) {
-      return '部分状态暂不可用，设置仍可保存';
+    if (contribution.failure !== undefined) {
+      const failure = describeSSHelperFailure(contribution.failure);
+      return `${failure.reasonCode} · ${failure.title}：${failure.reason} ${failure.action}${failure.path || failure.expected ? ` 定位：${failure.path ?? failure.expected}` : ''}${failure.requestId ? `（${failure.requestId}）` : ''}`;
     }
     if (contribution.saveState === 'saved') return '设置已自动保存';
     return '修改后自动保存';
@@ -1424,6 +1453,8 @@ export class SettingsHost {
     for (const node of Array.from(document.querySelectorAll<HTMLElement>('[data-plugin-id]'))) {
       if (node.dataset.pluginId !== contribution.identity.id) continue;
       node.dataset.health = contribution.health;
+      const retry = node.querySelector<HTMLButtonElement>('[data-settings-retry]');
+      if (retry !== null) retry.hidden = contribution.health === 'healthy';
       for (const badge of Array.from(node.querySelectorAll<HTMLElement>('[data-health-badge]'))) {
         if (badge.classList.contains('stx-health-dot')) badge.className = `stx-health-dot stx-health-dot-${contribution.health}`;
         else { badge.className = `stx-ui-badge stx-ui-badge-${contribution.health === 'healthy' ? 'success' : 'warning'}`; badge.textContent = contribution.health === 'healthy' ? '正常' : '需检查'; }

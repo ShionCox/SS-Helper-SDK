@@ -84,9 +84,9 @@ export class CoreRuntime {
       this.diagnosticsStore.record({ type: 'core.ui.icon.degraded', code: 'CUSTOM_ELEMENT_UNAVAILABLE' });
     }
     this.bus = new MessageBus(this.diagnosticsStore);
-    this.settings = new SettingsHost(this.descriptor);
-    this.popups = new PopupHost(document);
     this.toasts = new ToastHost(document, this.diagnosticsStore);
+    this.settings = new SettingsHost(this.descriptor, this.toasts);
+    this.popups = new PopupHost(document);
     this.chatIndicators = new ChatIndicatorHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
     this.chatMessageActions = new ChatMessageActionHost(document, options.hostAdapter ?? {}, this.diagnosticsStore);
     this.extensionMenus = new ExtensionMenuHost(document, this.diagnosticsStore, this.toasts);

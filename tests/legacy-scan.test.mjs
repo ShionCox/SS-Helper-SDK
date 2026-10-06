@@ -66,14 +66,38 @@ test('legacy scan exempts only named assertion files', () => {
   } finally { [sdk, llm, memory].forEach((root) => rmSync(root, { recursive: true, force: true })); }
 });
 
-test('legacy scan fails closed when a tracked file cannot be read', () => {
+test('legacy scan excludes files deleted in the working tree', () => {
   const sdk = makeRepo(); const llm = makeRepo(); const memory = makeRepo();
   try {
     trackMissingFile(sdk, 'missing.ts');
     const failure = runScan('--sdk-root', sdk, '--llm-root', llm, '--memory-root', memory);
-    assert.equal(failure.status, 1);
-    assert.match(failure.stderr, /SDK\/Core \[production\] missing\.ts: unable to read tracked file/);
+    assert.equal(failure.status, 0, failure.stderr);
   } finally { [sdk, llm, memory].forEach((root) => rmSync(root, { recursive: true, force: true })); }
+});
+
+test('legacy scan reads Unicode paths and scans untracked files', () => {
+  const sdk = makeRepo();
+  try {
+    writeFileSync(join(sdk, '中文说明.md'), '当前契约。\n');
+    commit(sdk);
+    assert.equal(runScan('--sdk-root', sdk).status, 0);
+    writeFileSync(join(sdk, '未提交.ts'), 'window.STX.doThing();\n');
+    const failure = runScan('--sdk-root', sdk);
+    assert.equal(failure.status, 1);
+    assert.match(failure.stderr, /未提交\.ts: raw consumer global/);
+  } finally { rmSync(sdk, { recursive: true, force: true }); }
+});
+
+test('redaction fixture masks do not allow other credential literals', () => {
+  const llm = makeRepo();
+  try {
+    mkdirSync(join(llm, 'test'));
+    const file = join(llm, 'test/log-sanitizer.test.mjs');
+    writeFileSync(file, "const fixture = { authorization: 'Bearer private-token' };\n");
+    assert.equal(runScan('--llm-root', llm).status, 0);
+    writeFileSync(file, "const fixture = { authorization: 'Bearer private-token', Authorization: 'Bearer accidental-key' };\n");
+    assert.equal(runScan('--llm-root', llm).status, 1);
+  } finally { rmSync(llm, { recursive: true, force: true }); }
 });
 
 test('historical markers do not broadly bypass prohibited documentation patterns', () => {

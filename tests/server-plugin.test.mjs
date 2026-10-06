@@ -99,6 +99,19 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
     assert.equal(result.status, 200);
     result = await bridge(routes, 'ss-helper.memory', 'workspace.commit', { id: 'character:hero', idempotencyKey: 'put-1', operations: [{ action: 'put', collection: 'default', id: 'fact-1', value: { text: 'shared' } }] });
     assert.equal(result.payload.data.results[0].recordId, 'fact-1');
+    const oversized = await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
+      id: 'character:hero', idempotencyKey: 'oversized-audit', operations: [
+        { action: 'put', collection: 'default', id: 'before-oversize', value: { text: 'must roll back' } },
+        { action: 'put', collection: 'default', id: 'oversized', value: { text: 'x'.repeat(1024 * 1024) } },
+      ],
+    });
+    assert.equal(oversized.status, 400);
+    assert.equal(oversized.payload.details.reasonCode, 'WORKSPACE_RECORD_TOO_LARGE');
+    assert.equal(oversized.payload.details.collection, 'default');
+    assert.equal(oversized.payload.details.stage, 'server.workspace.write');
+    assert.equal(oversized.payload.details.requestId, 'test:ss-helper.memory:workspace.commit');
+    const rolledBackSize = await bridge(routes, 'ss-helper.memory', 'workspace.get', { workspaceId: 'character:hero', collection: 'default', recordId: 'before-oversize' });
+    assert.equal(rolledBackSize.payload.data, null);
     const createdForResurrection = await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
       id: 'character:hero',
       idempotencyKey: 'resurrection-put-1',

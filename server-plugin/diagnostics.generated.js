@@ -88,6 +88,9 @@ export const SERVER_DIAGNOSTICS = Object.freeze({
   "WORKSPACE_NOT_FOUND": {
     "transportCode": "NOT_FOUND"
   },
+  "WORKSPACE_RECORD_TOO_LARGE": {
+    "transportCode": "INVALID_PAYLOAD"
+  },
   "WORKSPACE_RECOVERY_BACKUP_FAILED": {
     "transportCode": "INTERNAL"
   },

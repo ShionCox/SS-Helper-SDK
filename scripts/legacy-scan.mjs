@@ -88,28 +88,38 @@ const classification = (file) => {
   if (/(^|\/)(scripts|test|tests|fixtures)\//i.test(file) || /(?:manifest|package)\.json$/i.test(file)) return 'executable/fixture/manifest';
   return 'production';
 };
+// Mask only the intentional negative fixture, shared test DOM import, and fake
+// redaction inputs. Other occurrences in these same files remain prohibited.
+const fixtureInputs = new Map([
+  ['SDK/Core:tests/fixtures/compile/negative.ts', new Map([['legacy route string field', /route: 'x'/g]])],
+  ['LLM:test/configuration-popups.test.mjs', new Map([['stale SDK-relative import', /import \{ FakeDocument \} from '\.\.\/\.\.\/SS-Helper-SDK\/tests\/helpers\/fake-dom\.mjs';/g]])],
+  ['LLM:test/log-sanitizer.test.mjs', new Map([['secret probing', /authorization: 'Bearer private-token'/g]])],
+  ['LLM:test/request-log-lifecycle.test.mjs', new Map([['secret probing', /authorization: 'Bearer private-tool-token'/g]])],
+]);
 let violations = 0;
 for (const [name, root] of roots) {
   if (!existsSync(root)) {
     console.error(`${name}: root missing: ${root}`); violations += 1; continue;
   }
   let files;
-  try { files = execFileSync('git', ['-C', root, 'ls-files'], { encoding: 'utf8' }).trim().split(/\r?\n/).filter(Boolean); }
+  try { files = [...new Set(execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8' }).split('\0').filter(Boolean))]; }
   catch { console.error(`${name}: must be a Git worktree: ${root}`); violations += 1; continue; }
   const counts = { production: 0, 'executable/fixture/manifest': 0, 'docs/package': 0 };
   for (const file of files) {
     const category = classification(file); counts[category] += 1;
     if (namedExemptions.get(name)?.has(file)) continue;
     const full = resolve(root, file);
+    if (!existsSync(full)) continue; // Tracked files deleted in the working tree are no longer code.
     let text;
-    try { text = readFileSync(full, 'utf8'); }
+    try { const bytes = readFileSync(full); if (bytes.includes(0)) continue; text = bytes.toString('utf8'); }
     catch (error) {
       console.error(`${name} [${category}] ${file}: unable to read tracked file (${error.code ?? error.message})`);
       violations += 1;
       continue;
     }
     for (const [label, matcher] of patterns) {
-      if (!matcher.test(text)) continue;
+      const fixture = fixtureInputs.get(`${name}:${file}`)?.get(label);
+      if (!matcher.test(fixture ? text.replace(fixture, '') : text)) continue;
       const requiredMarker = historicalEvidenceExceptions.get(name)?.get(file)?.get(label);
       if (category === 'docs/package' && requiredMarker && text.includes(requiredMarker)) continue;
       console.error(`${name} [${category}] ${file}: ${label}`); violations += 1;

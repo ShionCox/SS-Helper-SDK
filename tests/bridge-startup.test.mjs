@@ -70,7 +70,7 @@ test('handled bridge errors are not retried as startup failures', async () => {
         if (operation === 'workspace.health') {
           return { status: 200, ok: true, body: { ok: true, data: { ready: true } } };
         }
-        return { status: 409, ok: false, body: { ok: false, error: 'WORKSPACE_CONFLICT', details: { reasonCode: 'WORKSPACE_CONFLICT', stage: 'server.workspace', requestId: request.body.requestId } } };
+        return { status: 409, ok: false, body: { ok: false, error: 'WORKSPACE_CONFLICT', details: { stage: 'server.workspace', requestId: request.body.requestId } } };
       },
     },
   }, { startupDeadlineMs: 100, startupRetryDelaysMs: [0] });
@@ -94,7 +94,7 @@ test('invalid payload exposes only the server safe validation reason', async () 
         return {
           status: 400,
           ok: false,
-          body: { ok: false, error: 'INVALID_PAYLOAD', details: { reasonCode: 'INVALID_PAYLOAD', stage: 'server.validation', requestId: request.body.requestId } },
+          body: { ok: false, error: 'INVALID_PAYLOAD', details: { stage: 'server.validation', requestId: request.body.requestId } },
         };
       },
     },
@@ -118,7 +118,7 @@ test('structured missing-workspace result is returned once and never mistaken fo
         if (operation === 'workspace.health') {
           return { status: 200, ok: true, body: { ok: true, data: { ready: true } } };
         }
-        return { status: 200, ok: true, body: { ok: false, error: 'WORKSPACE_NOT_FOUND', details: { reasonCode: 'WORKSPACE_NOT_FOUND', stage: 'server.workspace', requestId: request.body.requestId } } };
+        return { status: 200, ok: true, body: { ok: false, error: 'WORKSPACE_NOT_FOUND', details: { stage: 'server.workspace', requestId: request.body.requestId } } };
       },
     },
   }, { startupDeadlineMs: 100, startupRetryDelaysMs: [0] });

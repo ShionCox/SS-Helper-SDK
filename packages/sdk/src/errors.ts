@@ -54,6 +54,9 @@ const diagnostic = (
  */
 export const SS_HELPER_DIAGNOSTICS = Object.freeze({
   INTERNAL_ERROR: diagnostic('INTERNAL', '程序内部错误', '当前步骤发生了无法进一步分类的内部异常。', '保留请求 ID 和步骤信息后重试；持续出现时检查服务日志。', false),
+  SETTINGS_READ_FAILED: diagnostic('INTERNAL', '设置读取失败', '设置适配器暂时无法提供有效设置或状态。', '检查插件与存储状态后点击重新读取；持续失败时保留诊断信息。', true),
+  SETTINGS_SAVE_FAILED: diagnostic('INTERNAL', '设置保存失败', '设置适配器未能提交本次修改，界面已回滚。', '检查插件与存储状态后重新保存。', true),
+  LLM_TASK_REQUIREMENT_UNSUPPORTED: diagnostic('INVALID_PAYLOAD', '任务能力要求无法满足', '当前资源或执行方式不支持任务声明的必需能力。', '选择支持该能力的资源并完成验证，或修正任务能力声明。', false),
   CLIPBOARD_WRITE_FAILED: diagnostic('INTERNAL', '复制失败', '浏览器未允许当前页面写入剪贴板。', '检查浏览器剪贴板权限后重新点击复制。', true),
   CANCELLED: diagnostic('ABORTED', '操作已取消', '用户在操作完成前主动取消了请求。', '如仍需执行，请重新发起操作。', false),
   REQUEST_ABORTED: diagnostic('ABORTED', '请求已中止', '请求关联的中止信号在完成前触发。', '确认当前会话仍有效后重新操作。', false),
@@ -82,6 +85,7 @@ export const SS_HELPER_DIAGNOSTICS = Object.freeze({
   WORKSPACE_ACCESS_DENIED: diagnostic('FORBIDDEN', '工作区访问被拒绝', '当前插件不是该工作区的所有者。', '检查插件身份和工作区绑定。', false),
   WORKSPACE_NOT_FOUND: diagnostic('NOT_FOUND', '工作区数据不存在', '请求的工作区、集合或记录尚未创建。', '先初始化对应工作区后重试。', true),
   WORKSPACE_CONFLICT: diagnostic('CONFLICT', '工作区数据发生并发冲突', '写入所依据的 revision 已被其他操作更新。', '重新读取最新数据后重试。', true),
+  WORKSPACE_RECORD_TOO_LARGE: diagnostic('INVALID_PAYLOAD', '工作区记录超过大小限制', '单条记录的序列化内容超过工作区允许的上限。', '缩小记录或将审计快照分块后重新提交；无需重新调用模型。', false),
   WORKSPACE_INDEX_REQUIRED: diagnostic('INVALID_PAYLOAD', '工作区索引未声明', '查询字段没有在 Workspace Schema 中声明索引。', '更新集合 Schema 后重新打开工作区。', false),
   WORKSPACE_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', '工作区服务不可用', 'SDK 工作区服务当前无法完成请求。', '检查服务端插件和数据目录权限。', true),
   WORKSPACE_DATABASE_UNAVAILABLE: diagnostic('CORE_UNAVAILABLE', 'SQLite 数据库不可用', '工作区数据库无法打开或初始化。', '检查数据目录权限与服务端日志。', true),
@@ -220,7 +224,7 @@ function plainRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function safeContextValue(key: string, value: unknown): string | number | undefined {
+function safeContextValue(value: unknown): string | number | undefined {
   if (typeof value === 'string' && value.length > 0 && value.length <= 256) return value;
   if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
   return undefined;
@@ -251,7 +255,7 @@ export function readSSHelperFailure(
   if (reasonCode === undefined || stage === undefined) return undefined;
   const output: Record<string, string | number> = { reasonCode, stage };
   for (const key of contextKeys) {
-    const value = safeContextValue(key, details?.[key] ?? source?.[key] ?? fallback?.[key]);
+    const value = safeContextValue(details?.[key] ?? source?.[key] ?? fallback?.[key]);
     if (value !== undefined) output[key] = value;
   }
   return output as unknown as SSHelperFailureContext;

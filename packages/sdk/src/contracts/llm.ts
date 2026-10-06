@@ -197,6 +197,9 @@ export interface LlmToolTurnDiagnostics {
   readonly toolSchemaProfile: ToolSchemaProfile;
   readonly providerAdapterVersion: number;
   readonly capabilitySnapshotId: string;
+  readonly jsonOutputMode?: 'json_object' | 'json_schema' | 'prompt_json';
+  readonly strictToolSchema?: 'native' | 'beta' | 'none';
+  readonly finishReason?: 'stop' | 'tool_calls' | 'length' | 'other';
 }
 export interface LlmToolTurnRequest {
   readonly task: string;
@@ -500,12 +503,15 @@ const normalizedToolResult = (value: unknown): value is NormalizedToolResult => 
   && typeof value.ok === 'boolean'
   && plainData(value.content);
 const toolTurnDiagnostics = (value: unknown): value is LlmToolTurnDiagnostics => record(value)
-  && exact(value, ['toolSessionRound', 'totalCalls', 'toolSchemaProfile', 'providerAdapterVersion', 'capabilitySnapshotId'])
+  && exact(value, ['toolSessionRound', 'totalCalls', 'toolSchemaProfile', 'providerAdapterVersion', 'capabilitySnapshotId'], ['jsonOutputMode', 'strictToolSchema', 'finishReason'])
   && positiveInteger(value.toolSessionRound)
   && nonNegativeInteger(value.totalCalls)
   && value.toolSchemaProfile === 'ss_helper_tool_v0'
   && positiveInteger(value.providerAdapterVersion)
-  && nonEmpty(value.capabilitySnapshotId);
+  && nonEmpty(value.capabilitySnapshotId)
+  && (value.jsonOutputMode === undefined || ['json_object', 'json_schema', 'prompt_json'].includes(String(value.jsonOutputMode)))
+  && (value.strictToolSchema === undefined || ['native', 'beta', 'none'].includes(String(value.strictToolSchema)))
+  && (value.finishReason === undefined || ['stop', 'tool_calls', 'length', 'other'].includes(String(value.finishReason)));
 export const isLlmToolTurnRequest = (value: unknown): value is LlmToolTurnRequest => {
   if (!record(value) || !exact(value, ['task', 'pipelineRunId', 'chatKey'], ['input', 'outputSchema', 'tools', 'toolSessionId', 'toolResults', 'timeoutMs', 'maxTokens', 'parentRequestId', 'trace', 'validationMode', 'validationCollections'])) return false;
   if (!nonEmpty(value.task) || !nonEmpty(value.pipelineRunId) || !nonEmpty(value.chatKey) || !optionalTimeout(value.timeoutMs) || (value.maxTokens !== undefined && (!positiveInteger(value.maxTokens) || value.maxTokens > 65_536)) || !optionalNonEmpty(value.parentRequestId)) return false;

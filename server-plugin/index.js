@@ -125,7 +125,7 @@ function failure(reasonCode, _privateMessage = reasonCode, details = {}) {
   return Object.assign(new Error(reasonCode), {
     name: 'SSHelperError',
     code: SERVER_DIAGNOSTICS[reasonCode]?.transportCode ?? 'INTERNAL',
-    details: { ...details, reasonCode, stage: stageFor(reasonCode) },
+    details: { ...details, reasonCode, stage: details.stage ?? stageFor(reasonCode) },
   });
 }
 function publicErrorCode(error) {
@@ -623,7 +623,7 @@ function updateRecordIndexes(owner, workspace, collection, recordId, value) {
 function writeRecord(owner, workspace, input) {
   const collection = text(input.collection ?? 'default', 'collection');
   const recordId = recordText(input.recordId, `recordId(${collection})`);
-  if (sizeOf(input.value) > MAX_VALUE_BYTES) invalidPayload('record value is too large');
+  if (sizeOf(input.value) > MAX_VALUE_BYTES) throw failure('WORKSPACE_RECORD_TOO_LARGE', undefined, { collection, expected: `serialized UTF-8 value <= ${MAX_VALUE_BYTES} bytes`, stage: 'server.workspace.write' });
   collectionDefinition(owner, workspace, collection);
   const current = storage().database.prepare('SELECT revision, tombstone, created_at FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId);
   const logicalCurrent = Number(current?.tombstone ?? 0) === 1 ? undefined : current;

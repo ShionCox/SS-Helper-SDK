@@ -422,13 +422,16 @@ export const SETTINGS_CSS = `
   min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 20px;
   border-top: 1px solid var(--ss-theme-border); background: rgba(0, 0, 0, .16);
 }
-#ss-helper-settings-center .stx-save-state { display: inline-flex; align-items: center; gap: 8px; color: var(--ss-theme-muted); font-size: .78rem; }
+#ss-helper-settings-center [hidden], #ss-helper-settings-root [hidden] { display: none !important; }
+#ss-helper-settings-center .stx-save-state { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--ss-theme-muted); font-size: .78rem; }
+#ss-helper-settings-center .stx-save-state span { overflow-wrap: anywhere; }
+#ss-helper-settings-center .stx-save-state ss-helper-icon { flex-shrink: 0; }
 #ss-helper-settings-center .stx-save-state-saved { color: #76d687; }
 #ss-helper-settings-center .stx-save-state-saving { color: var(--ss-theme-accent); }
 #ss-helper-settings-center .stx-save-state-warning { color: #e4ad46; }
 #ss-helper-settings-center .stx-save-state-error { color: #ff9797; }
 #ss-helper-settings-center .stx-save-state-saving ss-helper-icon { animation: stx-spin .85s linear infinite; }
-#ss-helper-settings-center .stx-center-footer-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+#ss-helper-settings-center .stx-center-footer-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; flex-shrink: 0; gap: 10px; }
 
 #ss-helper-settings-center .stx-overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 18px 20px; }
 #ss-helper-settings-center .stx-overview-card { min-width: 0; padding: 16px; border: 1px solid var(--ss-theme-border); border-radius: 6px; background: rgba(0, 0, 0, .1); }

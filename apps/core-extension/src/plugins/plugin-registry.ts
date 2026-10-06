@@ -43,7 +43,7 @@ export interface PluginSnapshot {
   readonly generation: number;
   readonly health: 'healthy' | 'degraded';
   readonly compatibility: 'compatible';
-  readonly lastError?: string;
+  readonly failure?: import('@ss-helper/sdk').SSHelperFailureContext;
   readonly capabilities: readonly HostCapability[];
   readonly requestedCapabilities: readonly HostCapability[];
 }
@@ -241,7 +241,7 @@ export class PluginRegistry {
       generation: session.generation,
       health: settings.get(session.descriptor.id)?.health ?? 'healthy' as const,
       compatibility: 'compatible' as const,
-      ...(settings.get(session.descriptor.id)?.lastError === undefined ? {} : { lastError: settings.get(session.descriptor.id)!.lastError }),
+      ...(settings.get(session.descriptor.id)?.failure === undefined ? {} : { failure: settings.get(session.descriptor.id)!.failure }),
       capabilities: Object.freeze([...session.host.capabilities]),
       requestedCapabilities: Object.freeze([...session.descriptor.capabilities]),
     })));
