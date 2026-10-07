@@ -32,9 +32,21 @@ export type PopupSegmentedField = Omit<Extract<SettingsField, { kind: 'radio' }>
   readonly kind: 'segmented';
 };
 export type PopupFormField =
-  | Exclude<SettingsField, { kind: 'section' | 'action' | 'select' }>
+  (Exclude<SettingsField, { kind: 'section' | 'action' | 'select' }>
   | PopupCustomSelectField
-  | PopupSegmentedField;
+  | PopupSegmentedField) & {
+    readonly span?: 'half' | 'full';
+    readonly trailingAction?: { readonly id: string; readonly label: string; readonly icon: string };
+  };
+export interface PopupFormSection {
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly status?: PopupWizardSnapshot['status'];
+  readonly column?: 'primary' | 'secondary';
+  readonly collapsible?: boolean;
+  readonly fields: readonly PopupFormField[];
+}
 export type PopupWizardCheckState = 'idle' | 'running' | 'success' | 'error';
 
 export interface PopupWizardStep {
@@ -68,6 +80,8 @@ export interface PopupWizardDefinition {
   readonly busyLabel?: string;
   readonly aside?: PopupWizardAside;
   readonly confirmDiscard?: PopupDiscardConfirmation;
+  /** Direct editing uses the same fields and close protection without step navigation. */
+  readonly form?: { readonly sections: readonly PopupFormSection[]; readonly description?: string; readonly footerHint?: string };
 }
 
 export interface PopupWizardCheckSnapshot {
@@ -101,6 +115,7 @@ export interface PopupWizardAdapter {
   navigate(stepId: string): void;
   back(): void;
   submit(): void | Promise<void>;
+  action?(actionId: string): void | Promise<void>;
   subscribe?(listener: () => void): () => void;
 }
 
@@ -192,7 +207,7 @@ export interface PopupListDefinition<T> {
   readonly maxCachedPages?: number;
   /** Fixed row height. Omit it to enable measured dynamic rows. */
   readonly itemHeight?: number;
-  /** Visual space between fixed-height rows, reserved inside each row slot. */
+  /** Visual space between rows, reserved inside each fixed or measured row slot. */
   readonly itemGap?: number;
   readonly estimatedItemHeight?: number;
   readonly emptyLabel?: string;
@@ -257,7 +272,7 @@ export interface CoreUiControlContext {
 export interface PopupUiContext extends CoreUiControlContext {
   /** Re-applies Core-owned component behavior after a plugin replaces popup DOM. */
   refreshControls(root?: HTMLElement): void;
-  /** Mounts a Core-owned, accessible multi-step form into the popup. */
+  /** Mounts a Core-owned accessible form, with optional multi-step navigation. */
   mountWizard(definition: PopupWizardDefinition, adapter: PopupWizardAdapter): PopupWizardHandle;
   /** Mounts or reattaches a Core-owned cursor-paged virtual list. */
   mountList<T>(host: HTMLElement, definition: PopupListDefinition<T>): PopupListHandle;

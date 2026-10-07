@@ -9,6 +9,7 @@ import {
 import { coreIdentity, errorCode, pluginDescriptor, TestRealm } from './helpers/runtime-fixture.mjs';
 import { FakeDocument, installFakeDomGlobals } from './helpers/fake-dom.mjs';
 import { createSSHelperError } from '@ss-helper/sdk';
+import { mountPopupList } from '../apps/core-extension/dist/popup/popup-list.js';
 
 function descendants(node) {
   return node.children.flatMap((child) => [child, ...descendants(child)]);
@@ -708,7 +709,7 @@ test('workspace popup exposes a stable presentation marker and shared chrome', a
     assert.equal(dialog.children[3].dataset.popupResizeEdge, 'left');
     assert.equal(dialog.children[3].getAttribute('aria-label'), '从左下角调整窗口大小');
     const coreStyles = document.getElementById('ss-helper-core-ui-styles').textContent;
-    assert.match(coreStyles, /width: min\(96vw, 88rem\); height: min\(92vh, 58rem\)/);
+    assert.match(coreStyles, /width: 96vw; height: 96vh;/);
     assert.match(coreStyles, /\[data-popup-resize-handle="true"\]/);
     assert.match(coreStyles, /\[data-popup-resize-handle="true"\]\[data-popup-resize-edge="left"\]/);
     assert.match(coreStyles, /clip-path: polygon\(100% 0, 100% 100%, 0 100%\); opacity: \.48;/);
@@ -990,6 +991,49 @@ test('throwing popup render rolls back overlay, listeners, session cleanup, and 
   } finally { restore(); }
 });
 
+test('measured popup rows reserve their gap and recalculate it when updated', async () => {
+  const previousObserver = globalThis.ResizeObserver;
+  const observers = new Map();
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; }
+    observe(row) { this.row = row; observers.set(row, this); }
+    disconnect() { observers.delete(this.row); }
+  };
+  let handle;
+  try {
+    const document = new FakeDocument();
+    const host = document.createElement('div');
+    document.body.append(host);
+    const definition = {
+      id: 'measured', ariaLabel: '场景卡片', estimatedItemHeight: 104, itemGap: 8,
+      getKey: item => item.id,
+      loadPage: async () => ({ items: [{ id: 'first' }, { id: 'second' }], nextCursor: null, total: 2 }),
+      renderItem: item => { const row = document.createElement('button'); row.textContent = item.id; return row; },
+    };
+    handle = mountPopupList(document, host, definition);
+    const measure = async () => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      for (const [row, observer] of observers) observer.callback([{ borderBoxSize: [{ blockSize: row.dataset.listIndex === '0' ? 94 : 110 }] }]);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return descendants(handle.element).filter(row => row.dataset.listIndex !== undefined);
+    };
+    let rows = await measure();
+    assert.equal(rows[0].style.top, '4px');
+    assert.equal(rows[1].style.top, '106px');
+    assert.equal(rows[0].style.height, undefined);
+    assert.equal(handle.element.children[0].style.height, '220px');
+    handle.update({ ...definition, itemGap: 12 });
+    rows = await measure();
+    assert.equal(rows[0].style.top, '6px');
+    assert.equal(rows[1].style.top, '112px');
+    assert.equal(handle.element.children[0].style.height, '228px');
+  } finally {
+    handle?.dispose();
+    if (previousObserver === undefined) delete globalThis.ResizeObserver;
+    else globalThis.ResizeObserver = previousObserver;
+  }
+});
+
 test('popup virtual list loads one cursor page, bounds DOM rows, and preserves a stable mounted instance', async () => {
   const restore = installFakeDomGlobals();
   try {
@@ -1197,6 +1241,70 @@ test('Core-owned popup wizard renders fields, gates navigation, updates checks, 
     const styles = document.getElementById('ss-helper-core-ui-styles').textContent;
     assert.match(styles, /\.stx-popup-wizard-content/);
     assert.match(styles, /\.stx-popup-wizard-step\[data-state="current"\]/);
+  } finally { restore(); }
+});
+
+test('Core edit form renders both columns directly, preserves focus, dispatches actions and guards cancel', async () => {
+  const restore = installFakeDomGlobals();
+  try {
+    const document = new FakeDocument();
+    const runtime = installCoreRuntime(coreIdentity(), new TestRealm(), { document });
+    const session = runtime.connect(pluginDescriptor('example.edit-form'));
+    const token = { kind: 'popup', provider: 'example.edit-form', name: 'edit', version: 0 };
+    const state = { activeStepId: 'connection', completedStepIds: [], values: { label: 'Model', model: 'a', mode: 'default' }, dirty: true };
+    const actions = [];
+    let submitted = 0;
+    let update;
+    session.registerPopup({ token, title: 'Edit resource', render: (_container, _input, ui) => ui.mountWizard({
+      id: 'edit', steps: [], submitLabel: 'Test and save', confirmDiscard: { title: 'Discard?', message: 'Unsaved edits' },
+      form: { footerHint: 'Test first', sections: [
+        { id: 'connection', title: 'Connection', fields: [
+          { kind: 'text', id: 'label', label: 'Name', span: 'half' },
+          { kind: 'select', id: 'model', label: 'Model', allowCustom: true, options: [{ value: 'a', label: 'A' }], trailingAction: { id: 'refresh', label: 'Refresh models', icon: 'rotate' } },
+          { kind: 'segmented', id: 'mode', label: 'Mode', options: [{ value: 'default', label: 'Default' }, { value: 'on', label: 'On' }] },
+        ] },
+        { id: 'policy', title: 'Policy', column: 'secondary', fields: [{ kind: 'number', id: 'dimensions', label: 'Dimensions' }] },
+        { id: 'advanced', title: 'Advanced', column: 'secondary', collapsible: true, fields: [{ kind: 'text', id: 'path', label: 'Path' }] },
+        { id: 'health', title: 'Health', column: 'secondary', status: { tone: 'success', message: 'Connected' }, fields: [] },
+      ] },
+    }, {
+      snapshot: () => state, change: (id, value) => { state.values[id] = value; update(); },
+      action: (id) => actions.push(id), navigate() { assert.fail('Edit mode has no navigation'); }, back() {},
+      submit: () => { submitted += 1; }, subscribe: (listener) => { update = listener; return () => {}; },
+    }) });
+    session.ui.openPopup(token, {});
+    const nodes = () => descendants(document.body.children.find((node) => node.dataset.ssHelperPopup !== undefined));
+    assert.equal(nodes().some((node) => node.className === 'stx-popup-wizard-nav'), false);
+    assert.equal(nodes().filter((node) => node.dataset.formSection).length, 4);
+    assert.equal(nodes().find((node) => node.className.includes('stx-popup-editor-section-status')).dataset.tone, 'success');
+    const name = nodes().find((node) => node.dataset.popupWizardField === 'label');
+    name.focus(); name.value = 'Changed'; name.dispatchEvent({ type: 'input' });
+    assert.equal(document.activeElement.dataset.popupWizardField, 'label');
+    assert.equal(state.values.label, 'Changed');
+    const mode = nodes().find((node) => node.dataset.fieldId === 'mode');
+    const enabled = descendants(mode).find((node) => node.textContent === 'On');
+    enabled.focus(); enabled.dispatchEvent({ type: 'click' });
+    assert.equal(document.activeElement.textContent, 'On');
+    assert.equal(document.activeElement.getAttribute('aria-pressed'), 'true');
+    const dimensions = nodes().find((node) => node.dataset.popupWizardField === 'dimensions');
+    dimensions.value = ''; dimensions.dispatchEvent({ type: 'input' });
+    assert.equal(state.values.dimensions, '');
+    state.values.model = 'custom'; update();
+    const customModel = nodes().find((node) => node.dataset.popupWizardField === 'model' && node.tagName === 'INPUT');
+    customModel.focus(); customModel.value = 'custom-model'; customModel.dispatchEvent({ type: 'input' });
+    assert.equal(document.activeElement.tagName, 'INPUT');
+    assert.equal(document.activeElement.value, 'custom-model');
+    state.hiddenFieldIds = ['dimensions']; update();
+    assert.equal(nodes().some((node) => node.dataset.formSection === 'policy'), false);
+    assert.equal(nodes().some((node) => node.dataset.formSection === 'health'), true);
+    nodes().find((node) => node.getAttribute('aria-label') === 'Refresh models').dispatchEvent({ type: 'click' });
+    assert.deepEqual(actions, ['refresh']);
+    nodes().find((node) => node.dataset.popupWizardSubmit === 'true').dispatchEvent({ type: 'click' });
+    assert.equal(submitted, 1);
+    nodes().find((node) => node.dataset.popupFormCancel === 'true').dispatchEvent({ type: 'click' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(document.body.children.find((node) => node.className === 'stx-popup-confirm-overlay'));
+    runtime.dispose();
   } finally { restore(); }
 });
 

@@ -99,15 +99,28 @@ test('SDK internal bridge owns all browser workspace CRUD and rejects old public
     assert.equal(result.status, 200);
     result = await bridge(routes, 'ss-helper.memory', 'workspace.commit', { id: 'character:hero', idempotencyKey: 'put-1', operations: [{ action: 'put', collection: 'default', id: 'fact-1', value: { text: 'shared' } }] });
     assert.equal(result.payload.data.results[0].recordId, 'fact-1');
+    const recordLimit = 10 * 1024 * 1024;
+    const textBytes = recordLimit - Buffer.byteLength(JSON.stringify({ text: '' }));
+    const largeValue = { text: '中'.repeat(Math.floor(textBytes / 3)) + 'x'.repeat(textBytes % 3) };
+    assert.equal(Buffer.byteLength(JSON.stringify(largeValue)), recordLimit);
+    const acceptedSize = await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
+      id: 'character:hero', idempotencyKey: 'record-size-boundary',
+      operations: [{ action: 'put', collection: 'default', id: 'large-record', value: largeValue }],
+    });
+    assert.equal(acceptedSize.payload.ok, true);
+    const restoredSize = await bridge(routes, 'ss-helper.memory', 'workspace.get', { workspaceId: 'character:hero', collection: 'default', recordId: 'large-record' });
+    assert.deepEqual(restoredSize.payload.data.value, largeValue);
+    await bridge(routes, 'ss-helper.memory', 'workspace.commit', { id: 'character:hero', idempotencyKey: 'record-size-cleanup', operations: [{ action: 'delete', collection: 'default', id: 'large-record' }] });
     const oversized = await bridge(routes, 'ss-helper.memory', 'workspace.commit', {
       id: 'character:hero', idempotencyKey: 'oversized-audit', operations: [
         { action: 'put', collection: 'default', id: 'before-oversize', value: { text: 'must roll back' } },
-        { action: 'put', collection: 'default', id: 'oversized', value: { text: 'x'.repeat(1024 * 1024) } },
+        { action: 'put', collection: 'default', id: 'oversized', value: { text: `${largeValue.text}x` } },
       ],
     });
     assert.equal(oversized.status, 400);
     assert.equal(oversized.payload.details.reasonCode, 'WORKSPACE_RECORD_TOO_LARGE');
     assert.equal(oversized.payload.details.collection, 'default');
+    assert.equal(oversized.payload.details.expected, `serialized UTF-8 value <= ${recordLimit} bytes`);
     assert.equal(oversized.payload.details.stage, 'server.workspace.write');
     assert.equal(oversized.payload.details.requestId, 'test:ss-helper.memory:workspace.commit');
     const rolledBackSize = await bridge(routes, 'ss-helper.memory', 'workspace.get', { workspaceId: 'character:hero', collection: 'default', recordId: 'before-oversize' });
@@ -336,6 +349,34 @@ test('SDK bridge stores secrets encrypted and limits them to the LLM policy entr
     module?.exit();
     restoreEnv('SS_HELPER_ST_ROOT', previous);
     try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore Windows SQLite handles */ }
+  }
+});
+
+test('reopening an unchanged schema preserves indexes; changed definitions rebuild them', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'ss-helper-sdk-schema-'));
+  const previous = process.env.SS_HELPER_ST_ROOT;
+  process.env.SS_HELPER_ST_ROOT = root;
+  let module; let db;
+  try {
+    const { routes, router } = createRouter();
+    module = await import(`../server-plugin/index.js?schema=${Date.now()}`);
+    await module.init(router);
+    const open = indexes => bridge(routes, 'ss-helper.memory', 'workspace.open', { id: 'w', schema: { collections: [{ name: 'facts', indexes }] } });
+    assert.equal((await open(['rank', 'kind'])).payload.ok, true);
+    await bridge(routes, 'ss-helper.memory', 'workspace.commit', { id: 'w', idempotencyKey: 'seed', operations: [{ action: 'put', collection: 'facts', id: 'a', value: { rank: 1, kind: 'fact', status: 'ready' } }] });
+    db = new DatabaseSync(module.__test.DB_PATH);
+    db.exec("CREATE TRIGGER detect_rebuild BEFORE DELETE ON workspace_record_indexes BEGIN SELECT RAISE(ABORT, 'unexpected rebuild'); END");
+    assert.equal((await open(['rank', 'kind'])).payload.ok, true);
+    assert.equal((await open(['kind', 'rank', 'rank'])).payload.ok, true);
+    db.exec('DROP TRIGGER detect_rebuild');
+    assert.equal((await open(['status'])).payload.ok, true);
+    const found = await bridge(routes, 'ss-helper.memory', 'workspace.query', { workspaceId: 'w', collection: 'facts', filter: { status: 'ready' } });
+    assert.equal(found.payload.data.records.length, 1);
+    assert.equal((await bridge(routes, 'ss-helper.memory', 'workspace.query', { workspaceId: 'w', collection: 'facts', filter: { rank: 1 } })).payload.error, 'WORKSPACE_INDEX_REQUIRED');
+    assert.equal(db.prepare("SELECT count(*) AS count FROM workspace_record_indexes WHERE field_name IN ('rank', 'kind')").get().count, 0);
+  } finally {
+    db?.close(); module?.exit(); restoreEnv('SS_HELPER_ST_ROOT', previous);
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

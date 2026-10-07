@@ -29,7 +29,8 @@ const TAVERN_ROOT = path.dirname(DATA_ROOT);
 const RECOVERY_BACKUP_ROOT = path.join(TAVERN_ROOT, 'backups');
 const PLUGIN_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BROWSER_ROOT = path.join(PLUGIN_ROOT, 'browser');
-const MAX_VALUE_BYTES = 1024 * 1024;
+const MAX_WORKSPACE_RECORD_BYTES = 10 * 1024 * 1024;
+const MAX_SECRET_VALUE_BYTES = 1024 * 1024;
 const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 const MAX_PAGE_SIZE = 1000;
 const MAX_TRANSACTION_OPERATIONS = 5000;
@@ -623,7 +624,7 @@ function updateRecordIndexes(owner, workspace, collection, recordId, value) {
 function writeRecord(owner, workspace, input) {
   const collection = text(input.collection ?? 'default', 'collection');
   const recordId = recordText(input.recordId, `recordId(${collection})`);
-  if (sizeOf(input.value) > MAX_VALUE_BYTES) throw failure('WORKSPACE_RECORD_TOO_LARGE', undefined, { collection, expected: `serialized UTF-8 value <= ${MAX_VALUE_BYTES} bytes`, stage: 'server.workspace.write' });
+  if (sizeOf(input.value) > MAX_WORKSPACE_RECORD_BYTES) throw failure('WORKSPACE_RECORD_TOO_LARGE', undefined, { collection, expected: `serialized UTF-8 value <= ${MAX_WORKSPACE_RECORD_BYTES} bytes`, stage: 'server.workspace.write' });
   collectionDefinition(owner, workspace, collection);
   const current = storage().database.prepare('SELECT revision, tombstone, created_at FROM workspace_records WHERE owner_plugin_id = ? AND workspace_id = ? AND collection = ? AND record_id = ?').get(owner, workspace, collection, recordId);
   const logicalCurrent = Number(current?.tombstone ?? 0) === 1 ? undefined : current;
@@ -1076,9 +1077,12 @@ function executeBridgeOperation(caller, operation, input) {
         storage().database.prepare('INSERT INTO workspaces(owner_plugin_id, workspace_id, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(owner, workspaceId, json(input.metadata ?? {}), t, t);
       }
       const declareCollection = storage().database.prepare('INSERT INTO workspace_collections(owner_plugin_id, workspace_id, name, indexes_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, name) DO UPDATE SET indexes_json = excluded.indexes_json, updated_at = excluded.updated_at');
+      const readDefinition = storage().database.prepare('SELECT indexes_json FROM workspace_collections WHERE owner_plugin_id = ? AND workspace_id = ? AND name = ?');
       for (const declaration of declaredCollections) {
         const name = text(declaration?.name, 'collection');
         const indexes = Array.isArray(declaration?.indexes) ? [...new Set(declaration.indexes.map((field) => fieldText(field)))] : [];
+        const previous = readDefinition.get(owner, workspaceId, name);
+        if (previous && json([...parse(previous.indexes_json)].sort()) === json([...indexes].sort())) continue;
         declareCollection.run(owner, workspaceId, name, json(indexes), t, t);
         rebuildCollectionIndexes(owner, workspaceId, name);
       }
@@ -1164,7 +1168,7 @@ function executeBridgeOperation(caller, operation, input) {
     const secretId = text(input.secretId, 'secretId');
     if (operation === 'secrets.get') { const row = storage().database.prepare('SELECT * FROM workspace_secrets WHERE owner_plugin_id = ? AND workspace_id = ? AND secret_id = ?').get(caller, workspace, secretId); if (!row) return null; const value = decryptSecret(caller, workspace, secretId, row); return { secretId, metadata: parse(row.metadata_json), maskedValue: maskSecret(value), value, updatedAt: row.updated_at, keyVersion: row.key_version }; }
     if (operation === 'secrets.delete') return Number(storage().database.prepare('DELETE FROM workspace_secrets WHERE owner_plugin_id = ? AND workspace_id = ? AND secret_id = ?').run(caller, workspace, secretId).changes) > 0;
-    if (typeof input.value !== 'string' || input.value.length > MAX_VALUE_BYTES) invalidPayload('secret value is invalid');
+    if (typeof input.value !== 'string' || input.value.length > MAX_SECRET_VALUE_BYTES) invalidPayload('secret value is invalid');
     const encrypted = encryptSecret(caller, workspace, secretId, input.value); const t = now(); storage().database.prepare('INSERT INTO workspace_secrets(owner_plugin_id, workspace_id, secret_id, ciphertext, iv, auth_tag, key_version, metadata_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, secret_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, auth_tag = excluded.auth_tag, key_version = excluded.key_version, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at').run(caller, workspace, secretId, encrypted.ciphertext, encrypted.iv, encrypted.authTag, SECRET_KEY_VERSION, json(input.metadata), t); return { secretId, metadata: input.metadata ?? null, maskedValue: maskSecret(input.value), updatedAt: t, keyVersion: SECRET_KEY_VERSION };
   }
   throw failure('BRIDGE_OPERATION_DENIED');
@@ -1272,7 +1276,7 @@ function serverSecretSession(pluginId, capabilities, assertActive) {
   return Object.freeze({
     set: async (input) => {
       requireCapability('secrets.write'); const workspace = requireOwnedWorkspace(input.workspaceId); const secretId = text(input.secretId, 'secretId');
-      if (typeof input.value !== 'string' || input.value.length > MAX_VALUE_BYTES) invalidPayload('secret value is invalid');
+      if (typeof input.value !== 'string' || input.value.length > MAX_SECRET_VALUE_BYTES) invalidPayload('secret value is invalid');
       const encrypted = encryptSecret(pluginId, workspace, secretId, input.value); const t = now();
       storage().database.prepare('INSERT INTO workspace_secrets(owner_plugin_id, workspace_id, secret_id, ciphertext, iv, auth_tag, key_version, metadata_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_plugin_id, workspace_id, secret_id) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, auth_tag = excluded.auth_tag, key_version = excluded.key_version, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at').run(pluginId, workspace, secretId, encrypted.ciphertext, encrypted.iv, encrypted.authTag, SECRET_KEY_VERSION, json(input.metadata), t);
       return { secretId, metadata: input.metadata ?? null, maskedValue: maskSecret(input.value), updatedAt: t, keyVersion: SECRET_KEY_VERSION };

@@ -89,10 +89,9 @@ export function mountPopupList<T>(
   const maxPages = (): number => positiveInteger(definition.maxCachedPages, DEFAULT_MAX_PAGES);
   const estimatedHeight = (): number => positiveInteger(definition.itemHeight ?? definition.estimatedItemHeight, DEFAULT_ESTIMATED_HEIGHT);
   const itemGap = (): number => {
-    if (definition.itemHeight === undefined) return 0;
     const requested = Number(definition.itemGap ?? 0);
     return Number.isFinite(requested)
-      ? Math.min(Math.max(0, requested), Math.max(0, definition.itemHeight - 1))
+      ? Math.min(Math.max(0, requested), Math.max(0, estimatedHeight() - 1))
       : 0;
   };
   const loadedCount = (): number => nextPageIndex * pageSize();
@@ -220,7 +219,7 @@ export function mountPopupList<T>(
             ?? row.getBoundingClientRect().height
             ?? entry?.contentRect.height
             ?? 0);
-          if (height > 0 && setMeasuredHeight(index, height)) {
+          if (height > 0 && setMeasuredHeight(index, height + gap)) {
             scheduleRender();
           }
         });
@@ -417,7 +416,8 @@ export function mountPopupList<T>(
     update: (nextDefinition) => {
       if (disposed) return;
       const heightModelChanged = definition.itemHeight !== nextDefinition.itemHeight
-        || definition.estimatedItemHeight !== nextDefinition.estimatedItemHeight;
+        || definition.estimatedItemHeight !== nextDefinition.estimatedItemHeight
+        || definition.itemGap !== nextDefinition.itemGap;
       definition = nextDefinition;
       if (heightModelChanged) {
         measuredHeights.clear();

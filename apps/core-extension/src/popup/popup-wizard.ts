@@ -59,6 +59,7 @@ function appendError(document: Document, parent: HTMLElement, id: string, value:
 
 class PopupWizardController implements MountedPopupWizard {
   readonly #revealedSecrets = new Set<string>();
+  readonly #expandedSections = new Set<string>();
   readonly #unsubscribe: () => void;
   #active = true;
   #snapshot: PopupWizardSnapshot;
@@ -69,6 +70,7 @@ class PopupWizardController implements MountedPopupWizard {
     private readonly definition: PopupWizardDefinition,
     private readonly adapter: PopupWizardAdapter,
     private readonly confirm: (options: PopupConfirmationOptions) => Promise<boolean>,
+    private readonly requestClose: () => void,
   ) {
     this.#snapshot = adapter.snapshot();
     this.#unsubscribe = adapter.subscribe?.(() => this.update()) ?? (() => undefined);
@@ -90,7 +92,7 @@ class PopupWizardController implements MountedPopupWizard {
     const selectionEnd = active?.selectionEnd;
     this.#render();
     if (restoreFieldId !== undefined) {
-      const next = this.container.querySelector<HTMLInputElement>(`[data-popup-wizard-field="${restoreFieldId}"]`);
+      const next = this.#fieldControl(restoreFieldId);
       next?.focus();
       if (next !== null && next !== undefined && selectionStart !== null && selectionStart !== undefined) {
         try { next.setSelectionRange(selectionStart, selectionEnd ?? selectionStart); } catch { /* Not all input types expose a text selection. */ }
@@ -99,7 +101,12 @@ class PopupWizardController implements MountedPopupWizard {
   }
 
   focusField(fieldId: string): void {
-    this.container.querySelector<HTMLElement>(`[data-popup-wizard-field="${idPart(fieldId)}"]`)?.focus();
+    this.#fieldControl(fieldId)?.focus();
+  }
+
+  #fieldControl(fieldId: string): HTMLInputElement | undefined {
+    const controls = Array.from(this.container.querySelectorAll<HTMLInputElement>(`[data-popup-wizard-field="${idPart(fieldId)}"]`));
+    return controls.find((control) => control.getAttribute('aria-pressed') === 'true' || control.checked === true) ?? controls[0];
   }
 
   dispose(): void {
@@ -110,6 +117,7 @@ class PopupWizardController implements MountedPopupWizard {
   }
 
   #render(): void {
+    if (this.definition.form !== undefined) { this.#renderForm(); return; }
     const snapshot = this.#snapshot;
     const steps = this.definition.steps;
     const activeIndex = steps.findIndex((step) => step.id === snapshot.activeStepId);
@@ -230,6 +238,100 @@ class PopupWizardController implements MountedPopupWizard {
     this.container.replaceChildren(shell);
   }
 
+  #renderForm(): void {
+    const definition = this.definition.form!;
+    const snapshot = this.#snapshot;
+    const shell = this.document.createElement('div');
+    shell.className = 'stx-popup-wizard stx-popup-editor';
+    shell.dataset.wizardId = this.definition.id;
+    shell.dataset.busy = String(snapshot.busy === true);
+    const content = this.document.createElement('div');
+    content.className = 'stx-popup-editor-content';
+    if (definition.description) {
+      const context = this.document.createElement('p');
+      context.className = 'stx-popup-editor-context';
+      context.textContent = definition.description;
+      content.append(context);
+    }
+    const columns = this.document.createElement('div');
+    columns.className = 'stx-popup-editor-columns';
+    const primary = this.document.createElement('div');
+    const secondary = this.document.createElement('div');
+    primary.className = 'stx-popup-editor-primary';
+    secondary.className = 'stx-popup-editor-secondary';
+    for (const section of definition.sections) {
+      const fields = section.fields.filter((field) => snapshot.hiddenFieldIds?.includes(field.id) !== true);
+      if (fields.length === 0 && (section.fields.length > 0 || (!section.description && !section.status))) continue;
+      const group = this.document.createElement(section.collapsible ? 'details' : 'section');
+      group.className = 'stx-popup-editor-section';
+      group.dataset.formSection = section.id;
+      const heading = this.document.createElement(section.collapsible ? 'summary' : 'h3');
+      heading.textContent = section.title;
+      group.append(heading);
+      if (section.collapsible) {
+        const disclosure = group as HTMLDetailsElement;
+        disclosure.open = this.#expandedSections.has(section.id) || fields.some((field) => snapshot.fieldErrors?.[field.id] !== undefined);
+        disclosure.addEventListener('toggle', () => {
+          if (!disclosure.isConnected) return;
+          if (disclosure.open) this.#expandedSections.add(section.id);
+          else this.#expandedSections.delete(section.id);
+        });
+      }
+      if (section.status) {
+        const status = this.document.createElement('div');
+        status.className = 'stx-popup-wizard-status stx-popup-editor-section-status';
+        status.dataset.tone = section.status.tone;
+        status.setAttribute('role', 'status');
+        status.append(createIconElement(this.document, section.status.tone === 'success' ? 'circle-check' : section.status.tone === 'error' ? 'circle-exclamation' : 'circle-info', { decorative: true }));
+        const message = this.document.createElement('span');
+        message.textContent = section.status.message;
+        status.append(message);
+        group.append(status);
+      }
+      if (section.description) {
+        const description = this.document.createElement('p');
+        description.className = 'stx-popup-editor-description';
+        description.textContent = section.description;
+        group.append(description);
+      }
+      const form = this.document.createElement('div');
+      form.className = 'stx-popup-editor-fields';
+      for (const field of fields) this.#renderField(form, field);
+      group.append(form);
+      (section.column === 'secondary' ? secondary : primary).append(group);
+    }
+    if (Object.values(snapshot.checks ?? {}).some((check) => check.state !== 'idle')) {
+      const checks = this.#renderAside();
+      if (checks) secondary.append(checks);
+    }
+    columns.append(primary);
+    if (secondary.children.length > 0) columns.append(secondary);
+    content.append(columns);
+    const footer = this.document.createElement('footer');
+    footer.className = 'stx-popup-wizard-footer stx-popup-editor-footer';
+    const status = this.document.createElement('div');
+    status.className = 'stx-popup-wizard-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.dataset.tone = snapshot.status?.tone ?? 'neutral';
+    status.textContent = snapshot.status?.message ?? definition.footerHint ?? '';
+    if (snapshot.status?.code) {
+      const code = this.document.createElement('code');
+      code.textContent = snapshot.status.code;
+      status.append(code);
+    }
+    const cancel = button(this.document, '取消');
+    cancel.dataset.popupFormCancel = 'true';
+    cancel.addEventListener('click', this.requestClose);
+    const submit = button(this.document, snapshot.busy ? this.definition.busyLabel ?? '处理中…' : this.definition.submitLabel, 'primary');
+    submit.dataset.popupWizardSubmit = 'true';
+    submit.disabled = snapshot.busy === true || snapshot.submitDisabled === true;
+    submit.addEventListener('click', () => { void this.adapter.submit(); });
+    footer.append(status, cancel, submit);
+    shell.append(content, footer);
+    this.container.replaceChildren(shell);
+  }
+
   #renderField(parent: HTMLElement, field: PopupFormField): void {
     const snapshot = this.#snapshot;
     const fieldId = `${idPart(this.definition.id)}-${idPart(field.id)}`;
@@ -241,6 +343,7 @@ class PopupWizardController implements MountedPopupWizard {
     const row = this.document.createElement('div');
     row.className = `stx-popup-wizard-field stx-popup-wizard-field-${field.kind}`;
     row.dataset.fieldId = field.id;
+    row.dataset.fieldSpan = field.span ?? 'full';
     if (errorValue !== undefined) row.dataset.invalid = 'true';
     const label = this.document.createElement('label');
     label.className = 'stx-popup-wizard-field-label';
@@ -271,6 +374,8 @@ class PopupWizardController implements MountedPopupWizard {
         value: field.allowCustom === true && !hasDiscoveredValue ? customValue : currentValue,
         onSelect: (selected) => this.adapter.change(field.id, selected === customValue ? '' : selected),
       });
+      const selectTrigger = select.querySelector<HTMLButtonElement>('button');
+      if (selectTrigger && (field.allowCustom !== true || hasDiscoveredValue)) selectTrigger.dataset.popupWizardField = idPart(field.id);
       if (field.allowCustom === true) {
         const customWrap = this.document.createElement('div');
         customWrap.className = 'stx-popup-wizard-select-custom';
@@ -295,16 +400,15 @@ class PopupWizardController implements MountedPopupWizard {
     } else if (field.kind === 'segmented') {
       const choices = optionsFor(snapshot, field);
       const currentValue = typeof value === 'string' ? value : '';
-      const hasSelection = choices.some((option) => option.value === currentValue);
       control.dataset.ssHelperControl = 'segmented';
       control.setAttribute('role', 'group');
       control.setAttribute('aria-label', field.aria?.label ?? field.label);
-      choices.forEach((option, index) => {
+      choices.forEach((option) => {
         const selected = option.value === currentValue;
         const optionButton = button(this.document, option.label);
         optionButton.disabled = disabled;
         optionButton.setAttribute('aria-pressed', String(selected));
-        if (selected || (!hasSelection && index === 0)) optionButton.dataset.popupWizardField = idPart(field.id);
+        optionButton.dataset.popupWizardField = idPart(field.id);
         optionButton.addEventListener('click', () => this.adapter.change(field.id, option.value));
         control.append(optionButton);
       });
@@ -379,7 +483,7 @@ class PopupWizardController implements MountedPopupWizard {
           if (field.validation?.max !== undefined) input.max = String(field.validation.max);
           input.step = String(field.step ?? 1);
         }
-        input.addEventListener('input', () => this.adapter.change(field.id, input.value === '' ? Number.NaN : Number(input.value)));
+        input.addEventListener('input', () => this.adapter.change(field.id, input.value === '' ? '' : Number(input.value)));
       } else {
         const secret = field.secret === true;
         input.type = secret && !this.#revealedSecrets.has(field.id) ? 'password' : 'text';
@@ -409,6 +513,19 @@ class PopupWizardController implements MountedPopupWizard {
       label.setAttribute('for', input.id);
       wrap.prepend(input);
       control.append(wrap);
+    }
+    if (field.trailingAction && this.adapter.action) {
+      const action = button(this.document, field.trailingAction.label);
+      action.textContent = '';
+      action.dataset.ssHelperSize = 'md';
+      action.dataset.ssHelperIconOnly = 'true';
+      action.disabled = disabled;
+      action.setAttribute('aria-label', field.trailingAction.label);
+      action.title = field.trailingAction.label;
+      action.append(createIconElement(this.document, field.trailingAction.icon, { decorative: true }));
+      action.addEventListener('click', () => { void this.adapter.action!(field.trailingAction!.id); });
+      control.className += ' stx-popup-editor-field-action';
+      control.append(action);
     }
     row.append(label, control);
     appendDescription(this.document, row, descriptionId, field.description);
@@ -461,6 +578,7 @@ export function mountPopupWizard(
   definition: PopupWizardDefinition,
   adapter: PopupWizardAdapter,
   confirm: (options: PopupConfirmationOptions) => Promise<boolean>,
+  requestClose: () => void = () => undefined,
 ): MountedPopupWizard {
-  return new PopupWizardController(document, container, definition, adapter, confirm);
+  return new PopupWizardController(document, container, definition, adapter, confirm, requestClose);
 }

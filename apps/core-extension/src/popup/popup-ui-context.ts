@@ -244,7 +244,7 @@ export class PopupUiController implements PopupUiContext {
 
   mountWizard(definition: PopupWizardDefinition, adapter: PopupWizardAdapter): PopupWizardHandle {
     if (!this.#active) throw new Error('Popup UI context is disposed');
-    const wizard = mountPopupWizard(this.container.ownerDocument, this.container, definition, adapter, (options) => this.confirm(options));
+    const wizard = mountPopupWizard(this.container.ownerDocument, this.container, definition, adapter, (options) => this.confirm(options), () => this.close());
     this.#wizards.add(wizard);
     return {
       update: (snapshot) => wizard.update(snapshot),
